@@ -1,0 +1,397 @@
+//! Minimal Markdown → styled spans, for rendering node text (read mode).
+//!
+//! Flattens `pulldown-cmark` events into a linear run of [`Span`]s carrying
+//! inline style (bold/italic/code/link) and block context (heading level,
+//! list bullets, paragraph breaks). The rasterizer turns each span into a
+//! cosmic-text attribute run. This is intentionally simple: no tables, images,
+//! or block backgrounds yet — those come later.
+
+use super::syntax::{self, Syntax};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Parser, Tag, TagEnd};
+
+/// A run of text sharing one style.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Span {
+    pub text: String,
+    pub bold: bool,
+    pub italic: bool,
+    /// Monospace (inline code or code block).
+    pub code: bool,
+    /// 0 = body text; 1–6 = heading level.
+    pub heading: u8,
+    /// Part of a link (rendered in the accent color).
+    pub link: bool,
+    /// The link's destination, when this span is part of a link — from
+    /// `[text](url)`, an `<url>` autolink, or a bare `http(s)://…` URL.
+    pub url: Option<String>,
+    /// Syntax class within a highlighted code block (`Plain` elsewhere).
+    pub syntax: Syntax,
+}
+
+/// Parses `source` into styled spans. Block breaks are encoded as spans of
+/// `"\n\n"`; list items get a `"• "` prefix and a trailing newline.
+pub fn parse(source: &str) -> Vec<Span> {
+    let mut out: Vec<Span> = Vec::new();
+    let mut bold = 0u32;
+    let mut italic = 0u32;
+    let mut link = 0u32;
+    // The destination of the link currently open (if any), so its text spans
+    // carry it. Kept in lockstep with `link`.
+    let mut link_url: Option<String> = None;
+    let mut heading = 0u8;
+    let mut list_depth = 0usize;
+    // Fenced code is buffered across text events, then tokenized as a whole so
+    // multi-line strings and block comments highlight correctly.
+    let mut code_block: Option<CodeLang> = None;
+
+    let plain =
+        |text: &str, code: bool, bold: bool, italic: bool, heading: u8, url: Option<String>| Span {
+            text: text.to_owned(),
+            bold,
+            italic,
+            code,
+            heading,
+            link: url.is_some(),
+            url,
+            syntax: Syntax::Plain,
+        };
+    let mut push = |span: Span| {
+        if !span.text.is_empty() {
+            out.push(span);
+        }
+    };
+
+    for event in Parser::new(source) {
+        match event {
+            Event::Start(tag) => match tag {
+                Tag::Heading { level, .. } => heading = heading_level(level),
+                Tag::Strong => bold += 1,
+                Tag::Emphasis => italic += 1,
+                Tag::Link { dest_url, .. } => {
+                    link += 1;
+                    link_url = Some(dest_url.to_string());
+                }
+                Tag::CodeBlock(kind) => code_block = Some(CodeLang::new(&kind)),
+                Tag::List(_) => list_depth += 1,
+                Tag::Item => {
+                    let indent = "    ".repeat(list_depth.saturating_sub(1));
+                    push(plain(&format!("{indent}\u{2022} "), false, false, false, 0, None));
+                }
+                _ => {}
+            },
+            Event::End(tag) => match tag {
+                TagEnd::Heading(_) => {
+                    heading = 0;
+                    push(plain("\n\n", false, false, false, 0, None));
+                }
+                TagEnd::Strong => bold = bold.saturating_sub(1),
+                TagEnd::Emphasis => italic = italic.saturating_sub(1),
+                TagEnd::Link => {
+                    link = link.saturating_sub(1);
+                    if link == 0 {
+                        link_url = None;
+                    }
+                }
+                TagEnd::CodeBlock => {
+                    if let Some(block) = code_block.take() {
+                        for (text, syntax) in block.highlight() {
+                            push(Span {
+                                text,
+                                bold: false,
+                                italic: false,
+                                code: true,
+                                heading: 0,
+                                link: false,
+                                url: None,
+                                syntax,
+                            });
+                        }
+                    }
+                    push(plain("\n\n", false, false, false, 0, None));
+                }
+                TagEnd::Item => push(plain("\n", false, false, false, 0, None)),
+                TagEnd::List(_) => {
+                    list_depth = list_depth.saturating_sub(1);
+                    push(plain("\n", false, false, false, 0, None));
+                }
+                TagEnd::Paragraph => push(plain("\n\n", false, false, false, 0, None)),
+                _ => {}
+            },
+            Event::Text(text) => match &mut code_block {
+                Some(block) => block.source.push_str(&text),
+                None => push(plain(&text, false, bold > 0, italic > 0, heading, link_url.clone())),
+            },
+            Event::Code(text) => push(plain(&text, true, bold > 0, italic > 0, heading, None)),
+            // Obsidian's default renders a single newline as a line break
+            // (not a re-flowed space), so preserve it.
+            Event::SoftBreak => {
+                push(plain("\n", false, bold > 0, italic > 0, heading, link_url.clone()))
+            }
+            Event::HardBreak => push(plain("\n", false, false, false, heading, None)),
+            Event::Rule => {
+                push(plain("\u{2014}\u{2014}\u{2014}\n\n", false, false, false, 0, None))
+            }
+            _ => {}
+        }
+    }
+
+    autolink_bare_urls(&mut out);
+    trim_blank_edges(&mut out);
+    out
+}
+
+/// Splits any bare `http(s)://…` URL out of plain spans into its own link span,
+/// so plainly-typed URLs render styled and become clickable. Code spans and
+/// spans already inside a Markdown/autolink link are left untouched.
+fn autolink_bare_urls(spans: &mut Vec<Span>) {
+    if !spans.iter().any(|s| !s.code && !s.link && has_bare_url(&s.text)) {
+        return;
+    }
+    let mut out = Vec::with_capacity(spans.len());
+    for span in spans.drain(..) {
+        if span.code || span.link {
+            out.push(span);
+        } else {
+            split_urls(span, &mut out);
+        }
+    }
+    *spans = out;
+}
+
+fn has_bare_url(text: &str) -> bool {
+    text.contains("http://") || text.contains("https://")
+}
+
+/// Pushes `span`, split around each bare URL into plain / link / plain spans
+/// that inherit its style.
+fn split_urls(span: Span, out: &mut Vec<Span>) {
+    if !has_bare_url(&span.text) {
+        out.push(span);
+        return;
+    }
+    // Own the text so `span` stays available as the style template.
+    let text = span.text.clone();
+    let (mut i, mut last) = (0, 0);
+    while i < text.len() {
+        let rest = &text[i..];
+        if rest.starts_with("http://") || rest.starts_with("https://") {
+            let end = url_end(&text, i);
+            if end > i {
+                if last < i {
+                    out.push(styled(&span, &text[last..i], None));
+                }
+                let url = &text[i..end];
+                out.push(styled(&span, url, Some(url.to_owned())));
+                (last, i) = (end, end);
+                continue;
+            }
+        }
+        i += rest.chars().next().map_or(1, char::len_utf8);
+    }
+    if last < text.len() {
+        out.push(styled(&span, &text[last..], None));
+    }
+}
+
+/// `span`'s style applied to different `text` and link destination.
+fn styled(span: &Span, text: &str, url: Option<String>) -> Span {
+    Span {
+        text: text.to_owned(),
+        link: url.is_some(),
+        url,
+        ..span.clone()
+    }
+}
+
+/// The byte offset just past the bare URL starting at `start`: consumes
+/// non-space, non-delimiter characters, then trims trailing sentence
+/// punctuation and an unbalanced closing paren (so `(see https://x.com).` and
+/// `https://x.com,` link only the URL).
+fn url_end(text: &str, start: usize) -> usize {
+    let mut end = start;
+    for (off, ch) in text[start..].char_indices() {
+        if ch.is_whitespace() || matches!(ch, '<' | '>' | '`' | '"' | '\\' | '|') {
+            break;
+        }
+        end = start + off + ch.len_utf8();
+    }
+    let mut slice = &text[start..end];
+    while let Some(last) = slice.chars().next_back() {
+        let trim = matches!(last, '.' | ',' | ';' | ':' | '!' | '?' | '\'')
+            || (last == ')' && slice.matches(')').count() > slice.matches('(').count());
+        if !trim {
+            break;
+        }
+        slice = &slice[..slice.len() - last.len_utf8()];
+    }
+    start + slice.len()
+}
+
+/// Whether `source` is simple enough to center: plain paragraphs (any number)
+/// with only bold/italic emphasis. Any richer structure — headings, lists,
+/// code, links, blockquotes, rules, images — reads better left-aligned.
+/// Checked against the raw events (not our span model) so block constructs the
+/// spans flatten away are still caught.
+pub fn is_simple(source: &str) -> bool {
+    for event in Parser::new(source.trim()) {
+        match event {
+            Event::Start(Tag::Paragraph | Tag::Emphasis | Tag::Strong)
+            | Event::End(TagEnd::Paragraph | TagEnd::Emphasis | TagEnd::Strong)
+            | Event::Text(_)
+            | Event::SoftBreak
+            | Event::HardBreak => {}
+            // Headings, lists, code, links, quotes, rules, images, HTML, …
+            _ => return false,
+        }
+    }
+    true
+}
+
+/// A fenced code block accumulating its source, with the fence's language tag.
+struct CodeLang {
+    lang: String,
+    source: String,
+}
+
+impl CodeLang {
+    fn new(kind: &CodeBlockKind) -> Self {
+        let lang = match kind {
+            CodeBlockKind::Fenced(info) => info.split_whitespace().next().unwrap_or("").to_owned(),
+            CodeBlockKind::Indented => String::new(),
+        };
+        CodeLang { lang, source: String::new() }
+    }
+
+    fn highlight(&self) -> Vec<(String, Syntax)> {
+        syntax::highlight(&self.source, &self.lang)
+    }
+}
+
+fn heading_level(level: HeadingLevel) -> u8 {
+    match level {
+        HeadingLevel::H1 => 1,
+        HeadingLevel::H2 => 2,
+        HeadingLevel::H3 => 3,
+        HeadingLevel::H4 => 4,
+        HeadingLevel::H5 => 5,
+        HeadingLevel::H6 => 6,
+    }
+}
+
+/// Drops leading/trailing whitespace-only spans so the block never starts or
+/// ends with blank lines.
+fn trim_blank_edges(spans: &mut Vec<Span>) {
+    while spans.first().is_some_and(|s| s.text.trim().is_empty()) {
+        spans.remove(0);
+    }
+    while spans.last().is_some_and(|s| s.text.trim().is_empty()) {
+        spans.pop();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn text_of(spans: &[Span]) -> String {
+        spans.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    #[test]
+    fn plain_text_is_a_single_body_span() {
+        let spans = parse("just a label");
+        assert_eq!(spans.len(), 1);
+        assert_eq!(spans[0].text, "just a label");
+        assert!(!spans[0].bold && !spans[0].italic && spans[0].heading == 0);
+    }
+
+    #[test]
+    fn inline_emphasis_and_code() {
+        let spans = parse("a **bold** and *italic* and `code`");
+        let bold = spans.iter().find(|s| s.text == "bold").unwrap();
+        assert!(bold.bold && !bold.italic);
+        let italic = spans.iter().find(|s| s.text == "italic").unwrap();
+        assert!(italic.italic && !italic.bold);
+        let code = spans.iter().find(|s| s.text == "code").unwrap();
+        assert!(code.code);
+    }
+
+    #[test]
+    fn heading_carries_its_level() {
+        let spans = parse("# Title\n\nbody");
+        let title = spans.iter().find(|s| s.text == "Title").unwrap();
+        assert_eq!(title.heading, 1);
+        let body = spans.iter().find(|s| s.text == "body").unwrap();
+        assert_eq!(body.heading, 0);
+    }
+
+    #[test]
+    fn list_items_get_bullets() {
+        let spans = parse("- one\n- two");
+        assert!(text_of(&spans).contains("\u{2022} one"));
+        assert!(text_of(&spans).contains("\u{2022} two"));
+    }
+
+    #[test]
+    fn links_are_flagged() {
+        let spans = parse("see [the docs](https://x)");
+        let link = spans.iter().find(|s| s.text == "the docs").unwrap();
+        assert!(link.link);
+        assert_eq!(link.url.as_deref(), Some("https://x"));
+    }
+
+    #[test]
+    fn bare_urls_become_links() {
+        let spans = parse("see https://example.com now");
+        let link = spans.iter().find(|s| s.link).unwrap();
+        assert_eq!(link.text, "https://example.com");
+        assert_eq!(link.url.as_deref(), Some("https://example.com"));
+        assert!(text_of(&spans).contains("see "));
+        assert!(text_of(&spans).contains(" now"));
+    }
+
+    #[test]
+    fn trailing_sentence_punctuation_stays_out_of_the_url() {
+        let spans = parse("visit https://example.com.");
+        let link = spans.iter().find(|s| s.link).unwrap();
+        assert_eq!(link.url.as_deref(), Some("https://example.com"));
+    }
+
+    #[test]
+    fn urls_inside_code_are_not_linked() {
+        let spans = parse("`https://example.com`");
+        assert!(spans.iter().all(|s| !s.link));
+    }
+
+    #[test]
+    fn a_wrapping_paren_excludes_the_closing_paren() {
+        let spans = parse("(see https://example.com/path)");
+        let link = spans.iter().find(|s| s.link).unwrap();
+        assert_eq!(link.url.as_deref(), Some("https://example.com/path"));
+    }
+
+    #[test]
+    fn simple_content_is_plain_or_emphasized() {
+        assert!(is_simple("just a label"));
+        assert!(is_simple("a **bold** and *italic* line"));
+        // Line breaks and blank lines are still simple (plain text).
+        assert!(is_simple("first line\nsecond line"));
+        assert!(is_simple("first paragraph\n\nsecond paragraph"));
+    }
+
+    #[test]
+    fn rich_content_is_not_simple() {
+        assert!(!is_simple("# Heading"));
+        assert!(!is_simple("has `code`"));
+        assert!(!is_simple("a [link](x)"));
+        assert!(!is_simple("- a list\n- item"));
+        assert!(!is_simple("> a blockquote"));
+    }
+
+    #[test]
+    fn single_newline_is_kept_as_a_line_break() {
+        // Obsidian-style: a single newline stays a break, not a re-flowed space.
+        let spans = parse("first line\nsecond line");
+        assert!(text_of(&spans).contains("first line\nsecond line"));
+    }
+}

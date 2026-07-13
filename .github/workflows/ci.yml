@@ -1,0 +1,61 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+  workflow_dispatch:
+
+# A newer push to the same branch/PR supersedes the in-flight run.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  check:
+    name: build · test · clippy (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      # Report every platform's result even if one fails — a Windows-only or
+      # macOS-only break shouldn't hide the others (the platform modules only
+      # compile on their own target, so each OS exercises different code).
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - uses: actions/checkout@v4
+
+      # No apt/brew step: the dependency graph is pure-Rust with dlopen'd
+      # windowing (winit/wgpu), rustls TLS (no OpenSSL), and the xdg-portal/ksni
+      # backends on Linux (no GTK) — so nothing needs system dev packages to
+      # build. This is the same reason the local `cargo zigbuild` works without
+      # a sysroot. Add libs here only if a future dep starts hard-linking one.
+
+      - name: Install Rust (stable + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.os }}
+
+      # `--locked` fails if Cargo.lock is stale, catching un-committed
+      # dependency bumps. `--all-targets` also compiles the test harness.
+      - name: Build
+        run: cargo build --locked --all-targets
+
+      - name: Clippy
+        # The codebase carries a few intentional style lints (hand-formatted
+        # single-line literals, deliberate let-chains), so we don't pass
+        # `-D warnings` — this still fails the job on genuine clippy errors.
+        run: cargo clippy --locked --all-targets
+
+      - name: Test
+        run: cargo test --locked

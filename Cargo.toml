@@ -1,0 +1,73 @@
+[package]
+name = "thinkboard"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[features]
+# Windows only: force the GUI subsystem (no console window) regardless of build
+# profile. See the windows_subsystem attribute in src/main.rs.
+no-console = []
+
+[dependencies]
+arboard = "3.4"
+base64 = "0.22.1"
+bytemuck = { version = "1.25.0", features = ["derive"] }
+cosmic-text = "0.15"
+env_logger = "0.11"
+global-hotkey = "0.8.0"
+iced = { version = "0.14.0", features = ["advanced", "canvas", "image", "tokio"] }
+# The (patched) vendored iced_graphics, for its editor line-alignment control.
+iced_graphics = "0.14"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+notify = "8.2.0"
+pulldown-cmark = { version = "0.13", default-features = false }
+reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
+# Native "open canvas" dialog when no canvas is configured. The xdg-portal
+# backend (not gtk3) keeps the Linux build free of a GTK link dependency.
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+serde = { version = "1.0.228", features = ["derive"] }
+serde_json = { version = "1.0.150", features = ["preserve_order"] }
+wuff = { version = "0.2.5", default-features = false, features = ["brotli"] }
+
+# Menu-bar / notification-area tray. Only macOS + Windows: the Linux backend
+# links GTK/libappindicator (C), which our zig cross-build can't satisfy.
+[target.'cfg(any(target_os = "macos", windows))'.dependencies]
+tray-icon = "0.19"
+
+# Linux tray via the StatusNotifierItem protocol. 0.3+ is required: it talks
+# D-Bus through pure-Rust zbus (no GTK, no C libdbus), so it cross-compiles with
+# zig — unlike 0.2, which links C libdbus, and unlike tray-icon's GTK backend.
+# Shows on KDE natively; GNOME needs the AppIndicator extension.
+[target.'cfg(target_os = "linux")'.dependencies]
+ksni = "0.3"
+# A runtime for the startup file dialog: rfd's portal backend drives zbus, which
+# our graph routes onto Tokio. See pick_canvas_file in app/startup.rs. (net/time
+# drivers come from zbus's own tokio features via unification.)
+tokio = { version = "1", features = ["rt-multi-thread"] }
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_System_Threading",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSResponder", "NSWindow", "NSApplication", "NSScreen", "NSRunningApplication", "NSPanel", "NSWorkspace"] }
+objc2-foundation = { version = "0.3", default-features = false, features = ["std", "NSNotification", "NSString", "NSObject", "block2", "NSOperation"] }
+
+# Embeds the app icon into the Windows .exe (build.rs). Host-side build tool; it
+# shells out to the MinGW resource compiler when cross-compiling.
+[build-dependencies]
+winresource = "0.1"
+
+[patch.crates-io]
+# Center-aligned text editing: see vendor/iced_graphics/src/text/editor.rs
+iced_graphics = { path = "vendor/iced_graphics" }
+# Honor wgpu backend env vars so WGPU_DX12_PRESENTATION_SYSTEM=visual can pick
+# the DirectComposition swapchain (transparent overlay on Windows): see
+# vendor/iced_wgpu/src/window/compositor.rs
+iced_wgpu = { path = "vendor/iced_wgpu" }

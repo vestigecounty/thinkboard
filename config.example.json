@@ -1,0 +1,43 @@
+{
+  "canvas": "",
+  "dismiss_on_background_click": true,
+  "persist_across_spaces": false,
+  "overlay_transparent": true,
+  "summon_hotkey": "Pause",
+
+  "min_zoom": 0.1,
+  "max_zoom": 6.0,
+  "zoom_smoothing": 0.06,
+  "wheel_zoom_step": 0.15,
+  "pinch_zoom_step": 0.01,
+  "pan_inertia": 0.85,
+
+  "animation_scale": 1.0,
+
+  "autosave_debounce_ms": 400,
+  "cluster_zoom": 0.4,
+  "auto_zoom_trigger": 0.5,
+  "auto_zoom_level": 0.9,
+
+  "theme_css": null,
+  "overlay_dim": 0.55,
+  "center_node_text": true,
+  "rasterize_text": true,
+
+  "new_node_min_width": 250.0,
+  "new_node_min_height": 60.0,
+  "max_node_width": 420.0,
+  "layout_rank_gap": 70.0,
+  "layout_node_gap": 40.0,
+
+  "auto_layout": false,
+  "auto_layout_direction": "LR",
+
+  "ai_url": "http://localhost:1234/v1",
+  "ai_model": "google/gemma-4-26b-a4b-qat",
+  "max_ai_nodes": 6,
+  "ai_trigger_color": "3",
+  "ai_node_color": "6",
+  "ai_completions": false,
+  "ai_thinking": false
+}

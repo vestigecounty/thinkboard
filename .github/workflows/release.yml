@@ -1,0 +1,155 @@
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  # Allow a manual dry-run (builds artifacts but only publishes on a real tag).
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build ${{ matrix.name }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-latest
+            targets: x86_64-unknown-linux-gnu
+          - name: windows-x86_64
+            os: windows-latest
+            targets: x86_64-pc-windows-msvc
+          # Built for both Apple arches and fused into one universal binary.
+          - name: macos-universal
+            os: macos-latest
+            targets: aarch64-apple-darwin,x86_64-apple-darwin
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.targets }}
+
+      - name: Cache cargo registry & target
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: release-${{ matrix.name }}
+
+      # A tag `vX.Y.Z` yields VERSION=X.Y.Z; a manual run falls back to the
+      # Cargo.toml version with a `-dev` suffix.
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            V=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+            echo "VERSION=${V}-dev" >> "$GITHUB_ENV"
+          fi
+
+      # One loop covers single- and multi-target (macOS) builds uniformly.
+      - name: Build release binaries
+        shell: bash
+        run: |
+          IFS=',' read -ra TARGETS <<< "${{ matrix.targets }}"
+          for t in "${TARGETS[@]}"; do
+            echo "::group::cargo build --target $t"
+            cargo build --release --locked --target "$t"
+            echo "::endgroup::"
+          done
+
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          mkdir -p dist
+          STAGE="thinkboard-${VERSION}-linux-x86_64"
+          mkdir "$STAGE"
+          install -m755 target/x86_64-unknown-linux-gnu/release/thinkboard "$STAGE/thinkboard"
+          strip "$STAGE/thinkboard" || true
+          cp assets/thinkboard.icns "$STAGE/" 2>/dev/null || true
+          cp README* LICENSE* "$STAGE/" 2>/dev/null || true
+          tar -C "$PWD" -czf "dist/${STAGE}.tar.gz" "$STAGE"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          STAGE="thinkboard-${VERSION}-windows-x86_64"
+          mkdir "$STAGE"
+          cp target/x86_64-pc-windows-msvc/release/thinkboard.exe "$STAGE/"
+          cp README* LICENSE* "$STAGE/" 2>/dev/null || true
+          # 7-Zip ships on the Windows runners.
+          7z a "dist/${STAGE}.zip" "./${STAGE}" >/dev/null
+
+      - name: Package (macOS universal .app)
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          APP="ThinkBoard.app"
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
+          # Fuse the two arch builds into one universal binary.
+          lipo -create -output "$APP/Contents/MacOS/thinkboard" \
+            target/aarch64-apple-darwin/release/thinkboard \
+            target/x86_64-apple-darwin/release/thinkboard
+          strip "$APP/Contents/MacOS/thinkboard" || true
+          cp assets/thinkboard.icns "$APP/Contents/Resources/thinkboard.icns"
+          cat > "$APP/Contents/Info.plist" <<PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleName</key><string>ThinkBoard</string>
+            <key>CFBundleDisplayName</key><string>ThinkBoard</string>
+            <key>CFBundleIdentifier</key><string>com.thinkboard.app</string>
+            <key>CFBundleExecutable</key><string>thinkboard</string>
+            <key>CFBundleIconFile</key><string>thinkboard</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>${VERSION}</string>
+            <key>CFBundleVersion</key><string>${VERSION}</string>
+            <key>LSMinimumSystemVersion</key><string>11.0</string>
+            <!-- Agent app: no Dock icon, matches the runtime Accessory policy. -->
+            <key>LSUIElement</key><true/>
+            <key>NSHighResolutionCapable</key><true/>
+            <key>NSPrincipalClass</key><string>NSApplication</string>
+          </dict>
+          </plist>
+          PLIST
+          mkdir -p dist
+          # `ditto` produces a Finder-friendly zip that preserves the bundle.
+          ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/thinkboard-${VERSION}-macos-universal.zip"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.name }}
+          path: dist/*
+          if-no-files-found: error
+
+  publish:
+    name: Publish GitHub Release
+    needs: build
+    # Only cut a Release for real tags; a manual dispatch just builds artifacts.
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # required to create the release and upload assets
+    steps:
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**
+          generate_release_notes: true
+          fail_on_unmatched_files: true

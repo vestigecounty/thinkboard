@@ -1,0 +1,9 @@
+/target
+
+# macOS Finder metadata
+.DS_Store
+
+# Working canvas data (user-editable, and the images are large). The frozen
+# test fixture under testdata/fixtures/ is kept — tests compile it in.
+/testdata/*
+!/testdata/fixtures/

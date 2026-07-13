@@ -1,0 +1,69 @@
+# ThinkBoard
+
+**Create and edit Obsidian canvases in a Dashboard-style overlay, summoned with a global hotkey.**
+
+[![CI](https://github.com/vestigecounty/thinkboard/actions/workflows/ci.yml/badge.svg)](https://github.com/vestigecounty/thinkboard/actions/workflows/ci.yml)
+&nbsp;·&nbsp; macOS · Windows · Linux
+
+<p align="center">
+  <img src="docs/hero.webp" alt="ThinkBoard — a mind-map summoned over the desktop" width="840">
+</p>
+
+ThinkBoard is a lightweight desktop overlay for thinking in maps. Hit a hotkey and
+your canvas floats in over whatever you're doing — even a fullscreen app — so you
+can jot a thought, branch an idea, or ask an AI to expand it, then tuck it away just
+as fast. It reads and writes Obsidian `.canvas` files, so your boards can live right
+in your vault.
+
+## Features
+
+- **Summon over anything** — a translucent, always-on-top overlay that drops onto your current desktop (even over fullscreen apps) with a global hotkey, and toggles away with the same key.
+- **Obsidian-compatible** — opens and saves standard `.canvas` files; pick up your vault's canvases or start fresh ones.
+- **Fast to build** — create notes, drag from a note's edge to connect them, double-click to edit Markdown, and auto-layout to tidy the whole board.
+- **Ask AI (optional)** — right-click a note and the chain of notes leading into it becomes the prompt; the reply lands as new, connected notes. Off by default.
+- **Make it yours** — point it at an Obsidian `theme.css` for matching colors and fonts.
+- **macOS niceties** — pinch-to-zoom, plus an optional four-finger-swipe-down summon gesture.
+
+## Quick start
+
+- Press **Pause** (the default hotkey, configurable) to summon or dismiss the board.
+- **Double-click** a note to edit it; **Esc** or **Cmd/Ctrl+Enter** when you're done.
+- **Drag from a note's edge** (the little dot) onto another note to connect them.
+- **Right-click** a note for actions (Ask AI, color…), or right-click empty space for canvas options like Auto-layout.
+- Open or create boards — and reach **Settings** — from the tray icon.
+
+## Install
+
+**Prebuilt binaries** — grab the latest from [Releases](../../releases): a universal macOS `.app`, a Windows `.zip`, or a Linux `.tar.gz`.
+
+> macOS builds are unsigned, so the first launch needs a right-click → **Open** (or `xattr -dr com.apple.quarantine ThinkBoard.app`).
+
+**From source** — with a recent Rust toolchain (2024 edition):
+
+```sh
+cargo build --release
+./target/release/thinkboard
+```
+
+The patched `iced` crates it relies on are vendored in-repo, so there's nothing else to set up.
+
+## AI setup
+
+AI is **off by default** — nothing leaves your machine until you configure a provider.
+In **Settings → AI**, choose one and (for hosted providers) paste an API key:
+
+- **Local:** LM Studio, Ollama
+- **Hosted:** OpenAI, OpenRouter, Groq, Together AI
+
+Then right-click any note and choose **Ask AI**.
+
+## Configuration
+
+Tweak everything from the tray menu's **Settings**, or edit the config file directly:
+
+- **macOS / Linux:** `~/.config/thinkboard/config.json`
+- **Windows:** `%APPDATA%\thinkboard\config.json`
+
+## License
+
+Released under the [MIT License](LICENSE).

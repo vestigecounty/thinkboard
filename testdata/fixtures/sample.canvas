@@ -1,0 +1,20 @@
+{
+	"nodes":[
+		{"id":"img_sketch","type":"file","file":"assets/sketch.png","x":-680,"y":-360,"width":400,"height":300},
+		{"id":"img_chart","type":"file","file":"assets/chart.png","x":-680,"y":40,"width":400,"height":260},
+		{"id":"root","type":"text","text":"# Project ideas","x":-160,"y":-200,"width":260,"height":80,"color":"5"},
+		{"id":"idea_a","type":"text","text":"Fast full-text search","x":180,"y":-360,"width":250,"height":60,"color":"4"},
+		{"id":"idea_b","type":"text","text":"Offline-first sync","x":180,"y":-200,"width":250,"height":60},
+		{"id":"ai_summary","type":"text","text":"These ideas share an indexing layer.","ai":"done","x":180,"y":-40,"width":300,"height":100,"color":"6"},
+		{"id":"question","type":"text","text":"Open question: which datastore?","x":-160,"y":40,"width":260,"height":70,"color":"3"},
+		{"id":"left_note","type":"text","text":"Scratch note","x":-660,"y":-560,"width":200,"height":60}
+	],
+	"edges":[
+		{"id":"e1","fromNode":"root","fromSide":"right","toNode":"idea_a","toSide":"left"},
+		{"id":"e2","fromNode":"root","fromSide":"right","toNode":"idea_b","toSide":"left"},
+		{"id":"e3","fromNode":"root","fromSide":"bottom","toNode":"ai_summary","toSide":"left"},
+		{"id":"e4","fromNode":"idea_a","fromSide":"bottom","toNode":"ai_summary","toSide":"top"},
+		{"id":"e5","fromNode":"idea_b","fromSide":"bottom","toNode":"ai_summary","toSide":"top"},
+		{"id":"e6","fromNode":"root","fromSide":"bottom","toNode":"question","toSide":"top","color":"3"}
+	]
+}
