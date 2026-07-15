@@ -60,7 +60,7 @@ mod desktop {
     }
 
     fn icon() -> Icon {
-        let (w, h, rgba) = super::rounded_square(|a, r, g, b| [r, g, b, a]);
+        let (w, h, rgba) = super::tray_icon_rgba();
         Icon::from_rgba(rgba, w, h).expect("valid tray icon")
     }
 
@@ -138,7 +138,11 @@ mod linux {
             let _ = self.sender.unbounded_send(Message::ToggleOverlay);
         }
         fn icon_pixmap(&self) -> Vec<ksni::Icon> {
-            let (width, height, data) = super::rounded_square(|a, r, g, b| [a, r, g, b]);
+            let (width, height, mut data) = super::tray_icon_rgba();
+            // ksni wants ARGB; the decoder produces RGBA.
+            for px in data.chunks_exact_mut(4) {
+                px.rotate_right(1);
+            }
             vec![ksni::Icon { width: width as i32, height: height as i32, data }]
         }
         fn menu(&self) -> Vec<ksni::menu::MenuItem<Self>> {
@@ -217,28 +221,14 @@ mod linux {
     }
 }
 
-/// A 32×32 rounded-square placeholder icon (until real assets land). `pack(a, r,
-/// g, b)` orders the channels for the backend: RGBA for tray-icon, ARGB for
-/// ksni. Returns `(width, height, bytes)`.
-fn rounded_square(pack: impl Fn(u8, u8, u8, u8) -> [u8; 4]) -> (u32, u32, Vec<u8>) {
-    const N: u32 = 32;
-    const M: f32 = 3.0; // margin
-    const R: f32 = 7.0; // corner radius
-    let (lo, hi) = (M, N as f32 - M);
-
-    let mut bytes = Vec::with_capacity((N * N * 4) as usize);
-    for y in 0..N {
-        for x in 0..N {
-            let (px, py) = (x as f32 + 0.5, y as f32 + 0.5);
-            let (cx, cy) = (px.clamp(lo + R, hi - R), py.clamp(lo + R, hi - R));
-            let inside = (px - cx).powi(2) + (py - cy).powi(2) <= R * R;
-            let pixel = if inside {
-                pack(0xff, 0x4a, 0x7c, 0xff)
-            } else {
-                pack(0, 0, 0, 0)
-            };
-            bytes.extend_from_slice(&pixel);
-        }
-    }
-    (N, N, bytes)
+/// The tray icon as raw RGBA8 pixels, decoded from the PNG embedded from
+/// `assets/`. Returns `(width, height, rgba)`; callers reorder the channels for
+/// their backend (tray-icon wants RGBA, ksni wants ARGB).
+fn tray_icon_rgba() -> (u32, u32, Vec<u8>) {
+    const PNG: &[u8] = include_bytes!("../../assets/thinkboard_tray.png");
+    let image = image::load_from_memory(PNG)
+        .expect("embedded tray icon decodes")
+        .into_rgba8();
+    let (w, h) = image.dimensions();
+    (w, h, image.into_raw())
 }

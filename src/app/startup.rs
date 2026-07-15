@@ -234,8 +234,19 @@ pub(super) fn settings_window_settings() -> window::Settings {
         decorations: true,
         transparent: false,
         exit_on_close_request: false,
+        icon: window_icon(),
         ..window::Settings::default()
     }
+}
+
+/// The window/taskbar icon, decoded from the PNG embedded from `assets/`. Mainly
+/// matters on Linux (where there's no bundle/exe icon); macOS uses the `.app`'s
+/// `.icns` and Windows the icon embedded in the `.exe`, so it's redundant there.
+fn window_icon() -> Option<window::Icon> {
+    const PNG: &[u8] = include_bytes!("../../assets/thinkboard.png");
+    let image = image::load_from_memory(PNG).ok()?.into_rgba8();
+    let (w, h) = image.dimensions();
+    window::icon::from_rgba(image.into_raw(), w, h).ok()
 }
 
 /// The window configuration for a launch. In overlay mode (not `--windowed`)
@@ -250,6 +261,7 @@ pub(super) fn window_settings(config: &crate::config::Config, windowed: bool) ->
         // We handle the close request ourselves (App::update) to flush the
         // autosave before quitting.
         exit_on_close_request: false,
+        icon: window_icon(),
         ..window::Settings::default()
     };
     if !windowed {
