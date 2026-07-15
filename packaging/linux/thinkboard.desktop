@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=ThinkBoard
+GenericName=Mind-map overlay
+Comment=Create and edit Obsidian canvases in a hotkey-summoned overlay
+Exec=thinkboard
+Icon=thinkboard
+Terminal=false
+Categories=Utility;Office;
+Keywords=canvas;mindmap;obsidian;notes;whiteboard;
+StartupNotify=false

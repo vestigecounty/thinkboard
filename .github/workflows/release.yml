@@ -72,7 +72,11 @@ jobs:
           mkdir "$STAGE"
           install -m755 target/x86_64-unknown-linux-gnu/release/thinkboard "$STAGE/thinkboard"
           strip "$STAGE/thinkboard" || true
-          cp assets/thinkboard.icns "$STAGE/" 2>/dev/null || true
+          # Desktop integration: a launcher, icons (scalable SVG + 256px PNG),
+          # and a user-level installer that drops them into the right XDG dirs.
+          install -m755 packaging/linux/install.sh "$STAGE/install.sh"
+          cp packaging/linux/thinkboard.desktop "$STAGE/"
+          cp assets/thinkboard.svg assets/thinkboard.png "$STAGE/"
           cp README* LICENSE* "$STAGE/" 2>/dev/null || true
           tar -C "$PWD" -czf "dist/${STAGE}.tar.gz" "$STAGE"
 
