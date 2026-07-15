@@ -253,6 +253,12 @@ const AI_RELAYOUT_THROTTLE: Duration = Duration::from_millis(350);
 const AI_IMAGE_MAX_PX: u32 = 1024;
 /// How long ignored ghost suggestions linger before auto-dismissing.
 const GHOST_TTL: Duration = Duration::from_secs(10);
+
+/// After summoning the overlay, ignore Space-change notifications for this long.
+/// Activating/ordering the panel onto the current Space itself emits an
+/// active-Space-change, which would otherwise trip the auto-dismiss and hide the
+/// board we just brought up. A real user switch away happens well after this.
+const SPACE_DISMISS_COOLDOWN: Duration = Duration::from_millis(1200);
 /// When (into the TTL) ghosts start fading out to telegraph the dismissal.
 const GHOST_FADE_START: f32 = 3.0;
 /// Duration (s) of a ghost card's fade-in when it appears.
@@ -1039,6 +1045,9 @@ struct App {
     interacted: bool,
     overlay: bool,
     overlay_configured: bool,
+    /// When the overlay was last (re)configured on summon. Used to ignore the
+    /// Space-change our own summon emits (see [`SPACE_DISMISS_COOLDOWN`]).
+    overlay_shown_at: Option<Instant>,
     /// The main overlay window. Tracked explicitly (not via `window::latest`,
     /// which returns the settings window when it's open) so hide/summon always
     /// target the board. Set by the boot task; `None` on Linux while hidden
@@ -1397,6 +1406,7 @@ impl App {
             interacted: false,
             overlay: !is_windowed(),
             overlay_configured: false,
+            overlay_shown_at: None,
             main_window: None,
             settings_window: None,
             settings_drafts: HashMap::new(),
@@ -2497,13 +2507,27 @@ impl App {
                 // Re-raise and re-frame the overlay window (also re-adapts
                 // to display changes while hidden).
                 platform::configure_overlay_window();
+                self.overlay_shown_at = Some(Instant::now());
             }
             Message::SpaceChanged => {
                 // The active macOS Space changed. Auto-dismiss (the
                 // subscription only fires this when persist is off). Hide
                 // instantly — the exit animation would play on a Space the
                 // user is no longer looking at.
-                if self.overlay && matches!(self.phase, Phase::Running | Phase::Entering { .. }) {
+                //
+                // But ordering/activating the panel onto the current Space at
+                // summon *itself* emits an active-Space-change; acting on that
+                // would hide the board we just brought up (and, on a non-launch
+                // desktop, it fires repeatedly). So ignore Space-changes for a
+                // short cooldown after a summon — a genuine switch away lands
+                // well after it.
+                let summon_churn = self
+                    .overlay_shown_at
+                    .is_some_and(|t| t.elapsed() < SPACE_DISMISS_COOLDOWN);
+                let dismiss = self.overlay
+                    && !summon_churn
+                    && matches!(self.phase, Phase::Running | Phase::Entering { .. });
+                if dismiss {
                     return self.hide_window();
                 }
             }

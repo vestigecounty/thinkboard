@@ -416,10 +416,15 @@ pub fn configure_overlay_window() {
         morph_into_panel(&window);
 
         window.setLevel(OVERLAY_LEVEL);
+        // `MoveToActiveSpace`: the panel follows to whichever Space is active
+        // when we activate the app on summon. `CanJoinAllSpaces` gets stranded on
+        // its original Space after another app's fullscreen transition (which
+        // spins up a Space of its own) and won't rejoin the active one — so a
+        // summon on another desktop shows nothing. `FullScreenAuxiliary` still
+        // lets it appear over a fullscreen app's Space.
         window.setCollectionBehavior(
-            NSWindowCollectionBehavior::CanJoinAllSpaces
+            NSWindowCollectionBehavior::MoveToActiveSpace
                 | NSWindowCollectionBehavior::FullScreenAuxiliary
-                | NSWindowCollectionBehavior::Stationary
                 | NSWindowCollectionBehavior::IgnoresCycle,
         );
         window.setHasShadow(false);
@@ -427,11 +432,10 @@ pub fn configure_overlay_window() {
         if let Some(screen) = &screen {
             window.setFrame_display(screen.frame(), true);
         }
+        // `orderFrontRegardless` brings the panel forward even before the app is
+        // active (we activate just below); paired with `MoveToActiveSpace`, the
+        // panel then lands on the Space that's active now.
         window.makeKeyAndOrderFront(None);
-        // `makeKeyAndOrderFront` can no-op while the app isn't active yet (we
-        // activate just below), which — combined with a Space switch in flight
-        // — is how the board ends up invisible with the app already frontmost.
-        // `orderFrontRegardless` forces the panel onto the current Space now.
         window.orderFrontRegardless();
     }
 
