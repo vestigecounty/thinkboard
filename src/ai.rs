@@ -6,6 +6,7 @@
 //! node branching off it. See `App::trigger_ai`.
 
 use std::collections::HashSet;
+use std::sync::{LazyLock, Mutex};
 
 use iced::futures::{SinkExt, Stream, StreamExt};
 use iced::futures::channel::mpsc::Sender;
@@ -174,16 +175,7 @@ pub async fn suggest(
     });
     apply_thinking(&mut body, &base_url, thinking);
 
-    let response = authed_post(&url, &api_key)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("endpoint returned {status}: {}", error_detail(&body)));
-    }
+    let response = post_with_reasoning_retry(&url, &api_key, &mut body).await?;
     let value: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
     let content = value
         .get("choices")
@@ -218,18 +210,101 @@ fn is_openrouter(url: &str) -> bool {
     url.contains("openrouter.ai")
 }
 
+/// Models that rejected a disabled-reasoning request as mandatory (e.g. Gemini
+/// Flash on OpenRouter). Learned at runtime by [`post_with_reasoning_retry`] so
+/// we stop trying to disable reasoning for them this session. In-memory only —
+/// a fresh launch re-learns on the first request (one retry), which is cheap for
+/// a resident app.
+static REASONING_REQUIRED: LazyLock<Mutex<HashSet<String>>> =
+    LazyLock::new(|| Mutex::new(HashSet::new()));
+
+fn reasoning_required(model: &str) -> bool {
+    REASONING_REQUIRED.lock().unwrap().contains(model)
+}
+
+fn mark_reasoning_required(model: &str) {
+    REASONING_REQUIRED.lock().unwrap().insert(model.to_owned());
+}
+
+/// The OpenRouter `reasoning` object for the lowest thinking level: a minimal
+/// budget, excluded from the response so it doesn't leak into generated notes.
+fn lowest_reasoning() -> serde_json::Value {
+    serde_json::json!({ "effort": "low", "exclude": true })
+}
+
 /// When `thinking` is false, disables reasoning where we safely can. There is no
 /// standard switch, so this is best-effort and must never break a request:
 ///
 /// - OpenRouter: a typed `reasoning` object disables it — worth doing since
-///   reasoning tokens cost noticeably more on a paid, hosted endpoint.
+///   reasoning tokens cost noticeably more on a paid, hosted endpoint. For
+///   models we've learned mandate reasoning, request the lowest effort instead
+///   (a disable would 400).
 /// - Everything else (local runtimes, strict hosted APIs like OpenAI/Groq):
 ///   left at the model's default. Local runtimes are cheap, and strict APIs
 ///   400 on unknown params with no uniform disable switch.
 fn apply_thinking(body: &mut serde_json::Value, url: &str, thinking: bool) {
-    if !thinking && is_openrouter(url) {
-        body["reasoning"] = serde_json::json!({ "enabled": false });
+    if thinking || !is_openrouter(url) {
+        return;
     }
+    let model = body.get("model").and_then(|m| m.as_str()).unwrap_or_default();
+    body["reasoning"] = if reasoning_required(model) {
+        lowest_reasoning()
+    } else {
+        serde_json::json!({ "enabled": false })
+    };
+}
+
+/// Whether a failed response says the endpoint requires reasoning we tried to
+/// disable (Gemini Flash on OpenRouter: "Reasoning is mandatory for this
+/// endpoint and cannot be disabled.").
+fn is_reasoning_mandatory(body: &str) -> bool {
+    let msg = error_detail(body).to_lowercase();
+    msg.contains("reasoning")
+        && (msg.contains("mandatory")
+            || msg.contains("cannot be disabled")
+            || msg.contains("can't be disabled")
+            || msg.contains("required")
+            || msg.contains("must be enabled"))
+}
+
+/// POSTs `body` and returns the successful response. If a disabled-reasoning
+/// request is rejected because the model mandates reasoning, learns that for the
+/// session, drops to the lowest thinking effort, and retries once.
+async fn post_with_reasoning_retry(
+    url: &str,
+    api_key: &str,
+    body: &mut serde_json::Value,
+) -> Result<reqwest::Response, String> {
+    let response = authed_post(url, api_key)
+        .json(&*body)
+        .send()
+        .await
+        .map_err(|e| e.to_string())?;
+    if response.status().is_success() {
+        return Ok(response);
+    }
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+
+    let attempted_disable = body.get("reasoning") == Some(&serde_json::json!({ "enabled": false }));
+    if attempted_disable && is_reasoning_mandatory(&text) {
+        if let Some(model) = body.get("model").and_then(|m| m.as_str()) {
+            mark_reasoning_required(model);
+        }
+        body["reasoning"] = lowest_reasoning();
+        let retry = authed_post(url, api_key)
+            .json(&*body)
+            .send()
+            .await
+            .map_err(|e| e.to_string())?;
+        if retry.status().is_success() {
+            return Ok(retry);
+        }
+        let status = retry.status();
+        let text = retry.text().await.unwrap_or_default();
+        return Err(format!("endpoint returned {status}: {}", error_detail(&text)));
+    }
+    Err(format!("endpoint returned {status}: {}", error_detail(&text)))
 }
 
 /// A human-readable reason from a failed response body: the OpenAI-style
@@ -314,16 +389,7 @@ async fn run(
     });
     apply_thinking(&mut body, base_url, thinking);
 
-    let response = authed_post(&url, api_key)
-        .json(&body)
-        .send()
-        .await
-        .map_err(|e| e.to_string())?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(format!("endpoint returned {status}: {}", error_detail(&body)));
-    }
+    let response = post_with_reasoning_retry(&url, api_key, &mut body).await?;
 
     // Server-sent events: `data: {json}` lines, terminated by `data: [DONE]`.
     // Buffer bytes and only decode whole lines so multi-byte characters split
@@ -471,6 +537,38 @@ mod tests {
         let mut off = serde_json::json!({ "model": "m" });
         apply_thinking(&mut off, "https://openrouter.ai/api/v1", false);
         assert_eq!(off["reasoning"], serde_json::json!({ "enabled": false }));
+    }
+
+    #[test]
+    fn apply_thinking_uses_lowest_effort_once_a_model_mandates_reasoning() {
+        // A distinct model name so this doesn't perturb the global cache other
+        // tests rely on.
+        let model = "reasoning-mandatory-test-model";
+
+        // Before learning: OpenRouter-off disables reasoning as usual.
+        let mut first = serde_json::json!({ "model": model });
+        apply_thinking(&mut first, "https://openrouter.ai/api/v1", false);
+        assert_eq!(first["reasoning"], serde_json::json!({ "enabled": false }));
+
+        // After learning it mandates reasoning: request the lowest effort instead
+        // of a disable (which would 400), excluded so it doesn't leak into notes.
+        mark_reasoning_required(model);
+        let mut later = serde_json::json!({ "model": model });
+        apply_thinking(&mut later, "https://openrouter.ai/api/v1", false);
+        assert_eq!(
+            later["reasoning"],
+            serde_json::json!({ "effort": "low", "exclude": true })
+        );
+    }
+
+    #[test]
+    fn is_reasoning_mandatory_matches_the_openrouter_rejection() {
+        let body = r#"{"error":{"message":"Reasoning is mandatory for this endpoint and cannot be disabled.","code":400}}"#;
+        assert!(is_reasoning_mandatory(body));
+        // Unrelated errors must not trip the reasoning retry — including other
+        // reasoning-related 400s that aren't about it being mandatory.
+        assert!(!is_reasoning_mandatory(r#"{"error":{"message":"model not found"}}"#));
+        assert!(!is_reasoning_mandatory("reasoning: Expected object"));
     }
 
     #[test]
