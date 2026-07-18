@@ -111,6 +111,12 @@ pub fn set_summon_gesture_enabled(enable: bool) {
     backend::set_summon_gesture_enabled(enable);
 }
 
+/// The top safe-area inset in points: the macOS notch / menu-bar height, so
+/// top-anchored overlay UI can avoid being clipped. 0 on platforms without one.
+pub fn top_safe_inset() -> f32 {
+    backend::top_safe_inset()
+}
+
 /// Terminates any other running instance so a freshly built binary can take
 /// over — the app is resident (hotkey-summoned), so iterating would otherwise
 /// pile up copies fighting over the global hotkey.

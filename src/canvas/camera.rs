@@ -37,7 +37,8 @@ impl Default for Camera {
 }
 
 impl Camera {
-    fn center(&self) -> Vector {
+    /// Screen offset of the viewport center (half its size).
+    pub fn center(&self) -> Vector {
         Vector::new(self.viewport.width / 2.0, self.viewport.height / 2.0)
     }
 

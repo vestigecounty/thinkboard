@@ -26,3 +26,8 @@ pub fn set_gesture_handler(_handler: impl Fn() + Send + Sync + 'static) {}
 
 /// No gesture tap to toggle (see [`SUPPORTS_GESTURES`]).
 pub fn set_summon_gesture_enabled(_enable: bool) {}
+
+/// No safe-area inset to account for on this platform.
+pub fn top_safe_inset() -> f32 {
+    0.0
+}

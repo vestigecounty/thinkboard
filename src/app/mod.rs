@@ -801,6 +801,8 @@ pub(crate) enum Message {
     EndPan,
     CancelInertia,
     ZoomBy { factor: f32, cursor: Point },
+    /// Smooth-scroll the camera to center a world point (the wayfinding arrow).
+    FocusWorld(Point),
     /// A trackpad pinch step (macOS native gesture): `magnification` is the
     /// incremental delta; `(x, y)` is the event's window-space location
     /// (bottom-left origin — the handler flips y into canvas space).
@@ -1035,6 +1037,9 @@ struct App {
     /// A change arrived while a recluster was in flight; recompute again.
     recluster_dirty: bool,
     camera: Camera,
+    /// Top safe-area inset (px), refreshed on resize; passed to the board so the
+    /// top wayfinding button clears the macOS notch.
+    top_safe_inset: f32,
     cache: iced_canvas::Cache,
     inertia: Option<Inertia>,
     zoom_animation: Option<ZoomAnimation>,
@@ -1407,6 +1412,7 @@ impl App {
             overlay: !is_windowed(),
             overlay_configured: false,
             overlay_shown_at: None,
+            top_safe_inset: 0.0,
             main_window: None,
             settings_window: None,
             settings_drafts: HashMap::new(),
@@ -1462,6 +1468,7 @@ impl App {
         match message {
             Message::ViewportResized(size) => {
                 self.camera.viewport = size;
+                self.top_safe_inset = platform::top_safe_inset();
                 if self.overlay && !self.overlay_configured {
                     self.overlay_configured = true;
                     platform::configure_overlay_window();
@@ -1524,6 +1531,7 @@ impl App {
             Message::CancelInertia => {
                 self.inertia = None;
             }
+            Message::FocusWorld(world) => self.focus_on_world(world),
             Message::ZoomBy { factor, cursor } => self.zoom_by(factor, cursor),
             Message::PinchZoom { magnification, x, y } => {
                 // The gesture reports a bottom-left-origin window point; flip it
@@ -3511,6 +3519,17 @@ impl App {
         Task::batch([self.refresh_snapshots(), self.schedule_recluster()])
     }
 
+    /// Smooth camera fly-to that centers `world` at the *current* zoom (a pure
+    /// scroll, no zoom change) — the wayfinding arrow's action.
+    fn focus_on_world(&mut self, world: Point) {
+        self.inertia = None;
+        self.camera_focus = Some(CameraFocus {
+            target_zoom: self.camera.zoom,
+            target_offset: Vector::new(world.x, world.y) * -self.camera.zoom,
+            last_tick: Instant::now(),
+        });
+    }
+
     /// Starts a smooth camera fly-to that centers the node at a comfortable
     /// editing zoom — but only when currently zoomed out, so adding a node
     /// at node level doesn't move the view.
@@ -4498,6 +4517,7 @@ impl App {
             config: &self.config,
             theme: &self.theme,
             camera,
+            top_safe_inset: self.top_safe_inset,
             cache: &self.cache,
             editing: self.editing.as_ref().map(|editing| editing.index),
             overlay: self.overlay,

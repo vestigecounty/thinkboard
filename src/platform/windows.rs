@@ -105,3 +105,8 @@ fn app_window() -> Option<HWND> {
     }
     (!found.is_invalid()).then_some(found)
 }
+
+/// No safe-area inset to account for on this platform.
+pub fn top_safe_inset() -> f32 {
+    0.0
+}

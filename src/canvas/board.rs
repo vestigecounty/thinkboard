@@ -17,6 +17,7 @@ use iced::mouse::{self, Button, ScrollDelta};
 use iced::widget::canvas::{
     self, Event, Fill, Frame, Geometry, Path, Stroke, Style, gradient, stroke,
 };
+use iced::border::Radius;
 use iced::widget::image;
 use iced::{Color, Point, Rectangle, Renderer, Size, Theme, Vector};
 
@@ -110,6 +111,9 @@ pub struct Board<'a> {
     /// Node/card colors, optionally themed from an Obsidian `theme.css`.
     pub theme: &'a ColorTheme,
     pub camera: Camera,
+    /// Top safe-area inset (px) — the macOS notch / menu-bar height, so the
+    /// top wayfinding button isn't clipped. 0 off macOS or where there's none.
+    pub top_safe_inset: f32,
     pub cache: &'a canvas::Cache,
     pub editing: Option<usize>,
     pub overlay: bool,
@@ -637,6 +641,15 @@ impl canvas::Program<Message> for Board<'_> {
             geometries.push(overlay.into_geometry());
         }
 
+        // Wayfinding button when the viewport has drifted off all content. Its
+        // own geometry (not the overlay above, which is suppressed in cluster
+        // mode) so it shows regardless of zoom.
+        if let Some(target) = self.wayfinding_target() {
+            let mut wf = Frame::new(renderer, bounds.size());
+            self.draw_wayfinding(&mut wf, target);
+            geometries.push(wf.into_geometry());
+        }
+
         if self.show_fps {
             geometries.push(self.draw_fps_meter(renderer, bounds));
         }
@@ -715,6 +728,16 @@ impl Board<'_> {
         match event {
             mouse::Event::ButtonPressed(Button::Left) => {
                 let position = position?;
+
+                // The wayfinding button (only shown when no node is on-screen):
+                // fly the camera to the nearest node.
+                if let Some(target) = self.wayfinding_target()
+                    && self.wayfinding_button(target).0.contains(position)
+                {
+                    return Some(
+                        canvas::Action::publish(Message::FocusWorld(target)).and_capture(),
+                    );
+                }
 
                 // In cluster mode, a press on a cluster card drags it;
                 // otherwise it acts as a background click (dismiss).
@@ -1349,6 +1372,117 @@ impl Board<'_> {
             .filter(|(index, node)| rect.intersects(&self.node_screen_rect(*index, node)))
             .map(|(index, _)| index)
             .collect()
+    }
+
+    /// When the viewport shows no node at all — panned off into empty space —
+    /// the world center of the node nearest the viewport center. This is the
+    /// target for the wayfinding button; `None` when any node is on-screen or
+    /// there are none. Independent of zoom (a node counts as "on-screen" by its
+    /// position, so clustered-but-in-view content still suppresses it).
+    fn wayfinding_target(&self) -> Option<Point> {
+        if self.nodes.is_empty() {
+            return None;
+        }
+        let viewport = Rectangle::new(Point::ORIGIN, self.camera.viewport);
+        let any_visible = self
+            .nodes
+            .iter()
+            .enumerate()
+            .any(|(i, n)| viewport.intersects(&self.node_screen_rect(i, n)));
+        if any_visible {
+            return None;
+        }
+        let target = self.camera.to_world(Point::ORIGIN + self.camera.center());
+        self.nodes
+            .iter()
+            .map(|n| Point::new(n.x + n.width / 2.0, n.y + n.height / 2.0))
+            .min_by(|a, b| {
+                a.distance(target)
+                    .partial_cmp(&b.distance(target))
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+    }
+
+    /// The wayfinding button's screen rect and the cardinal direction its
+    /// chevrons point (unit vector, one of ±x / ±y): a full-edge bar pinned to
+    /// whichever screen edge is closest to `target_world`. The top edge starts
+    /// below the safe-area inset so the macOS notch doesn't clip it.
+    fn wayfinding_button(&self, target_world: Point) -> (Rectangle, Vector) {
+        let origin = self.camera.to_world(Point::ORIGIN + self.camera.center());
+        let (dx, dy) = (target_world.x - origin.x, target_world.y - origin.y);
+        let dir = if dx.abs() >= dy.abs() {
+            Vector::new(dx.signum(), 0.0)
+        } else {
+            Vector::new(0.0, dy.signum())
+        };
+        let (w, h) = (self.camera.viewport.width, self.camera.viewport.height);
+        let top = self.top_safe_inset;
+        const THICK: f32 = 40.0;
+        let rect = if dir.x > 0.0 {
+            Rectangle::new(Point::new(w - THICK, top), Size::new(THICK, h - top))
+        } else if dir.x < 0.0 {
+            Rectangle::new(Point::new(0.0, top), Size::new(THICK, h - top))
+        } else if dir.y > 0.0 {
+            Rectangle::new(Point::new(0.0, h - THICK), Size::new(w, THICK))
+        } else {
+            Rectangle::new(Point::new(0.0, top), Size::new(w, THICK))
+        };
+        (rect, dir)
+    }
+
+    /// The wayfinding button: a soft, theme-colored edge bar (node card color,
+    /// node corner radius on the inner corners, no border) with a double chevron
+    /// (`<<` / `>>` / `^^` / `vv`) pointing toward the nearest node.
+    fn draw_wayfinding(&self, frame: &mut Frame, target_world: Point) {
+        let (rect, dir) = self.wayfinding_button(target_world);
+        let a = self.reveal;
+        let card = self.theme.card_fill;
+        let center = rect.center();
+        let perp = Vector::new(-dir.y, dir.x);
+
+        // Soft gradient across the bar in the theme's card color: transparent at
+        // the inner edge, solid at the screen edge it hugs.
+        let half = (rect.width * dir.x.abs() + rect.height * dir.y.abs()) / 2.0;
+        let fill = gradient::Linear::new(center - dir * half, center + dir * half)
+            .add_stop(0.0, Color { a: 0.0, ..card })
+            .add_stop(1.0, Color { a: 0.92 * a, ..card });
+
+        // Node corner radius (12px), rounded only on the two inner corners so the
+        // bar sits flush against its screen edge.
+        const R: f32 = 12.0;
+        let radius = if dir.x > 0.0 {
+            Radius { top_left: R, bottom_left: R, top_right: 0.0, bottom_right: 0.0 }
+        } else if dir.x < 0.0 {
+            Radius { top_right: R, bottom_right: R, top_left: 0.0, bottom_left: 0.0 }
+        } else if dir.y > 0.0 {
+            Radius { top_left: R, top_right: R, bottom_left: 0.0, bottom_right: 0.0 }
+        } else {
+            Radius { bottom_left: R, bottom_right: R, top_left: 0.0, top_right: 0.0 }
+        };
+        frame.fill(
+            &Path::rounded_rectangle(rect.position(), rect.size(), radius),
+            fill,
+        );
+
+        // Two chevrons in the theme text color, toward the solid (edge) side.
+        let base = center + dir * (half * 0.3);
+        let chevron = |frame: &mut Frame, c: Point| {
+            let path = Path::new(|p| {
+                p.move_to(c - dir * 3.0 + perp * 7.0);
+                p.line_to(c + dir * 5.0);
+                p.line_to(c - dir * 3.0 - perp * 7.0);
+            });
+            frame.stroke(
+                &path,
+                Stroke::default()
+                    .with_color(Color { a: 0.9 * a, ..self.theme.text })
+                    .with_width(2.2)
+                    .with_line_cap(stroke::LineCap::Round)
+                    .with_line_join(stroke::LineJoin::Round),
+            );
+        };
+        chevron(frame, base - dir * 4.5);
+        chevron(frame, base + dir * 4.5);
     }
 
     /// Topmost cluster whose box contains the given world point.

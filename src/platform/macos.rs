@@ -37,6 +37,23 @@ pub const SUPPORTS_PINCH: bool = true;
 /// framework) to summon the overlay. Experimental, opt-in.
 pub const SUPPORTS_GESTURES: bool = true;
 
+/// The main screen's top safe-area inset (px) — the MacBook notch / menu-bar
+/// height. `safeAreaInsets` is macOS 12+, so guard with `respondsToSelector` to
+/// avoid an unrecognized selector on older systems (which have no notch anyway).
+pub fn top_safe_inset() -> f32 {
+    use objc2::runtime::NSObjectProtocol;
+    let Some(mtm) = MainThreadMarker::new() else {
+        return 0.0;
+    };
+    let Some(screen) = NSScreen::mainScreen(mtm) else {
+        return 0.0;
+    };
+    if !screen.respondsToSelector(objc2::sel!(safeAreaInsets)) {
+        return 0.0;
+    }
+    screen.safeAreaInsets().top as f32
+}
+
 /// Callback invoked when the active macOS Space changes; set by the app.
 type SpaceHandler = Box<dyn Fn() + Send + Sync>;
 static SPACE_HANDLER: OnceLock<SpaceHandler> = OnceLock::new();
