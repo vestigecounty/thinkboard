@@ -33,6 +33,7 @@ use crate::platform;
 
 mod chrome;
 mod clipboard;
+mod command;
 mod history;
 mod settings;
 mod startup;
@@ -170,6 +171,23 @@ fn search_key_event(
         Key::Named(Named::Escape) => Some(Message::CloseSearch),
         _ => None,
     }
+}
+
+/// Esc closes the in-board settings modal (its form widgets get everything else).
+fn settings_key_event(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    use iced::keyboard::key::{Key, Named};
+    matches!(
+        event,
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+            key: Key::Named(Named::Escape),
+            ..
+        })
+    )
+    .then_some(Message::CloseSettingsOverlay)
 }
 
 /// Filters raw events while recording a summon hotkey: forwards each key press so
@@ -834,6 +852,20 @@ pub(crate) enum Message {
     SearchPrev,
     /// Close the find bar (Esc / ×).
     CloseSearch,
+    /// Command palette (Cmd/Ctrl+Shift+P): open, close, filter, move the
+    /// selection, run a clicked command, or run the highlighted one (Enter).
+    OpenCommandPalette,
+    CloseCommandPalette,
+    CommandPaletteInput(String),
+    CommandPaletteMove(i32),
+    RunCommand(command::CommandId),
+    RunSelectedCommand,
+    /// Settings as an in-board modal (from the command palette): open / close.
+    OpenSettingsOverlay,
+    CloseSettingsOverlay,
+    /// Swallow a click (e.g. on the settings modal panel) so it doesn't fall
+    /// through to the backdrop.
+    Noop,
     /// Open the settings window (from the tray), or focus it if already open.
     OpenSettings,
     /// A settings-form edit (see `settings::Msg`); applied and persisted.
@@ -1002,6 +1034,12 @@ struct App {
     settings_advanced_open: bool,
     /// The in-board find (Cmd/Ctrl+F), while its bar is open. `None` = closed.
     search: Option<Search>,
+    /// The command palette (Cmd/Ctrl+Shift+P), when open. Mutually exclusive
+    /// with the find bar.
+    command_palette: Option<command::CommandPalette>,
+    /// The settings form rendered as an in-board modal (opened from the command
+    /// palette), instead of the separate settings window (opened from the tray).
+    settings_overlay: bool,
     /// A create/open-board dialog waiting for the overlay to finish hiding
     /// (the always-on-top window would otherwise cover the native dialog).
     /// `Some(true)` = create, `Some(false)` = open.
@@ -1353,6 +1391,8 @@ impl App {
             settings_drafts: HashMap::new(),
             settings_advanced_open: false,
             search: None,
+            command_palette: None,
+            settings_overlay: false,
             pending_board_create: None,
             hotkey_recording: false,
             hotkey_manager,
@@ -2475,6 +2515,7 @@ impl App {
                 }
             }
             Message::OpenSearch => {
+                self.command_palette = None; // mutually exclusive
                 if self.search.is_none() {
                     self.search = Some(Search {
                         query: String::new(),
@@ -2486,6 +2527,54 @@ impl App {
                     iced::advanced::widget::operation::focusable::focus(SEARCH_INPUT.clone()),
                 );
             }
+            Message::OpenCommandPalette => {
+                self.search = None; // mutually exclusive
+                self.command_palette = Some(command::CommandPalette::default());
+                return iced::advanced::widget::operate(
+                    iced::advanced::widget::operation::focusable::focus(
+                        command::COMMAND_INPUT.clone(),
+                    ),
+                );
+            }
+            Message::CloseCommandPalette => self.command_palette = None,
+            Message::CommandPaletteInput(query) => {
+                if let Some(palette) = &mut self.command_palette {
+                    palette.query = query;
+                    palette.selected = 0;
+                }
+            }
+            Message::CommandPaletteMove(delta) => {
+                if let Some(palette) = &mut self.command_palette {
+                    let len = command::filtered(&palette.query).len();
+                    if len > 0 {
+                        palette.selected =
+                            (palette.selected as i32 + delta).rem_euclid(len as i32) as usize;
+                    }
+                }
+            }
+            Message::RunCommand(id) => return self.run_command(id),
+            Message::RunSelectedCommand => {
+                let id = self.command_palette.as_ref().and_then(|p| {
+                    command::filtered(&p.query).get(p.selected).map(|c| c.id)
+                });
+                if let Some(id) = id
+                    && id.is_enabled(self)
+                {
+                    return self.run_command(id);
+                }
+            }
+            Message::OpenSettingsOverlay => {
+                self.search = None;
+                self.command_palette = None;
+                self.populate_settings_drafts();
+                self.settings_overlay = true;
+                self.cache.clear();
+            }
+            Message::CloseSettingsOverlay => {
+                self.settings_overlay = false;
+                self.cache.clear();
+            }
+            Message::Noop => {}
             Message::SearchInput(query) => {
                 // Nodes that were or are now matched must re-render: newly matched
                 // ones draw live (highlighted), newly unmatched ones re-rasterize.
@@ -2653,6 +2742,14 @@ impl App {
         // While the find bar is open, Enter/Shift+Enter/Esc drive it.
         if self.search.is_some() {
             subscriptions.push(iced::event::listen_with(search_key_event));
+        }
+        // While the command palette is open, arrows/Esc drive it.
+        if self.command_palette.is_some() {
+            subscriptions.push(iced::event::listen_with(command::key_event));
+        }
+        // Esc closes the in-board settings modal.
+        if self.settings_overlay {
+            subscriptions.push(iced::event::listen_with(settings_key_event));
         }
         // Drag a `.canvas` onto the window to open it.
         subscriptions.push(iced::event::listen_with(file_drop_event));
@@ -3463,6 +3560,55 @@ impl App {
             target_offset: Vector::new(world.x, world.y) * -self.camera.zoom,
             last_tick: Instant::now(),
         });
+    }
+
+    /// Runs a command-palette entry: closes the palette, then dispatches the
+    /// action as its `Message`. Position-needing commands (paste, add node)
+    /// target the viewport center.
+    fn run_command(&mut self, id: command::CommandId) -> Task<Message> {
+        use command::CommandId;
+        self.command_palette = None;
+        let center = self.camera.to_world(Point::ORIGIN + self.camera.center());
+        let message = match id {
+            CommandId::NewBoard => Message::CanvasAction("new_board".to_owned()),
+            CommandId::OpenBoard => Message::CanvasAction("open_board".to_owned()),
+            CommandId::FindOnBoard => Message::OpenSearch,
+            // From the palette, settings open in-board (the tray still uses the
+            // separate window, which works while the board is hidden).
+            CommandId::Settings => Message::OpenSettingsOverlay,
+            CommandId::Dismiss => Message::ToggleOverlay,
+            CommandId::Quit => Message::Quit,
+            CommandId::Undo => Message::Undo,
+            CommandId::Redo => Message::Redo,
+            CommandId::Copy => Message::CopyNodes,
+            CommandId::Paste => Message::Paste { world: center },
+            CommandId::DeleteSelected => Message::DeleteSelected,
+            CommandId::AddNode => Message::CreateNode { world: center },
+            CommandId::AskAi => Message::AskAi,
+            CommandId::Distribute => Message::AutoLayout(self.config_layout_dir()),
+            CommandId::ToggleAutoLayout => Message::ToggleAutoLayout,
+            CommandId::ToggleSetting(field) => {
+                Message::Settings(settings::Msg::Toggle(field, !self.setting_bool(field)))
+            }
+        };
+        Task::done(message)
+    }
+
+    /// The current value of a boolean setting, so the palette can flip it.
+    fn setting_bool(&self, field: settings::Field) -> bool {
+        use settings::Field;
+        let c = &self.config;
+        match field {
+            Field::DismissOnBackgroundClick => c.dismiss_on_background_click,
+            Field::PersistAcrossSpaces => c.persist_across_spaces,
+            Field::SummonGesture => c.summon_gesture,
+            Field::CenterNodeText => c.center_node_text,
+            Field::OverlayTransparent => c.overlay_transparent,
+            Field::RasterizeText => c.rasterize_text,
+            Field::AiCompletions => c.ai_completions,
+            Field::AiThinking => c.ai_thinking,
+            _ => false,
+        }
     }
 
     /// Starts a smooth camera fly-to that centers the node at a comfortable
@@ -4456,6 +4602,9 @@ impl App {
             cache: &self.cache,
             editing: self.editing.as_ref().map(|editing| editing.index),
             overlay: self.overlay,
+            // The settings modal and the command palette both own input while
+            // open, so board shortcuts/scroll don't fire underneath them.
+            modal: self.settings_overlay || self.command_palette.is_some(),
             show_fps: self.show_fps,
             spawning: &self.spawning,
             text_snapshots: &self.text_snapshots,
@@ -4867,8 +5016,72 @@ impl App {
         if let Some(search) = &self.search {
             layers = layers.push(self.search_bar(search));
         }
+        if let Some(palette) = &self.command_palette {
+            layers = layers.push(command::view(self, palette));
+        }
+        if self.settings_overlay {
+            layers = layers.push(self.settings_overlay_view());
+        }
 
         layers.into()
+    }
+
+    /// The settings form as an in-board modal: a dim backdrop (click to close)
+    /// behind a centered, scrollable panel with a titled header and × button.
+    /// Opened from the command palette; the tray still uses the settings window.
+    fn settings_overlay_view(&self) -> Element<'_, Message> {
+        let theme = &self.theme;
+        let ct = self.theme;
+        let font = theme.ui_font();
+        let (text_c, muted, accent) = (theme.text, theme.text_muted, theme.accent);
+
+        let close = button(text("×").size(20).font(font).color(muted))
+            .padding([0, 8])
+            .on_press(Message::CloseSettingsOverlay)
+            .style(move |_theme, status| chrome_button_style(status, muted, accent));
+
+        let header = row![
+            text("Settings").size(17).font(font).color(text_c).width(Fill),
+            close,
+        ]
+        .align_y(iced::Alignment::Center);
+
+        // Render the form under the settings window's own theme, so its
+        // background and widget colors match the standalone Settings window
+        // exactly (the board window is `Theme::Dark`, which would recolor it).
+        let form = iced::widget::themer(Some(startup::settings_theme(self)), settings::view(self));
+
+        let body = column![
+            header,
+            iced::widget::scrollable(form).height(Length::Shrink),
+        ]
+        .spacing(12);
+
+        // The panel shares the form's own background so there's no seam (the
+        // form below is themed to match).
+        let panel = container(body)
+            .width(Length::Fixed(600.0))
+            .max_height(720.0)
+            .padding(20)
+            .style(move |_theme| chrome::panel(&ct, ct.background));
+
+        // A click on the panel is swallowed; a click on the backdrop closes.
+        let panel = mouse_area(panel).on_press(Message::Noop);
+
+        let backdrop = mouse_area(
+            container(panel)
+                .width(Fill)
+                .height(Fill)
+                .center_x(Fill)
+                .center_y(Fill)
+                .style(|_theme| container::Style {
+                    background: Some(iced::Color { a: 0.45, ..iced::Color::BLACK }.into()),
+                    ..container::Style::default()
+                }),
+        )
+        .on_press(Message::CloseSettingsOverlay);
+
+        backdrop.into()
     }
 
     /// The floating find bar (top-right): query field, `n/m` count, ‹ ›, ×.

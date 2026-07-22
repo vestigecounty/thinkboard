@@ -117,6 +117,9 @@ pub struct Board<'a> {
     pub cache: &'a canvas::Cache,
     pub editing: Option<usize>,
     pub overlay: bool,
+    /// An in-board modal (the settings panel) is up: board keyboard shortcuts
+    /// are suppressed so the modal owns input.
+    pub modal: bool,
     pub show_fps: bool,
     /// Spawn animation start times of freshly created nodes.
     pub spawning: &'a HashMap<usize, Instant>,
@@ -382,6 +385,19 @@ impl canvas::Program<Message> for Board<'_> {
             )));
         }
 
+        // While an in-board modal (settings, command palette) is up it owns all
+        // input: board shortcuts (Esc, Cmd+Z, …) mustn't fire underneath it, and
+        // scroll/zoom gestures its layer doesn't swallow (e.g. wheel over the
+        // canvas) mustn't pan the board below. Modifier changes are the one
+        // exception — we keep tracking them so the chord that opened the modal
+        // (e.g. Cmd+Shift+P) doesn't leave Command "stuck" once released, which
+        // would make a later two-finger scroll zoom instead of pan.
+        if self.modal
+            && !matches!(event, Event::Keyboard(keyboard::Event::ModifiersChanged(_)))
+        {
+            return None;
+        }
+
         match event {
             Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
                 state.modifiers = *modifiers;
@@ -485,6 +501,19 @@ impl canvas::Program<Message> for Board<'_> {
                 && key.to_latin(*physical_key) == Some('f') =>
             {
                 Some(canvas::Action::publish(Message::OpenSearch).and_capture())
+            }
+            // Cmd/Ctrl+Shift+P: the command palette (Sublime/Zed convention).
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key,
+                physical_key,
+                modifiers,
+                ..
+            }) if self.editing.is_none()
+                && modifiers.command()
+                && modifiers.shift()
+                && key.to_latin(*physical_key) == Some('p') =>
+            {
+                Some(canvas::Action::publish(Message::OpenCommandPalette).and_capture())
             }
             Event::Mouse(mouse_event) => {
                 let position = cursor
