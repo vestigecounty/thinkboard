@@ -82,6 +82,22 @@ impl Theme {
         }
     }
 
+    /// A raised surface for floating chrome (context menu, command palette, find
+    /// bar): the node `card_fill` nudged toward the text color, so a menu always
+    /// reads as elevated above the node cards in any theme — derived from the
+    /// theme rather than a hardcoded panel color. (The settings modal keeps
+    /// `background`, to meet its themed form without a seam.)
+    pub fn elevated(&self) -> Color {
+        const LIFT: f32 = 0.08;
+        let lift = |base: f32, toward: f32| base + (toward - base) * LIFT;
+        Color {
+            r: lift(self.card_fill.r, self.text.r),
+            g: lift(self.card_fill.g, self.text.g),
+            b: lift(self.card_fill.b, self.text.b),
+            a: 1.0,
+        }
+    }
+
     /// Reads overrides from an Obsidian `theme.css`, keeping the default for
     /// any color that's missing or not a plain value.
     pub fn from_css(css: &str) -> Self {

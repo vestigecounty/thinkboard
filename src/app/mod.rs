@@ -31,6 +31,7 @@ use crate::theme::Theme as ColorTheme;
 use crate::document::model::{self, CanvasDocument, CanvasEdge, CanvasNode};
 use crate::platform;
 
+mod chrome;
 mod clipboard;
 mod history;
 mod settings;
@@ -301,24 +302,6 @@ fn editor_style(_theme: &Theme, _status: text_editor::Status) -> text_editor::St
     }
 }
 
-/// The rounded dark panel behind context-menu items.
-fn context_panel_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(iced::Color::from_rgb(0.16, 0.16, 0.18).into()),
-        border: iced::Border {
-            radius: 8.0.into(),
-            width: 0.5,
-            color: iced::Color::from_rgba(1.0, 1.0, 1.0, 0.15),
-        },
-        shadow: iced::Shadow {
-            color: iced::Color::from_rgba(0.0, 0.0, 0.0, 0.4),
-            offset: Vector::new(0.0, 3.0),
-            blur_radius: 12.0,
-        },
-        ..container::Style::default()
-    }
-}
-
 /// A color swatch in the node menu: a rounded, filled square whose border
 /// brightens on hover.
 fn swatch_style(color: iced::Color, status: button::Status) -> button::Style {
@@ -374,56 +357,6 @@ fn chip_style(_theme: &Theme, status: button::Status) -> button::Style {
             radius: 5.0.into(),
             width: 1.0,
             color: iced::Color::from_rgba(1.0, 1.0, 1.0, if hovered { 0.5 } else { 0.2 }),
-        },
-        ..button::Style::default()
-    }
-}
-
-/// A thin divider between groups of context-menu items.
-fn context_separator_style(_theme: &Theme) -> container::Style {
-    container::Style {
-        background: Some(iced::Color::from_rgba(1.0, 1.0, 1.0, 0.14).into()),
-        ..container::Style::default()
-    }
-}
-
-/// A context-menu item: transparent until hovered.
-fn context_item_style(_theme: &Theme, status: button::Status) -> button::Style {
-    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-    button::Style {
-        background: Some(
-            if hovered {
-                iced::Color::from_rgba(0.35, 0.62, 1.0, 0.55)
-            } else {
-                iced::Color::TRANSPARENT
-            }
-            .into(),
-        ),
-        text_color: board::TEXT_COLOR,
-        border: iced::Border {
-            radius: 5.0.into(),
-            ..iced::Border::default()
-        },
-        ..button::Style::default()
-    }
-}
-
-/// A destructive context-menu item (e.g. Delete): red text.
-fn context_delete_style(_theme: &Theme, status: button::Status) -> button::Style {
-    let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
-    button::Style {
-        background: Some(
-            if hovered {
-                iced::Color::from_rgba(1.0, 0.3, 0.3, 0.22)
-            } else {
-                iced::Color::TRANSPARENT
-            }
-            .into(),
-        ),
-        text_color: iced::Color::from_rgb(1.0, 0.44, 0.44),
-        border: iced::Border {
-            radius: 5.0.into(),
-            ..iced::Border::default()
         },
         ..button::Style::default()
     }
@@ -4682,47 +4615,87 @@ impl App {
                 .on_press(Message::CloseContextMenu);
             layers = layers.push(catcher);
 
+            // Shared chrome styles (captured by Copy, so each `.style()` reuses
+            // them) — the menu recolors with the theme like the palette does.
+            let theme = self.theme;
+            let item_style = move |_t: &Theme, s: button::Status| chrome::menu_item(&theme, s, false);
+            let delete_style = move |_t: &Theme, s: button::Status| chrome::danger_item(&theme, s);
+            let sep_style = move |_t: &Theme| chrome::separator(&theme);
+
+            // A menu row with a fixed leading "check column": toggle rows draw a
+            // real, centered checkbox; plain rows reserve the same column so every
+            // label lines up (rather than the old baseline ☑/☐ text glyphs, which
+            // sat small on the baseline and left non-toggle rows un-indented).
+            let (accent, muted, font) = (theme.accent, theme.text_muted, theme.ui_font());
+            let item = move |check: Option<bool>, label: &'static str, msg: Message| -> Element<Message> {
+                const BOX: f32 = 15.0;
+                let gutter: Element<Message> = match check {
+                    Some(on) => {
+                        // Black or white tick, whichever contrasts with the accent fill.
+                        let lum = 0.299 * accent.r + 0.587 * accent.g + 0.114 * accent.b;
+                        let tick = if lum > 0.6 { iced::Color::BLACK } else { iced::Color::WHITE };
+                        let mark: Element<Message> = if on {
+                            text("✓").size(11).font(font).color(tick).into()
+                        } else {
+                            Space::new().into()
+                        };
+                        container(mark)
+                            .width(BOX)
+                            .height(BOX)
+                            .align_x(iced::alignment::Horizontal::Center)
+                            .align_y(iced::alignment::Vertical::Center)
+                            .style(move |_t: &Theme| container::Style {
+                                // Off: a clearly-visible empty box (muted border +
+                                // faint fill) so the row still reads as a toggle.
+                                background: Some(if on {
+                                    accent.into()
+                                } else {
+                                    iced::Color { a: 0.08, ..muted }.into()
+                                }),
+                                border: iced::Border {
+                                    radius: 4.0.into(),
+                                    width: 1.0,
+                                    color: if on { accent } else { muted },
+                                },
+                                ..container::Style::default()
+                            })
+                            .into()
+                    }
+                    None => Space::new().width(BOX).height(BOX).into(),
+                };
+                button(
+                    row![gutter, text(label).size(14).font(font)]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center),
+                )
+                .width(Fill)
+                .on_press(msg)
+                .padding([6, 12])
+                .style(item_style)
+                .into()
+            };
+
             let content: Element<Message> = match menu.kind {
                 ContextMenuKind::Canvas { world } => {
-                    let layout_check = if self.config.auto_layout { "☑" } else { "☐" };
-                    let snap_check = if self.config.snap_to_grid { "☑" } else { "☐" };
-                    let ai_check = if self.config.ai_completions { "☑" } else { "☐" };
                     let sep = || {
-                        container(Space::new().width(Fill).height(1.0))
-                            .style(context_separator_style)
+                        container(Space::new().width(Fill).height(1.0)).style(sep_style)
                     };
                     column![
-                        button(text("Add node").size(14))
-                            .width(Fill)
-                            .on_press(Message::CreateNode { world })
-                            .padding([6, 12])
-                            .style(context_item_style),
+                        item(None, "Add node", Message::CreateNode { world }),
                         sep(),
-                        button(text(format!("{layout_check}  Auto-Layout")).size(14))
-                            .width(Fill)
-                            .on_press(Message::ToggleAutoLayout)
-                            .padding([6, 12])
-                            .style(context_item_style),
+                        item(Some(self.config.auto_layout), "Auto-layout", Message::ToggleAutoLayout),
                         sep(),
-                        button(text(format!("{snap_check}  Snap to grid")).size(14))
-                            .width(Fill)
-                            .on_press(Message::ToggleSnap)
-                            .padding([6, 12])
-                            .style(context_item_style),
+                        item(Some(self.config.snap_to_grid), "Snap to grid", Message::ToggleSnap),
                         sep(),
-                        button(text(format!("{ai_check}  AI Suggestions")).size(14))
-                            .width(Fill)
-                            .on_press(Message::ToggleAiCompletions)
-                            .padding([6, 12])
-                            .style(context_item_style),
+                        item(
+                            Some(self.config.ai_completions),
+                            "AI suggestions",
+                            Message::ToggleAiCompletions,
+                        ),
                         sep(),
-                        button(text("Paste").size(14))
-                            .width(Fill)
-                            .on_press(Message::Paste { world })
-                            .padding([6, 12])
-                            .style(context_item_style),
+                        item(None, "Paste", Message::Paste { world }),
                     ]
-                    .width(Length::Fixed(180.0))
+                    .width(Length::Fixed(200.0))
                     .spacing(4)
                     .into()
                 }
@@ -4734,8 +4707,7 @@ impl App {
                     const GAP: f32 = 6.0;
 
                     let sep = || {
-                        container(Space::new().width(Fill).height(1.0))
-                            .style(context_separator_style)
+                        container(Space::new().width(Fill).height(1.0)).style(sep_style)
                     };
                     let delete_label = if self.selected.len() > 1 {
                         format!("Delete {} nodes", self.selected.len())
@@ -4746,7 +4718,7 @@ impl App {
                         .width(Fill)
                         .on_press(Message::DeleteSelected)
                         .padding([6, 12])
-                        .style(context_delete_style);
+                        .style(delete_style);
 
                     // Fixed menu width — presets + optional extra + wheel — so
                     // expanding the picker never resizes the menu.
@@ -4818,7 +4790,7 @@ impl App {
                                 .width(Fill)
                                 .on_press(Message::AskAi)
                                 .padding([6, 12])
-                                .style(context_item_style)
+                                .style(item_style)
                                 .into(),
                         );
                     }
@@ -4832,7 +4804,7 @@ impl App {
                             .width(Fill)
                             .on_press(Message::AutoLayout(layout::Direction::Right))
                             .padding([6, 12])
-                            .style(context_item_style);
+                            .style(item_style);
                         let down = button(text("\u{2193}").size(14).width(Fill).center())
                             .width(Length::Fixed(32.0))
                             .padding([6, 0])
@@ -4863,10 +4835,12 @@ impl App {
                 ContextMenuKind::Link => button(text("Delete").size(14))
                     .on_press(Message::DeleteSelected)
                     .padding([6, 12])
-                    .style(context_delete_style)
+                    .style(delete_style)
                     .into(),
             };
-            let panel = container(content).padding(4).style(context_panel_style);
+            let panel = container(content)
+                .padding(4)
+                .style(move |_t: &Theme| chrome::panel(&theme, theme.elevated()));
             // Keep the menu on-screen: shift it in from the right/bottom edges
             // so a click near a corner doesn't clip it.
             let size = self.context_menu_size();
@@ -4902,15 +4876,10 @@ impl App {
         // Styled from the Obsidian ColorTheme so the bar recolors with the theme
         // (the overlay window itself stays on Theme::Dark).
         let theme = &self.theme;
+        let ct = self.theme;
         let font = theme.ui_font();
-        let (text_c, muted, accent, input_bg, panel_bg, border_c) = (
-            theme.text,
-            theme.text_muted,
-            theme.accent,
-            theme.background,
-            theme.card_fill,
-            theme.border,
-        );
+        let (text_c, muted, accent, input_bg, border_c) =
+            (theme.text, theme.text_muted, theme.accent, theme.background, theme.border);
 
         let count = if search.matches.is_empty() {
             if search.query.is_empty() {
@@ -4972,16 +4941,8 @@ impl App {
         .spacing(8)
         .align_y(iced::Alignment::Center);
 
-        let panel = container(bar).padding([8, 10]).style(move |_theme| container::Style {
-            background: Some(panel_bg.into()),
-            border: iced::Border {
-                radius: 8.0.into(),
-                width: 1.0,
-                color: border_c,
-            },
-            text_color: Some(text_c),
-            ..container::Style::default()
-        });
+        let panel =
+            container(bar).padding([8, 10]).style(move |_theme| chrome::panel(&ct, ct.elevated()));
 
         container(panel)
             .width(Fill)
@@ -5023,7 +4984,7 @@ impl App {
             return Size::ZERO;
         };
         let (width, height) = match menu.kind {
-            ContextMenuKind::Canvas { .. } => (180.0, ROW * 4.0 + SEP * 3.0),
+            ContextMenuKind::Canvas { .. } => (200.0, ROW * 5.0 + SEP * 4.0),
             ContextMenuKind::Node => {
                 // Color row (24px swatch + [6,12] padding) + sep + "Ask AI" +
                 // sep + delete, plus the layout row + sep for a multi-selection.
