@@ -31,6 +31,7 @@ pub(crate) enum Field {
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     SummonGesture,
     OverlayTransparent,
+    Windowed,
     MinZoom,
     MaxZoom,
     ZoomSmoothing,
@@ -125,6 +126,11 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         "Dismiss on background click",
         toggle(Field::DismissOnBackgroundClick, c.dismiss_on_background_click),
         "Clicking empty space on the overlay dismisses the board.",
+    ));
+    items.push(setting(
+        "Windowed mode",
+        toggle(Field::Windowed, c.windowed),
+        "Run in an ordinary window instead of the desktop overlay (no summon hotkey or tray). Restart to apply.",
     ));
     // Only macOS watches Space/workspace changes (platform::WATCHES_WORKSPACE);
     // elsewhere the toggle is a no-op, so hide the row. The config field stays
@@ -640,6 +646,7 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
         (Field::PersistAcrossSpaces, Value::Bool(b)) => config.persist_across_spaces = b,
         (Field::SummonGesture, Value::Bool(b)) => config.summon_gesture = b,
         (Field::OverlayTransparent, Value::Bool(b)) => config.overlay_transparent = b,
+        (Field::Windowed, Value::Bool(b)) => config.windowed = b,
         (Field::CenterNodeText, Value::Bool(b)) => config.center_node_text = b,
         (Field::RasterizeText, Value::Bool(b)) => config.rasterize_text = b,
         (Field::AutoLayout, Value::Bool(b)) => config.auto_layout = b,

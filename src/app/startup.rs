@@ -83,8 +83,9 @@ pub(super) fn summon_hotkey(spec: &str) -> Option<HotKey> {
 /// created (e.g. Wayland has no global-hotkey support).
 pub(super) fn register_summon_hotkey(
     spec: &str,
+    windowed: bool,
 ) -> (Option<GlobalHotKeyManager>, Option<HotKey>) {
-    if is_windowed() {
+    if windowed {
         return (None, None);
     }
     let manager = match GlobalHotKeyManager::new() {
@@ -146,7 +147,7 @@ pub(crate) fn run() -> iced::Result {
 
     // The summon hotkey is registered in App::new (which keeps the manager so
     // the shortcut can be re-registered live from settings).
-    let settings = window_settings(&config, is_windowed());
+    let settings = window_settings(&config, is_windowed(&config));
 
     // A `daemon` on every platform (not `application`): it renders per window, so
     // the settings window carries its own content, and it survives with no window
@@ -279,9 +280,15 @@ pub(super) fn window_settings(config: &crate::config::Config, windowed: bool) ->
     settings
 }
 
-/// Plain-window mode, the pre-overlay behavior.
-pub(super) fn is_windowed() -> bool {
+/// Whether the `--windowed` CLI flag was passed.
+fn windowed_flag() -> bool {
     std::env::args().any(|arg| arg == "--windowed")
+}
+
+/// Plain-window mode, the pre-overlay behavior: the `--windowed` CLI flag (a dev
+/// override) or the persisted `windowed` setting.
+pub(super) fn is_windowed(config: &crate::config::Config) -> bool {
+    windowed_flag() || config.windowed
 }
 
 /// First positional argument (the canvas path), skipping flags and the

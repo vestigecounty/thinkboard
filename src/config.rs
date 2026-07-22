@@ -34,6 +34,11 @@ pub struct Config {
     /// but a GPU/compositor that can't composite alpha (many VMs, software
     /// GLES) renders it black — set false there for an opaque themed overlay.
     pub overlay_transparent: bool,
+    /// Run as an ordinary titled application window instead of the desktop
+    /// overlay: no global summon hotkey, tray, or always-on-top click-through.
+    /// The `--windowed` CLI flag forces this on regardless. Takes effect on the
+    /// next launch.
+    pub windowed: bool,
     /// The global summon/dismiss hotkey, e.g. "Alt+F12", "Cmd+Shift+K",
     /// "Ctrl+Space", "PrintScreen". Modifiers: Cmd/Command/Super, Ctrl/Control,
     /// Alt/Option, Shift (and CmdOrCtrl). Defaults to the Pause key; a blank
@@ -149,6 +154,7 @@ impl Default for Config {
             dismiss_on_background_click: true,
             persist_across_spaces: false,
             overlay_transparent: true,
+            windowed: false,
             summon_hotkey: "Pause".to_owned(),
             summon_gesture: false,
 

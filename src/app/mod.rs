@@ -1299,10 +1299,12 @@ enum Phase {
 impl App {
     fn new(boot: startup::Boot) -> (Self, Task<Message>) {
         let config = config::Config::load(config_path_arg().as_deref());
+        let windowed = is_windowed(&config);
         // Register the global summon hotkey, keeping the manager so it can be
-        // re-registered when the setting changes (rather than on restart).
+        // re-registered when the setting changes (rather than on restart). Skipped
+        // entirely in windowed mode.
         let (hotkey_manager, registered_hotkey) =
-            startup::register_summon_hotkey(&config.summon_hotkey);
+            startup::register_summon_hotkey(&config.summon_hotkey, windowed);
         // Read the theme CSS once for both its colors/font names and any fonts
         // it embeds as base64 WOFF2.
         let (mut theme, embedded_fonts) = match config.theme_css.as_deref() {
@@ -1409,7 +1411,7 @@ impl App {
             last_pan: None,
             editing: None,
             interacted: false,
-            overlay: !is_windowed(),
+            overlay: !windowed,
             overlay_configured: false,
             overlay_shown_at: None,
             top_safe_inset: 0.0,
@@ -1452,14 +1454,14 @@ impl App {
             layout_anim: None,
             history: History::new(MAX_UNDO),
             edit_undo: None,
-            phase: if is_windowed() {
+            phase: if windowed {
                 Phase::Running
             } else {
                 Phase::Entering {
                     started: Instant::now(),
                 }
             },
-            reveal: if is_windowed() { 1.0 } else { 0.0 },
+            reveal: if windowed { 1.0 } else { 0.0 },
         };
         (app, Task::none())
     }
