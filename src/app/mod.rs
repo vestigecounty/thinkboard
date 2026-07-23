@@ -4666,6 +4666,26 @@ impl App {
                 .key_binding(|key_press| {
                     use iced::keyboard::Key;
                     use iced::keyboard::key::Named;
+
+                    // Delete the word to the left: select it, then delete it.
+                    let delete_word_left = || {
+                        Some(text_editor::Binding::Sequence(vec![
+                            text_editor::Binding::Select(text_editor::Motion::WordLeft),
+                            text_editor::Binding::Backspace,
+                        ]))
+                    };
+                    // On macOS, Option+Backspace (the standard delete-word chord —
+                    // and what Ctrl+Backspace surfaces as here) also deletes the
+                    // previous word, alongside the Cmd+Backspace handled in the
+                    // `command()` block below. (Elsewhere `command()` is Ctrl, so
+                    // that block already covers Ctrl+Backspace.)
+                    #[cfg(target_os = "macos")]
+                    if (key_press.modifiers.alt() || key_press.modifiers.control())
+                        && matches!(key_press.key, Key::Named(Named::Backspace))
+                    {
+                        return delete_word_left();
+                    }
+
                     // Cmd+B/I wrap the selection; Cmd+Z / Cmd+Shift+Z drive our
                     // text-level undo; Cmd+Enter commits the edit; Cmd+Backspace
                     // deletes the previous word; Cmd+Up/Down jump to the document
@@ -4706,15 +4726,9 @@ impl App {
                                     Message::StopEditing,
                                 ));
                             }
-                            // Cmd/Ctrl+Backspace deletes the word to the left:
-                            // select it, then delete the selection.
+                            // Cmd/Ctrl+Backspace deletes the word to the left.
                             (_, Key::Named(Named::Backspace)) => {
-                                return Some(text_editor::Binding::Sequence(vec![
-                                    text_editor::Binding::Select(
-                                        text_editor::Motion::WordLeft,
-                                    ),
-                                    text_editor::Binding::Backspace,
-                                ]));
+                                return delete_word_left();
                             }
                             (_, Key::Named(named)) => {
                                 let motion = match named {
