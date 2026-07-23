@@ -49,6 +49,9 @@ use startup::{config_path_arg, hotkey_toggles, is_windowed};
 use sync::{file_mtime, should_reload, should_save, watch_file};
 
 const FONT_SIZE: f32 = 17.0;
+/// Horizontal inset (per side) of the editing overlay's text within the card,
+/// matching read mode's `MD_PADDING` so entering edit mode doesn't reflow.
+const EDITOR_INSET: f32 = 8.0;
 
 /// The find bar's text input, so opening the bar can focus it.
 static SEARCH_INPUT: LazyLock<iced::advanced::widget::Id> =
@@ -4512,16 +4515,20 @@ impl App {
         let rect = self.camera.rect_to_screen(node_world_rect(node));
         let zoom = self.camera.zoom;
         let wrap = (node.width - 12.0).max(20.0);
+        // The editor renders inset a `MD_PADDING`-equivalent each side (like read
+        // mode), so measure and size the text at that inner column, not the full
+        // card wrap — otherwise a wrapping note measures a line short.
+        let text_wrap = (wrap - 2.0 * EDITOR_INSET).max(20.0);
         let text = editing.content.text();
         let (text_width, text_height) =
-            text_raster::measure_source(&text, wrap, FONT_SIZE, zoom, &self.theme);
+            text_raster::measure_source(&text, text_wrap, FONT_SIZE, zoom, &self.theme);
         let caret_slack = 4.0;
         let editor_height = text_height + 2.0;
         let centered = self.config.center_node_text && markdown::is_simple(&text);
         let editor_width = if centered {
             (text_width + caret_slack).clamp(24.0 * zoom, wrap * zoom + caret_slack)
         } else {
-            ((wrap - 16.0).max(20.0) * zoom).min(rect.width)
+            (text_wrap * zoom).min(rect.width)
         };
         let editor_left = (rect.x + (rect.width - editor_width) / 2.0).max(0.0);
         let editor_top = (rect.y + (rect.height - editor_height) / 2.0).max(0.0);
@@ -4702,9 +4709,14 @@ impl App {
             // the canvas text's centered layout — the widget itself only
             // supports top-left alignment.
             let wrap = (node.width - 12.0).max(20.0);
+            // The editor renders inset an `EDITOR_INSET` each side (matching read
+            // mode's `MD_PADDING`), so measure and size the text at that inner
+            // column, not the full card wrap — otherwise a wrapping note measures
+            // a line short and the box mis-centers.
+            let text_wrap = (wrap - 2.0 * EDITOR_INSET).max(20.0);
             let text = editing.content.text();
             let (text_width, text_height) =
-                text_raster::measure_source(&text, wrap, FONT_SIZE, zoom, &self.theme);
+                text_raster::measure_source(&text, text_wrap, FONT_SIZE, zoom, &self.theme);
             let caret_slack = 4.0;
             let editor_height = text_height + 2.0;
 
@@ -4718,7 +4730,7 @@ impl App {
             let editor_width = if centered {
                 (text_width + caret_slack).clamp(24.0 * zoom, wrap * zoom + caret_slack)
             } else {
-                ((wrap - 16.0).max(20.0) * zoom).min(rect.width)
+                (text_wrap * zoom).min(rect.width)
             };
             let editor_left = (rect.x + (rect.width - editor_width) / 2.0).max(0.0);
             // The editor widget has no alignment API; the vendored iced_graphics

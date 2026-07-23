@@ -765,4 +765,26 @@ mod measure_tests {
             measure(text, 200.0, 17.0, 1.0, theme.font_text),
         );
     }
+
+    #[test]
+    fn edit_box_height_matches_the_rendered_card() {
+        warm_up();
+        let theme = Theme::default();
+        // The editor measures the source at the card wrap minus the inset each
+        // side (the app's `EDITOR_INSET` == `MD_PADDING`); read mode
+        // (`measure_markdown`) insets the same amount internally. For plain text
+        // the two must lay out to the same height, or the note jumps when you
+        // start editing — the bug this guards. Several widths so at least one
+        // wraps to multiple lines.
+        let text =
+            "one two three four five six seven eight nine ten eleven twelve thirteen fourteen";
+        for card_wrap in [120.0_f32, 170.0, 260.0] {
+            let (_, read_h) = measure_markdown(text, card_wrap, 17.0, &theme);
+            let (_, edit_h) = measure_source(text, card_wrap - 2.0 * MD_PADDING, 17.0, 1.0, &theme);
+            assert!(
+                (read_h - edit_h).abs() < 1.0,
+                "edit box height {edit_h} must match the rendered card {read_h} at wrap {card_wrap}",
+            );
+        }
+    }
 }
