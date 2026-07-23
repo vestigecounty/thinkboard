@@ -865,7 +865,15 @@ impl Board<'_> {
                 match hit {
                     Some(index) if is_double_click && self.nodes[index].kind == "text" => {
                         state.kind = Kind::Idle;
-                        Some(canvas::Action::publish(Message::StartEditing(index)).and_capture())
+                        // Pass the click's world position so the caret lands under
+                        // the cursor, not at the start of the note.
+                        Some(
+                            canvas::Action::publish(Message::StartEditing {
+                                index,
+                                at: Some(self.camera.to_world(position)),
+                            })
+                            .and_capture(),
+                        )
                     }
                     Some(index) if state.modifiers.command() => {
                         // Cmd-click toggles this node in the selection without

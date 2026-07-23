@@ -822,7 +822,11 @@ pub(crate) enum Message {
     SelectEdge(Option<usize>),
     HoverEdge(Option<usize>),
     DeleteSelected,
-    StartEditing(usize),
+    /// Begin editing a node's text. `at` is the world-space click position when
+    /// started from a double-click, so the caret lands under the cursor.
+    StartEditing { index: usize, at: Option<Point> },
+    /// Place the deferred caret once the editor has laid out (see [`Editing::pending_caret`]).
+    PlaceEditorCaret,
     StopEditing,
     EditorAction(text_editor::Action),
     /// Wrap the editor selection in a Markdown marker (`**` bold, `*` italic).
@@ -910,6 +914,11 @@ struct Editing {
     undo: Vec<String>,
     redo: Vec<String>,
     last_snapshot: Instant,
+    /// A world-space click position whose caret placement is deferred until the
+    /// editor has laid out (its buffer is shaped at `font_size: 1.0` until then,
+    /// so a point→caret hit-test is only valid after the first frame). Set when
+    /// editing starts from a double-click; consumed by [`Message::PlaceEditorCaret`].
+    pending_caret: Option<Point>,
 }
 
 /// Edits within this window coalesce into one undo step.
@@ -923,6 +932,7 @@ impl Editing {
             undo: Vec::new(),
             redo: Vec::new(),
             last_snapshot: Instant::now(),
+            pending_caret: None,
         }
     }
 
@@ -2072,9 +2082,29 @@ impl App {
                 self.context_menu = None;
                 return self.delete_selected();
             }
-            Message::StartEditing(index) => {
+            Message::StartEditing { index, at } => {
                 self.dismiss_ghosts();
-                return self.begin_editing(index);
+                return self.begin_editing(index, at);
+            }
+            Message::PlaceEditorCaret => {
+                // The editor has laid out by now, so its buffer hit-tests
+                // correctly. Map the stored world click into editor-local pixels
+                // and click there to move the caret under the cursor.
+                if let Some((index, world)) =
+                    self.editing.as_ref().and_then(|e| Some((e.index, e.pending_caret?)))
+                {
+                    let local = self.editor_text_origin(index).map(|origin| {
+                        let screen = self.camera.to_screen(world);
+                        Point::new(screen.x - origin.x, screen.y - origin.y)
+                    });
+                    if let Some(editing) = self.editing.as_mut() {
+                        editing.pending_caret = None;
+                        if let Some(local) = local {
+                            editing.content.perform(text_editor::Action::Click(local));
+                        }
+                    }
+                    self.cache.clear();
+                }
             }
             Message::StopEditing => {
                 // Id of the node being edited, before any removal below.
@@ -2259,7 +2289,7 @@ impl App {
                         self.spawning.remove(&index);
                         if self.pending_edit == Some(index) {
                             self.pending_edit = None;
-                            follow_up = self.begin_editing(index);
+                            follow_up = self.begin_editing(index, None);
                         }
                     }
                     self.cache.clear();
@@ -2734,6 +2764,11 @@ impl App {
         // reveal advances and the phase leaves `Entering`/`Exiting` regardless.
         if matches!(self.phase, Phase::Entering { .. } | Phase::Exiting { .. }) {
             subscriptions.push(iced::time::every(Duration::from_millis(16)).map(Message::Tick));
+        }
+        // A double-click's caret placement waits for the editor's first frame
+        // (its buffer isn't shaped until then); one frame tick delivers it.
+        if self.editing.as_ref().is_some_and(|e| e.pending_caret.is_some()) {
+            subscriptions.push(window::frames().map(|_| Message::PlaceEditorCaret));
         }
         // While recording a summon hotkey, capture the next key combination.
         if self.hotkey_recording {
@@ -4444,7 +4479,7 @@ impl App {
         Ok((file, path, id))
     }
 
-    fn begin_editing(&mut self, index: usize) -> Task<Message> {
+    fn begin_editing(&mut self, index: usize, caret_at: Option<Point>) -> Task<Message> {
         let Some(node) = self.nodes.get(index) else {
             return Task::none();
         };
@@ -4457,11 +4492,40 @@ impl App {
         self.text_snapshots.remove(&index);
         self.staging_snapshots.remove(&index);
         let text = node.text.as_deref().unwrap_or("").trim().to_owned();
-        self.editing = Some(Editing::new(index, &text));
+        let mut editing = Editing::new(index, &text);
+        // Defer caret placement to the first frame (see `pending_caret`); a
+        // `window::frames()` subscription then fires `PlaceEditorCaret`.
+        editing.pending_caret = caret_at;
+        self.editing = Some(editing);
         self.cache.clear();
         iced::advanced::widget::operate(
             iced::advanced::widget::operation::focusable::focus_next(),
         )
+    }
+
+    /// Screen-space top-left of the editing overlay's text for `index` — the
+    /// origin a click maps against for deferred caret placement. Mirrors the
+    /// editor geometry in `view` (keep the two in sync).
+    fn editor_text_origin(&self, index: usize) -> Option<Point> {
+        let node = self.nodes.get(index)?;
+        let editing = self.editing.as_ref()?;
+        let rect = self.camera.rect_to_screen(node_world_rect(node));
+        let zoom = self.camera.zoom;
+        let wrap = (node.width - 12.0).max(20.0);
+        let text = editing.content.text();
+        let (text_width, text_height) =
+            text_raster::measure_source(&text, wrap, FONT_SIZE, zoom, &self.theme);
+        let caret_slack = 4.0;
+        let editor_height = text_height + 2.0;
+        let centered = self.config.center_node_text && markdown::is_simple(&text);
+        let editor_width = if centered {
+            (text_width + caret_slack).clamp(24.0 * zoom, wrap * zoom + caret_slack)
+        } else {
+            ((wrap - 16.0).max(20.0) * zoom).min(rect.width)
+        };
+        let editor_left = (rect.x + (rect.width - editor_width) / 2.0).max(0.0);
+        let editor_top = (rect.y + (rect.height - editor_height) / 2.0).max(0.0);
+        Some(Point::new(editor_left, editor_top))
     }
 
     /// Hides the overlay window, keeping the app resident for the next
