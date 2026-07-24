@@ -1504,7 +1504,7 @@ impl App {
                 }
                 self.cache.clear();
                 // Panning can reveal nodes with stale bitmaps.
-                return self.refresh_snapshots();
+                return Task::batch([self.refresh_snapshots(), self.exit_edit_if_offscreen()]);
             }
             Message::EndPan => {
                 let fresh = self
@@ -1520,13 +1520,17 @@ impl App {
                 self.inertia = None;
             }
             Message::FocusWorld(world) => self.focus_on_world(world),
-            Message::ZoomBy { factor, cursor } => self.zoom_by(factor, cursor),
+            Message::ZoomBy { factor, cursor } => {
+                self.zoom_by(factor, cursor);
+                return self.exit_edit_if_offscreen();
+            }
             Message::PinchZoom { magnification, x, y } => {
                 // The gesture reports a bottom-left-origin window point; flip it
                 // into iced's top-left canvas space to zoom around the pinch.
                 let cursor = Point::new(x, (self.camera.viewport.height - y).max(0.0));
                 let factor = (1.0 + magnification * PINCH_SPEED).max(0.1);
                 self.zoom_by(factor, cursor);
+                return self.exit_edit_if_offscreen();
             }
             Message::MoveNode { index, position } => {
                 self.interacted = true;
@@ -2094,11 +2098,13 @@ impl App {
                 return self.begin_editing(index, at);
             }
             Message::PlaceEditorCaret => {
-                // The editor has laid out by now, so its buffer hit-tests
-                // correctly. Map the stored world click into editor-local pixels
-                // and click there to move the caret under the cursor.
-                if let Some((index, world)) =
-                    self.editing.as_ref().and_then(|e| Some((e.index, e.pending_caret?)))
+                // Wait for any fly-to-fit (started in `begin_editing`) to settle,
+                // so the editor is unclamped and its geometry final before we
+                // hit-test — `pending_caret` stays set, so the frames subscription
+                // fires again next frame.
+                if self.camera_focus.is_none()
+                    && let Some((index, world)) =
+                        self.editing.as_ref().and_then(|e| Some((e.index, e.pending_caret?)))
                 {
                     let local = self.editor_text_origin(index).map(|origin| {
                         let screen = self.camera.to_screen(world);
@@ -4505,9 +4511,65 @@ impl App {
         editing.pending_caret = caret_at;
         self.editing = Some(editing);
         self.cache.clear();
+        // The edit overlay is a fixed-size widget clamped to the viewport, so a
+        // node hanging off an edge (or larger than the screen) would rewrap/clip.
+        // Bring it fully into view first so the editor lays out like read mode.
+        self.ensure_node_visible_for_edit(index);
         iced::advanced::widget::operate(
             iced::advanced::widget::operation::focusable::focus_next(),
         )
+    }
+
+    /// Whether node `index` sits fully inside the viewport with a small margin —
+    /// the condition under which the edit overlay (a viewport-clamped widget)
+    /// lays out cleanly. Drives fit-on-edit and exit-editing-on-pan-out.
+    fn node_fully_visible(&self, index: usize) -> bool {
+        const MARGIN: f32 = 12.0;
+        let Some(node) = self.nodes.get(index) else {
+            return false;
+        };
+        let rect = self.camera.rect_to_screen(node_world_rect(node));
+        let vp = self.camera.viewport;
+        rect.x >= MARGIN
+            && rect.y >= MARGIN
+            && rect.x + rect.width <= vp.width - MARGIN
+            && rect.y + rect.height <= vp.height - MARGIN
+    }
+
+    /// If editing and a pan/zoom has moved the node out of view, commit and leave
+    /// editing: the edit overlay can't render off the top/left (widget clamp), so
+    /// its text would otherwise detach from the canvas-drawn card.
+    fn exit_edit_if_offscreen(&mut self) -> Task<Message> {
+        match self.editing.as_ref().map(|e| e.index) {
+            Some(index) if !self.node_fully_visible(index) => Task::done(Message::StopEditing),
+            _ => Task::none(),
+        }
+    }
+
+    /// Flies the camera to center the node being edited when it doesn't fully fit
+    /// in the viewport (zooming out to fit if it's larger than the screen); a
+    /// no-op when it already fits, so on-screen edits don't move the view.
+    fn ensure_node_visible_for_edit(&mut self, index: usize) {
+        const MARGIN: f32 = 12.0;
+        if self.node_fully_visible(index) {
+            return;
+        }
+        let Some(node) = self.nodes.get(index) else {
+            return;
+        };
+        let vp = self.camera.viewport;
+        let center = Vector::new(node.x + node.width / 2.0, node.y + node.height / 2.0);
+        // Largest zoom at which the node fits with margin; never zoom in past the
+        // current level — only pull back when it's too big to fit.
+        let fit = ((vp.width - 2.0 * MARGIN) / node.width)
+            .min((vp.height - 2.0 * MARGIN) / node.height);
+        let target_zoom =
+            self.camera.zoom.min(fit).clamp(self.config.min_zoom, self.config.max_zoom);
+        self.camera_focus = Some(CameraFocus {
+            target_zoom,
+            target_offset: center * -target_zoom,
+            last_tick: Instant::now(),
+        });
     }
 
     /// Screen-space top-left of the editing overlay's text for `index` — the
