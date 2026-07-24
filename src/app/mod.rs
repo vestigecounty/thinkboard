@@ -298,6 +298,21 @@ const FOCUS_TAU: f32 = 0.12;
 const NODE_PADDING_X: f32 = 24.0;
 const NODE_PADDING_Y: f32 = 20.0;
 
+/// Smallest height a text node can be resized to when node scrollbars are on
+/// (with them off, the floor is the fitted content height instead).
+const MIN_SCROLLABLE_NODE_HEIGHT: f32 = 40.0;
+
+/// The minimum height a text node may be resized to. Normally the fitted content
+/// height (so text never clips); with scrollbars on, a small absolute floor —
+/// the overflow scrolls instead. `content_height` is the rendered text extent.
+fn resize_min_height(scrollbars: bool, content_height: f32) -> f32 {
+    if scrollbars {
+        MIN_SCROLLABLE_NODE_HEIGHT
+    } else {
+        (content_height + NODE_PADDING_Y).max(60.0)
+    }
+}
+
 /// How much larger the whole scene starts during the entrance (and grows
 /// to during the exit): the classic Dashboard full-scene zoom.
 const SCENE_ZOOM: f32 = 0.25;
@@ -766,6 +781,9 @@ pub(crate) enum Message {
     ClusterDragEnd,
     ResizeNode { index: usize, anchor: Point, cursor: Point },
     ResizeEnd,
+    /// Set a node's vertical scroll offset (world px from the top), from dragging
+    /// its scrollbar. Clamped to the content overflow on use.
+    SetNodeScroll { id: String, offset: f32 },
     AddEdge { from: usize, side: &'static str, to: usize, to_side: &'static str },
     CreateConnectedNode { from: usize, side: &'static str, world: Point },
     OpenContextMenu { screen: Point, world: Point },
@@ -1076,6 +1094,10 @@ struct App {
     /// Freshly rasterized bitmaps being upload-warmed before they replace
     /// the entries in `text_snapshots`.
     staging_snapshots: HashMap<usize, StagedSnapshot>,
+    /// Vertical scroll offset (world px from the top) per node id, for nodes
+    /// resized below their content while `node_scrollbars` is on. Clamped to the
+    /// content overflow on use; stale entries clamp to 0 harmlessly.
+    node_scroll: HashMap<String, f32>,
     /// A background rasterization is in flight; acts as a debounce.
     raster_pending: bool,
     /// Ids of AI response nodes still awaiting their first token; they show the
@@ -1413,6 +1435,7 @@ impl App {
             show_fps: std::env::args().any(|arg| arg == "--fps"),
             text_snapshots: HashMap::new(),
             staging_snapshots: HashMap::new(),
+            node_scroll: HashMap::new(),
             raster_pending: false,
             ai_pending: HashSet::new(),
             ai_dots: 1,
@@ -1585,16 +1608,19 @@ impl App {
 
                 let (width, height) = if is_text {
                     let width = drag_w.max(150.0);
-                    // Never let the text overflow: the height floor is the content
-                    // fitted at this width. Measure the *rendered* Markdown
+                    // Height floor: normally the content fitted at this width, so
+                    // text never overflows. Measure the *rendered* Markdown
                     // (`measure_markdown`) so the floor matches what draws — it
                     // insets to the render column and accounts for heading sizes
                     // and bold widening, which plain `measure` under-counts,
-                    // leaving the card a line short (text then clips).
+                    // leaving the card a line short (text then clips). With node
+                    // scrollbars on, drop the content floor so the node can shrink
+                    // past its text and the overflow scrolls.
                     let text = node.text.clone().unwrap_or_default();
                     let (_, text_height) =
                         text_raster::measure_markdown(text.trim(), width - 12.0, FONT_SIZE, &self.theme);
-                    let height = drag_h.max(40.0).max(text_height + NODE_PADDING_Y).max(60.0);
+                    let min_height = resize_min_height(self.config.node_scrollbars, text_height);
+                    let height = drag_h.max(min_height).max(MIN_SCROLLABLE_NODE_HEIGHT);
                     (width, height)
                 } else {
                     // Image nodes keep their aspect ratio so the picture never
@@ -1627,6 +1653,12 @@ impl App {
             }
             Message::ResizeEnd => {
                 return Task::batch([self.refresh_snapshots(), self.schedule_recluster()]);
+            }
+            Message::SetNodeScroll { id, offset } => {
+                // Stored raw; clamped to the content overflow where it's read
+                // (the board), so a later text/size change can't leave it stuck.
+                self.node_scroll.insert(id, offset.max(0.0));
+                self.cache.clear();
             }
             Message::AddEdge { from, side, to, to_side } => {
                 self.interacted = true;
@@ -3653,6 +3685,7 @@ impl App {
             Field::CenterNodeText => c.center_node_text,
             Field::OverlayTransparent => c.overlay_transparent,
             Field::RasterizeText => c.rasterize_text,
+            Field::NodeScrollbars => c.node_scrollbars,
             Field::AiCompletions => c.ai_completions,
             Field::AiThinking => c.ai_thinking,
             _ => false,
@@ -4511,6 +4544,15 @@ impl App {
         editing.pending_caret = caret_at;
         self.editing = Some(editing);
         self.cache.clear();
+        // With scrollbars on, editing a node re-grows it to fit (its shrink was
+        // temporary): drop its scroll and autosize before anything else, so the
+        // editor lays out over the full content rather than a scrolled window.
+        if self.config.node_scrollbars {
+            if let Some(id) = self.nodes.get(index).map(|n| n.id.clone()) {
+                self.node_scroll.remove(&id);
+            }
+            self.autosize_node(index, false);
+        }
         // The edit overlay is a fixed-size widget clamped to the viewport, so a
         // node hanging off an edge (or larger than the screen) would rewrap/clip.
         // Bring it fully into view first so the editor lays out like read mode.
@@ -4746,6 +4788,7 @@ impl App {
             spawning: &self.spawning,
             text_snapshots: &self.text_snapshots,
             staging_snapshots: &self.staging_snapshots,
+            node_scroll: &self.node_scroll,
             reveal: self.reveal,
             selected: &self.selected,
             selected_edge: self.selected_edge,
@@ -5596,6 +5639,20 @@ mod tests {
     use super::*;
     use iced::keyboard::Modifiers;
     use iced::keyboard::key::{Code, Key, Named, Physical};
+
+    #[test]
+    fn resize_min_height_respects_node_scrollbars() {
+        // Scrollbars OFF: the floor is the fitted content (+ vertical padding),
+        // never below 60 — so a resize can't shrink a node past its text (it
+        // would clip). This is today's autoresize-friendly behavior.
+        assert!(resize_min_height(false, 200.0) >= 200.0);
+        assert_eq!(resize_min_height(false, 5.0), 60.0); // tiny content → 60 floor
+        // Scrollbars ON: a small absolute floor well below the content, so the
+        // node CAN be undersized (the overflow scrolls). This is the resolution
+        // of the conflict with autoresize — the two behaviors must diverge here.
+        assert_eq!(resize_min_height(true, 200.0), MIN_SCROLLABLE_NODE_HEIGHT);
+        assert!(resize_min_height(true, 200.0) < resize_min_height(false, 200.0));
+    }
 
     #[test]
     fn embedded_scratch_board_parses() {

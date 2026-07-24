@@ -100,6 +100,7 @@ static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
         // Setting toggles (flip the current value):
         cmd(ToggleAutoLayout, "Toggle auto-layout on edit", "setting layout", ""),
         cmd(ToggleSetting(Field::CenterNodeText), "Toggle center node text", "setting", ""),
+        cmd(ToggleSetting(Field::NodeScrollbars), "Toggle node scrollbars", "setting scroll resize", ""),
         cmd(ToggleSetting(Field::RasterizeText), "Toggle rasterize text", "setting", ""),
         cmd(ToggleSetting(Field::OverlayTransparent), "Toggle transparent overlay", "setting", ""),
         cmd(ToggleSetting(Field::AiCompletions), "Toggle AI completions", "setting", ""),

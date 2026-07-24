@@ -129,6 +129,9 @@ pub struct Board<'a> {
     /// Replacement bitmaps still warming their GPU upload; drawn invisibly
     /// so the texture is resident before the visible swap.
     pub staging_snapshots: &'a HashMap<usize, crate::StagedSnapshot>,
+    /// Vertical scroll offset (world px) per node id, for nodes shrunk below
+    /// their content with `node_scrollbars` on. Clamped to the overflow on use.
+    pub node_scroll: &'a HashMap<String, f32>,
     /// Overlay entrance/exit progress: 0 = hidden, 1 = fully shown.
     pub reveal: f32,
     /// Currently selected nodes (highlighted border; deletable).
@@ -337,6 +340,18 @@ enum Kind {
         /// Previous cursor position, screen coordinates.
         last: Point,
     },
+    /// Dragging a node's scrollbar thumb (node scrollbars on, content overflows).
+    ScrollingNode {
+        index: usize,
+        /// Scroll offset (world px) at press.
+        start_scroll: f32,
+        /// Press cursor y (screen), against which drag delta is measured.
+        press_y: f32,
+        /// World scroll per screen px dragged (`overflow / track`).
+        scale: f32,
+        /// World overflow, to clamp the offset.
+        overflow: f32,
+    },
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -359,6 +374,43 @@ impl Corner {
 
 /// Grab distance (screen px) around a node corner for resizing.
 const CORNER_GRAB: f32 = 18.0;
+
+/// Width (screen px, pre-zoom) of a node's scrollbar thumb.
+const NODE_SCROLLBAR_WIDTH: f32 = 6.0;
+/// Total vertical padding (world px) around a scrollable node's text, split
+/// top/bottom. Matches the app's `NODE_PADDING_Y`, so a fitted node has no
+/// overflow and a scrolled one keeps padding at both ends.
+const NODE_TEXT_PAD_Y: f32 = 20.0;
+
+/// The scrollbar thumb rect (screen) within a node `rect`, plus the world
+/// overflow, or `None` when the content fits within `node_height`. Sizes/scroll
+/// are world px; `zoom` scales the thumb width. Pure, so it's unit-tested.
+fn scrollbar_thumb(
+    rect: Rectangle,
+    node_height: f32,
+    content_height: f32,
+    scroll: f32,
+    zoom: f32,
+) -> Option<(Rectangle, f32)> {
+    let overflow = content_height - node_height;
+    if overflow <= 0.5 {
+        return None;
+    }
+    let scroll = scroll.clamp(0.0, overflow);
+    // Thumb height ∝ visible fraction; floored so a tiny node still has a grabbable bar.
+    let thumb_frac = (node_height / content_height).clamp(0.12, 1.0);
+    let thumb_h = rect.height * thumb_frac;
+    let track = (rect.height - thumb_h).max(0.0);
+    let thumb_y = rect.y + (scroll / overflow) * track;
+    let w = (NODE_SCROLLBAR_WIDTH * zoom).clamp(3.0, 10.0);
+    let thumb = Rectangle {
+        x: rect.x + rect.width - w - 2.0,
+        y: thumb_y,
+        width: w,
+        height: thumb_h,
+    };
+    Some((thumb, overflow))
+}
 
 const SIDES: [&str; 4] = ["left", "right", "top", "bottom"];
 
@@ -699,6 +751,7 @@ impl canvas::Program<Message> for Board<'_> {
             | Kind::DraggingCluster { .. } => mouse::Interaction::Grabbing,
             Kind::Connecting { .. } => mouse::Interaction::Pointer,
             Kind::Resizing { corner, .. } => corner.interaction(),
+            Kind::ScrollingNode { .. } => mouse::Interaction::Grabbing,
             Kind::Idle => {
                 let Some(position) = cursor.position_in(bounds) else {
                     return mouse::Interaction::default();
@@ -711,6 +764,8 @@ impl canvas::Program<Message> for Board<'_> {
                     }
                 } else if let Some((_, corner)) = self.corner_at(position) {
                     corner.interaction()
+                } else if self.node_thumb_at(position).is_some() {
+                    mouse::Interaction::Grab
                 } else if self.port_at(position).is_some() {
                     mouse::Interaction::Pointer
                 } else if self
@@ -820,6 +875,21 @@ impl Board<'_> {
                         index,
                         corner,
                         anchor,
+                    };
+                    state.hover = None;
+                    return Some(canvas::Action::publish(Message::CancelInertia).and_capture());
+                }
+
+                // A press on a scrollbar thumb scrolls the node (checked after
+                // corners so the resize handles win at the very edges).
+                if let Some((index, overflow, scale)) = self.node_thumb_at(position) {
+                    let start_scroll = self.node_scroll_offset(&self.nodes[index]);
+                    state.kind = Kind::ScrollingNode {
+                        index,
+                        start_scroll,
+                        press_y: position.y,
+                        scale,
+                        overflow,
                     };
                     state.hover = None;
                     return Some(canvas::Action::publish(Message::CancelInertia).and_capture());
@@ -992,6 +1062,10 @@ impl Board<'_> {
                     state.kind = Kind::Idle;
                     return Some(canvas::Action::publish(Message::ResizeEnd).and_capture());
                 }
+                if let Kind::ScrollingNode { .. } = state.kind {
+                    state.kind = Kind::Idle;
+                    return Some(canvas::Action::request_redraw().and_capture());
+                }
 
                 let background_press = state.background_press.take();
                 if let Kind::Dragging { moved, .. } = state.kind {
@@ -1120,6 +1194,15 @@ impl Board<'_> {
                             cursor: self.snap_world(self.camera.to_world(position)),
                         })
                         .and_capture())
+                    }
+                    Kind::ScrollingNode { index, start_scroll, press_y, scale, overflow } => {
+                        let offset =
+                            (*start_scroll + (position.y - *press_y) * *scale).clamp(0.0, *overflow);
+                        let id = self.nodes[*index].id.clone();
+                        Some(
+                            canvas::Action::publish(Message::SetNodeScroll { id, offset })
+                                .and_capture(),
+                        )
                     }
                     Kind::DraggingCluster { cluster, last } => {
                         let delta =
@@ -1678,6 +1761,54 @@ impl Board<'_> {
         )
     }
 
+    /// Scrollable content height (world px) of a text node: the rendered text
+    /// extent (`measure_markdown` insets to the render column) plus the node's
+    /// vertical padding, split top/bottom. So a node at its fitted (autosized)
+    /// height has no overflow, and a scrolled one keeps `NODE_TEXT_PAD_Y / 2`
+    /// padding at each end rather than butting the text against the card edge.
+    fn node_content_height(&self, text: &str, width: f32) -> f32 {
+        crate::text_raster::measure_markdown(text.trim(), width - 12.0, FONT_SIZE, self.theme).1
+            + NODE_TEXT_PAD_Y
+    }
+
+    /// The clamped scroll offset (world px) for a node, 0 when it fits.
+    fn node_scroll_offset(&self, node: &CanvasNode) -> f32 {
+        if !self.config.node_scrollbars || node.kind != "text" {
+            return 0.0;
+        }
+        let content = self.node_content_height(node.text.as_deref().unwrap_or(""), node.width);
+        let raw = self.node_scroll.get(&node.id).copied().unwrap_or(0.0);
+        raw.clamp(0.0, (content - node.height).max(0.0))
+    }
+
+    /// If `position` is on a scrollable node's scrollbar thumb, returns
+    /// `(index, world overflow, world-scroll per screen-px)` for the drag. Only
+    /// the node under the cursor is checked (the thumb sits inside its bounds).
+    fn node_thumb_at(&self, position: Point) -> Option<(usize, f32, f32)> {
+        if !self.config.node_scrollbars {
+            return None;
+        }
+        let index = self.hit_test(self.camera.to_world(position))?;
+        if self.editing == Some(index) {
+            return None;
+        }
+        let node = self.nodes.get(index)?;
+        if node.kind != "text" {
+            return None;
+        }
+        let content = self.node_content_height(node.text.as_deref().unwrap_or(""), node.width);
+        let scroll = self.node_scroll_offset(node);
+        let rect = self.node_screen_rect(index, node);
+        let (thumb, overflow) =
+            scrollbar_thumb(rect, node.height, content, scroll, self.camera.zoom)?;
+        // Horizontal slack so the thin thumb is easy to grab.
+        let grab = Rectangle { x: thumb.x - 5.0, width: thumb.width + 10.0, ..thumb };
+        grab.contains(position).then(|| {
+            let track = (rect.height - thumb.height).max(1.0);
+            (index, overflow, overflow / track)
+        })
+    }
+
     /// Content opacity during the overlay entrance/exit.
     fn scene_alpha(&self) -> f32 {
         if self.overlay {
@@ -1841,39 +1972,66 @@ impl Board<'_> {
             frame.fill(&card, Color { a: fill.a * alpha, ..fill });
 
             if self.editing != Some(index) {
-                let rasterize = self.config.rasterize_text;
-                let active = rasterize.then(|| self.text_snapshots.get(&index)).flatten();
-                let staged = rasterize.then(|| self.staging_snapshots.get(&index)).flatten();
-                if let Some(snapshot) = active {
-                    // Current bitmap; a re-rasterized one cross-fades in over it.
-                    let mut image = canvas::Image::new(snapshot.handle.clone());
-                    image.opacity = alpha;
-                    frame.draw_image(rect, image);
-                    if let Some(staged) = staged {
-                        let mut fresh = canvas::Image::new(staged.snapshot.handle.clone());
-                        fresh.opacity = alpha * staged.opacity;
-                        frame.draw_image(rect, fresh);
-                    }
-                } else {
-                    // No bitmap yet: draw live Markdown, warming any pending
-                    // texture invisibly underneath so its promotion doesn't flash.
-                    if let Some(staged) = staged {
-                        let mut warming = canvas::Image::new(staged.snapshot.handle.clone());
-                        warming.opacity = 0.0;
-                        frame.draw_image(rect, warming);
-                    }
-                    let text = node.text.as_deref().unwrap_or("(no content)");
-                    let wrap = (node.width - 12.0).max(20.0);
-                    let highlight = self
-                        .search
-                        .as_ref()
-                        .map(|s| (s.query, s.current_node == Some(index)));
-                    // Clip to the card so text that overflows a manually-undersized
-                    // node doesn't spill past its border (the raster path is already
-                    // node-sized, so it clips on its own).
+                let text = node.text.as_deref().unwrap_or("(no content)");
+                let wrap = (node.width - 12.0).max(20.0);
+                let highlight = self.search.as_ref().map(|s| (s.query, s.current_node == Some(index)));
+
+                // A scrollable node (scrollbars on, content overflows) draws the
+                // live text scrolled + clipped, with a draggable thumb — the raster
+                // snapshot only holds the visible top, so it can't scroll.
+                let scrollbar = self.config.node_scrollbars.then(|| {
+                    let content = self.node_content_height(text, node.width);
+                    let scroll = self.node_scroll_offset(node);
+                    scrollbar_thumb(rect, node.height, content, scroll, zoom).map(|(t, _)| (t, scroll))
+                }).flatten();
+
+                if let Some((thumb, scroll)) = scrollbar {
                     frame.with_clip(rect, |clipped| {
-                        self.draw_markdown_live(clipped, rect, text, FONT_SIZE, wrap, alpha, highlight);
+                        // Top-align (height 0 zeroes the layout's vertical centering)
+                        // and start half the padding below the top; the same padding
+                        // lands at the bottom when scrolled to the end.
+                        let scrolled = Rectangle {
+                            x: rect.x,
+                            y: rect.y + (NODE_TEXT_PAD_Y / 2.0 - scroll) * zoom,
+                            width: rect.width,
+                            height: 0.0,
+                        };
+                        self.draw_markdown_live(clipped, scrolled, text, FONT_SIZE, wrap, alpha, highlight);
                     });
+                    let color = Color { a: 0.55 * alpha, ..self.theme.text_muted };
+                    frame.fill(
+                        &Path::rounded_rectangle(thumb.position(), thumb.size(), (thumb.width / 2.0).into()),
+                        color,
+                    );
+                } else {
+                    let rasterize = self.config.rasterize_text;
+                    let active = rasterize.then(|| self.text_snapshots.get(&index)).flatten();
+                    let staged = rasterize.then(|| self.staging_snapshots.get(&index)).flatten();
+                    if let Some(snapshot) = active {
+                        // Current bitmap; a re-rasterized one cross-fades in over it.
+                        let mut image = canvas::Image::new(snapshot.handle.clone());
+                        image.opacity = alpha;
+                        frame.draw_image(rect, image);
+                        if let Some(staged) = staged {
+                            let mut fresh = canvas::Image::new(staged.snapshot.handle.clone());
+                            fresh.opacity = alpha * staged.opacity;
+                            frame.draw_image(rect, fresh);
+                        }
+                    } else {
+                        // No bitmap yet: draw live Markdown, warming any pending
+                        // texture invisibly underneath so its promotion doesn't flash.
+                        if let Some(staged) = staged {
+                            let mut warming = canvas::Image::new(staged.snapshot.handle.clone());
+                            warming.opacity = 0.0;
+                            frame.draw_image(rect, warming);
+                        }
+                        // Clip to the card so text that overflows a manually-undersized
+                        // node doesn't spill past its border (the raster path is already
+                        // node-sized, so it clips on its own).
+                        frame.with_clip(rect, |clipped| {
+                            self.draw_markdown_live(clipped, rect, text, FONT_SIZE, wrap, alpha, highlight);
+                        });
+                    }
                 }
             }
 
@@ -2830,5 +2988,52 @@ mod snap_tests {
         assert_eq!(rect_distance(rect, Point::new(13.0, 5.0)), 3.0); // 3 past the right edge
         // Diagonally off a corner: (3,4) past the top-left -> 5.
         assert_eq!(rect_distance(rect, Point::new(-3.0, -4.0)), 5.0);
+    }
+}
+
+#[cfg(test)]
+mod scrollbar_tests {
+    use super::scrollbar_thumb;
+    use iced::{Point, Rectangle, Size};
+
+    /// A node's screen rect: 200 wide, `h` tall, at (100, 50).
+    fn rect(h: f32) -> Rectangle {
+        Rectangle::new(Point::new(100.0, 50.0), Size::new(200.0, h))
+    }
+
+    #[test]
+    fn no_thumb_when_content_fits() {
+        assert!(scrollbar_thumb(rect(100.0), 100.0, 90.0, 0.0, 1.0).is_none());
+        assert!(scrollbar_thumb(rect(100.0), 100.0, 100.0, 0.0, 1.0).is_none());
+    }
+
+    #[test]
+    fn thumb_reports_overflow_and_sits_inside_the_node_on_its_right_edge() {
+        let r = rect(100.0); // node 100 tall, content 300 -> overflow 200
+        let (thumb, overflow) = scrollbar_thumb(r, 100.0, 300.0, 0.0, 1.0).unwrap();
+        assert!((overflow - 200.0).abs() < 0.01);
+        // Thumb height ∝ visible fraction (100/300 of a 100px node ≈ 33px).
+        assert!((thumb.height - 100.0 / 3.0).abs() < 0.5, "thumb h {}", thumb.height);
+        // At scroll 0 the thumb is flush with the top and within the node.
+        assert!((thumb.y - r.y).abs() < 0.01);
+        assert!(thumb.y + thumb.height <= r.y + r.height + 0.01);
+        // On the right edge.
+        assert!(thumb.x + thumb.width <= r.x + r.width + 0.01);
+        assert!(thumb.x > r.x + r.width - 20.0);
+    }
+
+    #[test]
+    fn thumb_travels_with_scroll_and_clamps_at_the_ends() {
+        let r = rect(100.0);
+        let (top, overflow) = scrollbar_thumb(r, 100.0, 300.0, 0.0, 1.0).unwrap();
+        // Full scroll: the thumb bottom meets the node bottom.
+        let (bottom, _) = scrollbar_thumb(r, 100.0, 300.0, overflow, 1.0).unwrap();
+        assert!((bottom.y + bottom.height - (r.y + r.height)).abs() < 0.5);
+        // Over-scroll clamps to the same bottom position.
+        let (clamped, _) = scrollbar_thumb(r, 100.0, 300.0, overflow + 500.0, 1.0).unwrap();
+        assert!((clamped.y - bottom.y).abs() < 0.01);
+        // Mid-scroll sits strictly between the two ends.
+        let (mid, _) = scrollbar_thumb(r, 100.0, 300.0, overflow / 2.0, 1.0).unwrap();
+        assert!(mid.y > top.y && mid.y < bottom.y);
     }
 }

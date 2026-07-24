@@ -95,6 +95,11 @@ pub struct Config {
     /// `false` draws it live as vector text every frame (always crisp, more
     /// per-frame shaping). Both render identical Markdown + highlighting.
     pub rasterize_text: bool,
+    /// Whether a text node smaller than its content shows a draggable vertical
+    /// scrollbar (and can be manually resized below its content). Off by default:
+    /// nodes clamp to fit their text. On: manual resize can shrink a node past
+    /// its text and the overflow scrolls (editing the node re-grows it to fit).
+    pub node_scrollbars: bool,
 
     // --- Node & auto-layout sizing ---
     /// Bounds a freshly created / auto-sized text node grows within.
@@ -176,6 +181,7 @@ impl Default for Config {
             overlay_dim: 0.55,
             center_node_text: true,
             rasterize_text: true,
+            node_scrollbars: false,
 
             new_node_min_width: 250.0,
             new_node_min_height: 60.0,

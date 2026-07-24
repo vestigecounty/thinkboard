@@ -47,6 +47,7 @@ pub(crate) enum Field {
     OverlayDim,
     CenterNodeText,
     RasterizeText,
+    NodeScrollbars,
     NewNodeMinWidth,
     NewNodeMinHeight,
     MaxNodeWidth,
@@ -159,6 +160,11 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         "Center node text",
         toggle(Field::CenterNodeText, c.center_node_text),
         "Center plain text; richer formatting (headings, code, lists) stays left-aligned.",
+    ));
+    items.push(setting(
+        "Node scrollbars",
+        toggle(Field::NodeScrollbars, c.node_scrollbars),
+        "Let a node be resized smaller than its text; the overflow scrolls via a drag bar (editing re-grows it).",
     ));
     items.push(setting(
         "Overlay dim",
@@ -649,6 +655,7 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
         (Field::Windowed, Value::Bool(b)) => config.windowed = b,
         (Field::CenterNodeText, Value::Bool(b)) => config.center_node_text = b,
         (Field::RasterizeText, Value::Bool(b)) => config.rasterize_text = b,
+        (Field::NodeScrollbars, Value::Bool(b)) => config.node_scrollbars = b,
         (Field::AutoLayout, Value::Bool(b)) => config.auto_layout = b,
         (Field::AiCompletions, Value::Bool(b)) => config.ai_completions = b,
         (Field::AiThinking, Value::Bool(b)) => config.ai_thinking = b,

@@ -247,6 +247,24 @@ pub fn measure_source(
 /// Colors don't affect layout, but the theme font family does, so the same
 /// theme used to render is passed in.
 pub fn measure_markdown(text: &str, wrap_width: f32, font_size: f32, theme: &Theme) -> (f32, f32) {
+    let key = (text.trim().to_owned(), bucket(wrap_width), bucket(font_size));
+    {
+        let mut guard = MEASURE_CACHE.lock().unwrap();
+        if let Some(hit) = guard.get_or_insert_with(HashMap::new).get(&key) {
+            return *hit;
+        }
+    }
+    let result = measure_markdown_uncached(text, wrap_width, font_size, theme);
+    let mut guard = MEASURE_CACHE.lock().unwrap();
+    let cache = guard.get_or_insert_with(HashMap::new);
+    if cache.len() >= MEASURE_CACHE_CAP {
+        cache.clear();
+    }
+    cache.insert(key, result);
+    result
+}
+
+fn measure_markdown_uncached(text: &str, wrap_width: f32, font_size: f32, theme: &Theme) -> (f32, f32) {
     let spans = markdown::parse(text.trim());
     let line_px = font_size * LINE_HEIGHT;
     if spans.is_empty() {
@@ -411,6 +429,14 @@ fn bucket(value: f32) -> i32 {
 
 static LAYOUT_CACHE: Mutex<Option<HashMap<LayoutKey, Vec<TextRun>>>> = Mutex::new(None);
 const LAYOUT_CACHE_CAP: usize = 1024;
+
+/// Memoizes [`measure_markdown`] by `(trimmed text, wrap, font size)` → `(w, h)`
+/// — it shapes with cosmic-text, so calling it per node per frame (node
+/// scrollbars) would stutter. Theme is treated as stable within a session, like
+/// `LAYOUT_CACHE`.
+type MeasureCache = HashMap<(String, i32, i32), (f32, f32)>;
+static MEASURE_CACHE: Mutex<Option<MeasureCache>> = Mutex::new(None);
+const MEASURE_CACHE_CAP: usize = 2048;
 
 static LAYOUT_HITS: AtomicU64 = AtomicU64::new(0);
 static LAYOUT_MISSES: AtomicU64 = AtomicU64::new(0);
