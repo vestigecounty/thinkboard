@@ -787,4 +787,27 @@ mod measure_tests {
             );
         }
     }
+
+    #[test]
+    fn measure_markdown_counts_the_inset_wrap_column() {
+        warm_up();
+        let theme = Theme::default();
+        // A card's height floor (on resize) must be measured with `measure_markdown`,
+        // which insets `MD_PADDING` a side like the render — plain `measure` wraps at
+        // the full width and under-counts lines, leaving the card a line short. At a
+        // width where the text fits literally but wraps once inset, the rendered
+        // measurement must be taller.
+        let text = "one two three four five six seven eight nine ten eleven twelve";
+        // Single-line width on this machine's font.
+        let (w, _) = measure(text, 100_000.0, 17.0, 1.0, theme.font_text);
+        // Fits at the literal width `w + MD_PADDING`, but wraps once inset
+        // (`w + MD_PADDING - 2*MD_PADDING = w - MD_PADDING < w`).
+        let arg = w + MD_PADDING;
+        let (_, plain_h) = measure(text, arg, 17.0, 1.0, theme.font_text);
+        let (_, md_h) = measure_markdown(text, arg, 17.0, &theme);
+        assert!(
+            md_h > plain_h,
+            "measure_markdown must count the inset (rendered) wrap: {md_h} vs {plain_h}",
+        );
+    }
 }

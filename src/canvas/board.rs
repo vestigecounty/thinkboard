@@ -1744,7 +1744,9 @@ impl Board<'_> {
                     image.opacity = alpha;
                     frame.draw_image(rect, image);
                 } else if !self.config.rasterize_text {
-                    self.draw_markdown_live(frame, rect, &cluster.text, cluster.font_size, wrap, alpha, None);
+                    frame.with_clip(rect, |clipped| {
+                        self.draw_markdown_live(clipped, rect, &cluster.text, cluster.font_size, wrap, alpha, None);
+                    });
                 }
             }
 
@@ -1866,7 +1868,12 @@ impl Board<'_> {
                         .search
                         .as_ref()
                         .map(|s| (s.query, s.current_node == Some(index)));
-                    self.draw_markdown_live(frame, rect, text, FONT_SIZE, wrap, alpha, highlight);
+                    // Clip to the card so text that overflows a manually-undersized
+                    // node doesn't spill past its border (the raster path is already
+                    // node-sized, so it clips on its own).
+                    frame.with_clip(rect, |clipped| {
+                        self.draw_markdown_live(clipped, rect, text, FONT_SIZE, wrap, alpha, highlight);
+                    });
                 }
             }
 

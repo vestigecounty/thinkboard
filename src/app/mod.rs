@@ -1581,11 +1581,15 @@ impl App {
 
                 let (width, height) = if is_text {
                     let width = drag_w.max(150.0);
-                    // Never let the text overflow: the height floor is the
-                    // content fitted at this width.
+                    // Never let the text overflow: the height floor is the content
+                    // fitted at this width. Measure the *rendered* Markdown
+                    // (`measure_markdown`) so the floor matches what draws — it
+                    // insets to the render column and accounts for heading sizes
+                    // and bold widening, which plain `measure` under-counts,
+                    // leaving the card a line short (text then clips).
                     let text = node.text.clone().unwrap_or_default();
                     let (_, text_height) =
-                        text_raster::measure(text.trim(), width - 12.0, FONT_SIZE, 1.0, self.theme.font_text);
+                        text_raster::measure_markdown(text.trim(), width - 12.0, FONT_SIZE, &self.theme);
                     let height = drag_h.max(40.0).max(text_height + NODE_PADDING_Y).max(60.0);
                     (width, height)
                 } else {
