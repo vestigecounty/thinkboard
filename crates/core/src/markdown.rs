@@ -6,7 +6,7 @@
 //! cosmic-text attribute run. This is intentionally simple: no tables, images,
 //! or block backgrounds yet — those come later.
 
-use super::syntax::{self, Syntax};
+use crate::syntax::{self, Syntax};
 use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Parser, Tag, TagEnd};
 
 /// A run of text sharing one style.

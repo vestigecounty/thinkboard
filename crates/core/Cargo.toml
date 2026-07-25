@@ -1,0 +1,11 @@
+[package]
+name = "thinkboard-core"
+version = "0.3.0"
+edition = "2024"
+license = "MIT"
+
+# UI-agnostic document logic shared by the desktop app and a future mobile
+# front-end. Keep this crate free of iced / wgpu / winit and any GUI toolkit —
+# only pure-data dependencies belong here.
+[dependencies]
+pulldown-cmark = { version = "0.13", default-features = false }

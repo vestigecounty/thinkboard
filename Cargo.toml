@@ -9,7 +9,14 @@ license = "MIT"
 # profile. See the windows_subsystem attribute in src/main.rs.
 no-console = []
 
+# The desktop app is the root package; `crates/core` holds the UI-agnostic
+# document logic (no iced/wgpu) that a future mobile front-end will also use.
+# The [patch] below applies workspace-wide.
+[workspace]
+members = ["crates/core"]
+
 [dependencies]
+thinkboard-core = { path = "crates/core" }
 arboard = "3.4"
 base64 = "0.22.1"
 bytemuck = { version = "1.25.0", features = ["derive"] }
@@ -21,7 +28,6 @@ iced = { version = "0.14.0", features = ["advanced", "canvas", "image", "tokio"]
 iced_graphics = "0.14"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 notify = "8.2.0"
-pulldown-cmark = { version = "0.13", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 # Native "open canvas" dialog when no canvas is configured. The xdg-portal
 # backend (not gtk3) keeps the Linux build free of a GTK link dependency.

@@ -34,7 +34,6 @@ use crate::platform;
 mod chrome;
 mod clipboard;
 mod command;
-mod history;
 mod settings;
 mod startup;
 mod sync;
@@ -42,7 +41,7 @@ mod sync;
 mod tray;
 
 use clipboard::Clip;
-use history::History;
+use thinkboard_core::history::History;
 
 pub(crate) use startup::run;
 use startup::{config_path_arg, hotkey_toggles, is_windowed};
