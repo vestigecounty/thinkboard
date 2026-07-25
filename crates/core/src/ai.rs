@@ -8,8 +8,8 @@
 use std::collections::HashSet;
 use std::sync::{LazyLock, Mutex};
 
-use iced::futures::{SinkExt, Stream, StreamExt};
-use iced::futures::channel::mpsc::Sender;
+use futures::channel::mpsc::{self, Sender};
+use futures::{SinkExt, Stream, StreamExt};
 
 use crate::model::{CanvasEdge, CanvasNode};
 
@@ -358,13 +358,30 @@ pub fn stream(
     max_notes: usize,
     thinking: bool,
 ) -> impl Stream<Item = Event> {
-    iced::stream::channel(64, move |mut output| async move {
+    event_stream(64, move |mut output| async move {
         if let Err(error) =
             run(&base_url, &model, &api_key, &prompt, &images, max_notes, thinking, &mut output).await
         {
             let _ = output.send(Event::Error(error)).await;
         }
     })
+}
+
+/// An [`Event`] stream fed by an async producer, mirroring
+/// `iced::stream::channel` (which the desktop UI used before this moved to the
+/// core crate): a bounded mpsc channel whose receiver *is* the stream, with the
+/// producer future driven to completion alongside it but yielding nothing.
+fn event_stream<F>(
+    buffer: usize,
+    producer: impl FnOnce(Sender<Event>) -> F,
+) -> impl Stream<Item = Event>
+where
+    F: std::future::Future<Output = ()>,
+{
+    let (sender, receiver) = mpsc::channel(buffer);
+    let runner =
+        futures::stream::once(producer(sender)).filter_map(|_| std::future::ready(None::<Event>));
+    futures::stream::select(receiver, runner)
 }
 
 #[allow(clippy::too_many_arguments)]

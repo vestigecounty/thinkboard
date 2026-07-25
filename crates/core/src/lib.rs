@@ -5,6 +5,7 @@
 //! root `thinkboard` crate) and a future mobile front-end. New code that
 //! doesn't need the UI belongs here.
 
+pub mod ai;
 pub mod color;
 pub mod history;
 pub mod layout;

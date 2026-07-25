@@ -13,7 +13,6 @@
     windows_subsystem = "windows"
 )]
 
-mod ai;
 mod app;
 mod canvas;
 mod config;
@@ -23,9 +22,11 @@ mod snap;
 mod theme;
 
 // Flat aliases so leaf modules keep resolving the `crate::camera`-style
-// paths they use, plus the app items they reference.
+// paths they use, plus the app items they reference. `ai` now lives in
+// `thinkboard-core`; re-export it so `crate::ai` still resolves.
 pub(crate) use canvas::{camera, text_raster};
 pub(crate) use document::{cluster, model};
+pub(crate) use thinkboard_core::ai;
 pub(crate) use app::{Message, SPAWN_DURATION, StagedSnapshot, UI_FONT};
 
 fn main() -> iced::Result {
