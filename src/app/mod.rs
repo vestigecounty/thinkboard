@@ -27,6 +27,7 @@ use crate::canvas::{markdown, md_edit, shadows, text_raster};
 use crate::config;
 use crate::document::cluster;
 use crate::document::layout;
+use crate::document::IntoColor;
 use crate::theme::Theme as ColorTheme;
 use crate::document::model::{self, CanvasDocument, CanvasEdge, CanvasNode};
 use crate::platform;
@@ -362,7 +363,7 @@ fn wheel_style(status: button::Status) -> button::Style {
     let hovered = matches!(status, button::Status::Hovered | button::Status::Pressed);
     let mut rainbow = iced::gradient::Linear::new(iced::Radians(std::f32::consts::FRAC_PI_2));
     for i in 0..=6 {
-        rainbow = rainbow.add_stop(i as f32 / 6.0, model::hsv(i as f32 / 6.0, 1.0, 1.0));
+        rainbow = rainbow.add_stop(i as f32 / 6.0, model::hsv(i as f32 / 6.0, 1.0, 1.0).into_color());
     }
     button::Style {
         background: Some(iced::Background::Gradient(rainbow.into())),
@@ -5109,7 +5110,8 @@ impl App {
                             )
                             .spacing(GAP);
                         for hex in colors {
-                            let color = model::parse_color(&hex).unwrap_or(iced::Color::WHITE);
+                            let color =
+                                model::parse_color(&hex).map(IntoColor::into_color).unwrap_or(iced::Color::WHITE);
                             row = row.push(
                                 button(Space::new().width(SW).height(SW))
                                     .padding(0)

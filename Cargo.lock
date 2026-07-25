@@ -4980,6 +4980,8 @@ name = "thinkboard-core"
 version = "0.3.0"
 dependencies = [
  "pulldown-cmark",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

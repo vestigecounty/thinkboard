@@ -49,10 +49,9 @@ pub fn layered_layout(
         if let (Some(&u), Some(&v)) = (
             id_to_local.get(edge.from_node.as_str()),
             id_to_local.get(edge.to_node.as_str()),
-        ) {
-            if u != v {
-                edge_list.push((u, v));
-            }
+        ) && u != v
+        {
+            edge_list.push((u, v));
         }
     }
 

@@ -8,6 +8,7 @@ use iced::widget::canvas::{self, Frame, Path, Stroke, gradient};
 use iced::{Color, Event, Point, Rectangle, Renderer, Size, Theme, mouse};
 
 use crate::Message;
+use crate::document::IntoColor;
 use crate::model::{self, hsv};
 
 pub struct HuePicker {
@@ -78,7 +79,7 @@ impl canvas::Program<Message> for HuePicker {
         // between them is exact and the spectrum comes out smooth.
         let mut spectrum = gradient::Linear::new(Point::new(0.0, 0.0), Point::new(w, 0.0));
         for i in 0..=6 {
-            spectrum = spectrum.add_stop(i as f32 / 6.0, hsv(i as f32 / 6.0, 1.0, 1.0));
+            spectrum = spectrum.add_stop(i as f32 / 6.0, hsv(i as f32 / 6.0, 1.0, 1.0).into_color());
         }
         frame.fill(&bar, spectrum);
 

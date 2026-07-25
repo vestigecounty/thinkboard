@@ -4,16 +4,16 @@
 //! fields (the sample document carries an extra `ai` field) and of missing
 //! geometry, defaulting like the Swift app (150x200).
 
-use iced::Color;
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{Map, Value};
 use std::io;
 use std::path::Path;
 
+use crate::color::Rgba;
 
-/// Sample canvas used by tests. The app itself requires a canvas path
-/// argument (see `startup::run`), so this is compiled only for tests.
-#[cfg(test)]
+/// Path to the sample canvas bundled with this crate. The app itself requires
+/// a canvas path argument (see `startup::run`), so this is only used as test
+/// input (by tests in this crate and the desktop crate's `sync` tests).
 pub const DEFAULT_CANVAS: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/testdata/fixtures/sample.canvas"
@@ -233,14 +233,14 @@ pub fn random_id() -> String {
 
 impl CanvasNode {
     /// Canvas color for this node, if any.
-    pub fn palette_color(&self) -> Option<Color> {
+    pub fn palette_color(&self) -> Option<Rgba> {
         self.color.as_deref().and_then(parse_color)
     }
 }
 
 /// Parses a canvas color value: an Obsidian preset code (`"1"`–`"6"`) or a
 /// hex string (`"#rgb"` / `"#rrggbb"`). Returns `None` for anything else.
-pub fn parse_color(value: &str) -> Option<Color> {
+pub fn parse_color(value: &str) -> Option<Rgba> {
     let hex = match value {
         "1" => "fb464c", // red
         "2" => "e9973f", // orange
@@ -251,7 +251,7 @@ pub fn parse_color(value: &str) -> Option<Color> {
         other => other.strip_prefix('#')?,
     };
     match hex.len() {
-        6 => Some(Color::from_rgb8(
+        6 => Some(Rgba::from_rgb8(
             u8::from_str_radix(&hex[0..2], 16).ok()?,
             u8::from_str_radix(&hex[2..4], 16).ok()?,
             u8::from_str_radix(&hex[4..6], 16).ok()?,
@@ -259,7 +259,7 @@ pub fn parse_color(value: &str) -> Option<Color> {
         // #rgb shorthand: each nibble is doubled (f -> ff).
         3 => {
             let nibble = |s: &str| u8::from_str_radix(s, 16).ok().map(|v| v * 17);
-            Some(Color::from_rgb8(
+            Some(Rgba::from_rgb8(
                 nibble(&hex[0..1])?,
                 nibble(&hex[1..2])?,
                 nibble(&hex[2..3])?,
@@ -273,7 +273,7 @@ pub fn parse_color(value: &str) -> Option<Color> {
 /// string (`#rgb`/`#rrggbb`) or `rgb(r, g, b)` / `rgba(r, g, b, a)`. Unlike
 /// [`parse_color`], bare preset digits are not accepted (a stray "3" on the
 /// clipboard shouldn't read as a color).
-pub fn parse_css_color(value: &str) -> Option<Color> {
+pub fn parse_css_color(value: &str) -> Option<Rgba> {
     let value = value.trim();
     if value.starts_with('#') {
         return parse_color(value);
@@ -288,12 +288,12 @@ pub fn parse_css_color(value: &str) -> Option<Color> {
         Some(raw.clamp(0.0, 255.0).round() as u8)
     };
     let (r, g, b) = (channel()?, channel()?, channel()?);
-    Some(Color::from_rgb8(r, g, b))
+    Some(Rgba::from_rgb8(r, g, b))
 }
 
 /// HSV (all channels in [0, 1]) to an opaque RGB color. Used to build the hue
 /// picker and rainbow wheel swatch.
-pub fn hsv(h: f32, s: f32, v: f32) -> Color {
+pub fn hsv(h: f32, s: f32, v: f32) -> Rgba {
     let h6 = h.rem_euclid(1.0) * 6.0;
     let sector = h6.floor() as i32;
     let f = h6 - sector as f32;
@@ -306,12 +306,12 @@ pub fn hsv(h: f32, s: f32, v: f32) -> Color {
         4 => (t, p, v),
         _ => (v, p, q),
     };
-    Color::from_rgb(r, g, b)
+    Rgba::from_rgb(r, g, b)
 }
 
 /// Formats a color as `#rrggbb`, the canonical form stored for picked and
 /// clipboard colors.
-pub fn color_to_hex(color: Color) -> String {
+pub fn color_to_hex(color: Rgba) -> String {
     let byte = |c: f32| (c.clamp(0.0, 1.0) * 255.0).round() as u8;
     format!(
         "#{:02x}{:02x}{:02x}",
@@ -422,13 +422,13 @@ mod tests {
 
     #[test]
     fn parse_color_reads_obsidian_preset_codes() {
-        assert_eq!(parse_color("1"), Some(Color::from_rgb8(0xfb, 0x46, 0x4c)));
-        assert_eq!(parse_color("4"), Some(Color::from_rgb8(0x44, 0xcf, 0x6e)));
+        assert_eq!(parse_color("1"), Some(Rgba::from_rgb8(0xfb, 0x46, 0x4c)));
+        assert_eq!(parse_color("4"), Some(Rgba::from_rgb8(0x44, 0xcf, 0x6e)));
     }
 
     #[test]
     fn parse_color_reads_full_hex() {
-        assert_eq!(parse_color("#4a90e2"), Some(Color::from_rgb8(74, 144, 226)));
+        assert_eq!(parse_color("#4a90e2"), Some(Rgba::from_rgb8(74, 144, 226)));
     }
 
     #[test]
@@ -436,7 +436,7 @@ mod tests {
         // #f0a -> #ff00aa
         assert_eq!(
             parse_color("#f0a"),
-            Some(Color::from_rgb8(0xff, 0x00, 0xaa))
+            Some(Rgba::from_rgb8(0xff, 0x00, 0xaa))
         );
     }
 
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn parse_css_color_reads_hex_and_rgb() {
-        let expected = Color::from_rgb8(74, 144, 226);
+        let expected = Rgba::from_rgb8(74, 144, 226);
         assert_eq!(parse_css_color("#4a90e2"), Some(expected));
         assert_eq!(parse_css_color("rgb(74, 144, 226)"), Some(expected));
         assert_eq!(parse_css_color("  rgba(74,144,226,0.5) "), Some(expected));
@@ -465,8 +465,8 @@ mod tests {
 
     #[test]
     fn color_to_hex_round_trips() {
-        assert_eq!(color_to_hex(Color::from_rgb8(74, 144, 226)), "#4a90e2");
-        assert_eq!(color_to_hex(Color::from_rgb8(0xff, 0x00, 0xaa)), "#ff00aa");
+        assert_eq!(color_to_hex(Rgba::from_rgb8(74, 144, 226)), "#4a90e2");
+        assert_eq!(color_to_hex(Rgba::from_rgb8(0xff, 0x00, 0xaa)), "#ff00aa");
     }
 
     #[test]

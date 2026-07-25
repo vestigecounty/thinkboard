@@ -23,6 +23,7 @@ use iced::{Color, Point, Rectangle, Renderer, Size, Theme, Vector};
 
 use crate::Message;
 use crate::camera::Camera;
+use crate::document::IntoColor;
 use crate::model::{CanvasEdge, CanvasNode};
 use crate::theme::Theme as ColorTheme;
 
@@ -1933,7 +1934,7 @@ impl Board<'_> {
                 // image instead (concentric: radius grows by the inflate):
                 // only the inner quarter overlaps, the visible ring never
                 // fights the image for subpixels.
-                let (border_color, border_width) = match (selected, node.palette_color()) {
+                let (border_color, border_width) = match (selected, node.palette_color().map(IntoColor::into_color)) {
                     (true, Some(color)) => (color, (3.5 * zoom).max(3.0)),
                     (true, None) => (self.theme.accent, (3.5 * zoom).max(3.0)),
                     (false, Some(color)) => (color, (1.2 * zoom).max(1.0)),
@@ -1963,7 +1964,7 @@ impl Board<'_> {
             let radius = 8.0 * zoom;
 
             let card = Path::rounded_rectangle(rect.position(), rect.size(), radius.into());
-            let accent = node.palette_color();
+            let accent = node.palette_color().map(IntoColor::into_color);
 
             let fill = match accent {
                 Some(color) => Color { a: 0.85, ..blend(self.theme.card_fill, color, 0.15) },
