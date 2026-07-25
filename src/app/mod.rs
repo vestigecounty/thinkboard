@@ -566,9 +566,7 @@ fn node_world_rect(node: &CanvasNode) -> Rectangle {
 /// aligned as they grow by [`App::autosize_node`]; this handles the initial
 /// placement and fixed-size nodes (e.g. pasted images).
 fn snap_node_geometry(node: &mut CanvasNode, grid: f32) {
-    let p = crate::snap::point(Point::new(node.x, node.y), grid);
-    node.x = p.x;
-    node.y = p.y;
+    (node.x, node.y) = crate::snap::point(node.x, node.y, grid);
     (node.width, node.height) = crate::snap::size(node.width, node.height, grid);
 }
 
@@ -4008,8 +4006,7 @@ impl App {
         let grid = self.snap_grid();
         if grid > 0.0 {
             for target in &mut targets {
-                let p = crate::snap::point(Point::new(target.0, target.1), grid);
-                (target.0, target.1) = (p.x, p.y);
+                (target.0, target.1) = crate::snap::point(target.0, target.1, grid);
             }
         }
 

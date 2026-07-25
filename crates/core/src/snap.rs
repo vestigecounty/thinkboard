@@ -5,8 +5,6 @@
 //! function returns its input unchanged — so callers can pass `0.0` to mean
 //! "snapping off" and keep the call sites branch-free.
 
-use iced::Point;
-
 /// Rounds a single coordinate to the nearest multiple of `grid`.
 pub fn coord(value: f32, grid: f32) -> f32 {
     if grid <= 0.0 {
@@ -16,9 +14,11 @@ pub fn coord(value: f32, grid: f32) -> f32 {
     }
 }
 
-/// Rounds a point to the nearest grid lattice point.
-pub fn point(p: Point, grid: f32) -> Point {
-    Point::new(coord(p.x, grid), coord(p.y, grid))
+/// Rounds a point (both axes) to the nearest grid lattice point. Takes and
+/// returns bare `(x, y)` so this stays free of any UI toolkit's point type;
+/// the desktop wraps the result back into an `iced::Point` at the call site.
+pub fn point(x: f32, y: f32, grid: f32) -> (f32, f32) {
+    (coord(x, grid), coord(y, grid))
 }
 
 /// Rounds a size to the nearest grid multiple, never below a single cell (so a
@@ -62,15 +62,15 @@ mod tests {
     fn a_non_positive_grid_is_a_no_op() {
         assert_eq!(coord(23.4, 0.0), 23.4);
         assert_eq!(coord(23.4, -5.0), 23.4);
-        assert_eq!(point(Point::new(1.3, -7.7), 0.0), Point::new(1.3, -7.7));
+        assert_eq!(point(1.3, -7.7, 0.0), (1.3, -7.7));
         assert_eq!(size(13.0, 47.0, 0.0), (13.0, 47.0));
         assert_eq!(fit_size(13.0, 47.0, 0.0), (13.0, 47.0));
     }
 
     #[test]
     fn point_snaps_both_axes() {
-        assert_eq!(point(Point::new(23.0, 31.0), 20.0), Point::new(20.0, 40.0));
-        assert_eq!(point(Point::new(-11.0, 9.0), 20.0), Point::new(-20.0, 0.0));
+        assert_eq!(point(23.0, 31.0, 20.0), (20.0, 40.0));
+        assert_eq!(point(-11.0, 9.0, 20.0), (-20.0, 0.0));
     }
 
     #[test]

@@ -18,15 +18,15 @@ mod canvas;
 mod config;
 mod document;
 mod platform;
-mod snap;
 mod theme;
 
 // Flat aliases so leaf modules keep resolving the `crate::camera`-style
-// paths they use, plus the app items they reference. `ai` now lives in
-// `thinkboard-core`; re-export it so `crate::ai` still resolves.
+// paths they use, plus the app items they reference. `ai` and `snap` now
+// live in `thinkboard-core`; re-export them so `crate::ai` / `crate::snap`
+// still resolve.
 pub(crate) use canvas::{camera, text_raster};
 pub(crate) use document::{cluster, model};
-pub(crate) use thinkboard_core::ai;
+pub(crate) use thinkboard_core::{ai, snap};
 pub(crate) use app::{Message, SPAWN_DURATION, StagedSnapshot, UI_FONT};
 
 fn main() -> iced::Result {

@@ -1429,7 +1429,8 @@ impl Board<'_> {
     /// Snaps a world point to the grid when snap-to-grid is on; otherwise
     /// unchanged. Applied to node moves and resizes.
     fn snap_world(&self, p: Point) -> Point {
-        crate::snap::point(p, self.snap_grid())
+        let (x, y) = crate::snap::point(p.x, p.y, self.snap_grid());
+        Point::new(x, y)
     }
 
     /// The `tb_action` of a button node (currently only in the embedded scratch
