@@ -1,0 +1,23 @@
+[package]
+name = "thinkboard-ffi"
+version = "0.3.0"
+edition = "2024"
+license = "MIT"
+
+# The mobile binding layer: wraps `thinkboard-core` in a uniffi-generated FFI so
+# a Swift/iOS front-end can call it. `staticlib` links into an iOS app; `cdylib`
+# is what `uniffi-bindgen --library` reads to emit the Swift bindings; `lib`
+# lets the in-crate `uniffi-bindgen` binary build.
+[lib]
+name = "thinkboard_ffi"
+crate-type = ["lib", "staticlib", "cdylib"]
+
+[dependencies]
+thinkboard-core = { path = "../core" }
+uniffi = { version = "0.28", features = ["cli"] }
+
+# A thin binary so bindings can be generated with
+# `cargo run -p thinkboard-ffi --bin uniffi-bindgen -- generate …`.
+[[bin]]
+name = "uniffi-bindgen"
+path = "src/bin/uniffi-bindgen.rs"

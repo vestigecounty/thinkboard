@@ -107,7 +107,14 @@ impl CanvasDocument {
     pub fn load(path: &Path) -> Result<Self, String> {
         let json = std::fs::read_to_string(path)
             .map_err(|e| format!("cannot read {}: {e}", path.display()))?;
-        serde_json::from_str(&json).map_err(|e| format!("cannot parse {}: {e}", path.display()))
+        Self::from_json(&json)
+    }
+
+    /// Parses a canvas document from JSON text — the in-memory counterpart of
+    /// [`load`] (which reads a file). Tolerant of unknown fields, so a document
+    /// authored by another tool round-trips through [`to_canvas_json`] intact.
+    pub fn from_json(json: &str) -> Result<Self, String> {
+        serde_json::from_str(json).map_err(|e| format!("cannot parse canvas: {e}"))
     }
 
     /// Serializes in Obsidian's canvas style: tab-indented top-level object
@@ -125,6 +132,91 @@ impl CanvasDocument {
     pub fn save(&self, path: &Path) -> Result<(), String> {
         std::fs::write(path, self.to_canvas_json()?)
             .map_err(|e| format!("cannot write {}: {e}", path.display()))
+    }
+}
+
+/// Editing operations. Kept in the core so every front-end mutates a canvas the
+/// same way; ids are generated with [`random_id`] in Obsidian's style.
+impl CanvasDocument {
+    /// Adds a text node at `(x, y)` with the given size, returning its new id.
+    pub fn add_text_node(&mut self, text: String, x: f32, y: f32, width: f32, height: f32) -> String {
+        let id = random_id();
+        self.nodes.push(CanvasNode {
+            id: id.clone(),
+            kind: "text".to_owned(),
+            text: Some(text),
+            file: None,
+            x,
+            y,
+            width,
+            height,
+            color: None,
+            extra: Map::new(),
+        });
+        id
+    }
+
+    /// Sets an existing node's text. Returns whether a node with `id` was found.
+    pub fn set_node_text(&mut self, id: &str, text: String) -> bool {
+        match self.nodes.iter_mut().find(|n| n.id == id) {
+            Some(node) => {
+                node.text = Some(text);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Moves a node's top-left corner. Returns whether `id` matched.
+    pub fn move_node(&mut self, id: &str, x: f32, y: f32) -> bool {
+        match self.nodes.iter_mut().find(|n| n.id == id) {
+            Some(node) => {
+                node.x = x;
+                node.y = y;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Removes the node with `id` and every edge touching it. Returns whether
+    /// the node existed.
+    pub fn remove_node(&mut self, id: &str) -> bool {
+        let before = self.nodes.len();
+        self.nodes.retain(|n| n.id != id);
+        if self.nodes.len() == before {
+            return false;
+        }
+        self.edges.retain(|e| e.from_node != id && e.to_node != id);
+        true
+    }
+
+    /// Adds an edge between two nodes' sides (`"top"`/`"right"`/`"bottom"`/
+    /// `"left"`), returning its new id.
+    pub fn add_edge(
+        &mut self,
+        from_node: String,
+        from_side: String,
+        to_node: String,
+        to_side: String,
+    ) -> String {
+        let id = random_id();
+        self.edges.push(CanvasEdge {
+            id: id.clone(),
+            from_node,
+            from_side,
+            to_node,
+            to_side,
+            extra: Map::new(),
+        });
+        id
+    }
+
+    /// Removes the edge with `id`. Returns whether it existed.
+    pub fn remove_edge_by_id(&mut self, id: &str) -> bool {
+        let before = self.edges.len();
+        self.edges.retain(|e| e.id != id);
+        self.edges.len() != before
     }
 }
 
@@ -418,6 +510,50 @@ mod tests {
         let mut edges: Vec<CanvasEdge> = Vec::new();
         assert!(!remove_edge(&mut edges, 0));
         assert!(edges.is_empty());
+    }
+
+    #[test]
+    fn add_edits_and_moves_nodes() {
+        let mut doc = CanvasDocument::from_json(r#"{"nodes":[],"edges":[]}"#).unwrap();
+        let a = doc.add_text_node("hello".to_owned(), 10.0, 20.0, 200.0, 100.0);
+        assert_eq!(doc.nodes.len(), 1);
+        assert_eq!(doc.nodes[0].text.as_deref(), Some("hello"));
+
+        assert!(doc.set_node_text(&a, "world".to_owned()));
+        assert_eq!(doc.nodes[0].text.as_deref(), Some("world"));
+        assert!(doc.move_node(&a, 5.0, 6.0));
+        assert_eq!((doc.nodes[0].x, doc.nodes[0].y), (5.0, 6.0));
+
+        // Unknown ids are no-ops, not panics.
+        assert!(!doc.set_node_text("nope", "x".to_owned()));
+        assert!(!doc.move_node("nope", 0.0, 0.0));
+    }
+
+    #[test]
+    fn removing_a_node_drops_its_edges() {
+        let mut doc = CanvasDocument::from_json(r#"{"nodes":[],"edges":[]}"#).unwrap();
+        let a = doc.add_text_node("a".to_owned(), 0.0, 0.0, 10.0, 10.0);
+        let b = doc.add_text_node("b".to_owned(), 0.0, 0.0, 10.0, 10.0);
+        doc.add_edge(a.clone(), "right".to_owned(), b, "left".to_owned());
+        assert_eq!(doc.edges.len(), 1);
+
+        assert!(doc.remove_node(&a));
+        assert_eq!(doc.nodes.len(), 1);
+        assert!(doc.edges.is_empty(), "the edge touching the removed node is gone");
+        assert!(!doc.remove_node("nope"));
+    }
+
+    #[test]
+    fn adds_and_removes_edges_by_id() {
+        let mut doc = CanvasDocument::from_json(r#"{"nodes":[],"edges":[]}"#).unwrap();
+        let a = doc.add_text_node("a".to_owned(), 0.0, 0.0, 10.0, 10.0);
+        let b = doc.add_text_node("b".to_owned(), 0.0, 0.0, 10.0, 10.0);
+        let e = doc.add_edge(a, "bottom".to_owned(), b, "top".to_owned());
+        assert_eq!(doc.edges.len(), 1);
+
+        assert!(doc.remove_edge_by_id(&e));
+        assert!(doc.edges.is_empty());
+        assert!(!doc.remove_edge_by_id(&e));
     }
 
     #[test]

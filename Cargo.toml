@@ -13,7 +13,7 @@ no-console = []
 # document logic (no iced/wgpu) that a future mobile front-end will also use.
 # The [patch] below applies workspace-wide.
 [workspace]
-members = ["crates/core"]
+members = ["crates/core", "crates/ffi"]
 
 [dependencies]
 thinkboard-core = { path = "crates/core" }
