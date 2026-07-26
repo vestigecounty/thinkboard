@@ -238,6 +238,25 @@ pub struct LayoutPosition {
     pub y: f32,
 }
 
+// --- Color -----------------------------------------------------------------
+
+/// An RGBA color, channels in `0.0..=1.0`, resolved from a canvas color value.
+#[derive(uniffi::Record)]
+pub struct RgbaColor {
+    pub r: f32,
+    pub g: f32,
+    pub b: f32,
+    pub a: f32,
+}
+
+/// Resolve a node's canvas color value — an Obsidian preset code (`"1"`–`"6"`)
+/// or a hex string (`"#rgb"` / `"#rrggbb"`) — to RGBA. `None` for anything
+/// unrecognized. Custom `theme.css` colors are not applied.
+#[uniffi::export]
+pub fn parse_color(value: String) -> Option<RgbaColor> {
+    model::parse_color(&value).map(|c| RgbaColor { r: c.r, g: c.g, b: c.b, a: c.a })
+}
+
 // --- Markdown rendering-prep -----------------------------------------------
 
 /// Syntax-highlight class of a span inside a fenced code block (`Plain`
@@ -339,6 +358,13 @@ mod tests {
         let ids: Vec<&str> = positions.iter().map(|p| p.id.as_str()).collect();
         assert_eq!(ids.len(), 2);
         assert!(ids.contains(&"a") && ids.contains(&"b"));
+    }
+
+    #[test]
+    fn parse_color_resolves_presets_and_hex() {
+        assert!(parse_color("1".to_owned()).is_some()); // preset
+        assert!(parse_color("#4a90e2".to_owned()).is_some()); // hex
+        assert!(parse_color("nope".to_owned()).is_none());
     }
 
     #[test]

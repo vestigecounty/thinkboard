@@ -11,7 +11,7 @@ struct PeekPager<Content: View>: View {
     /// How much of each neighbouring card peeks in at the edges.
     let peek: CGFloat
     let spacing: CGFloat
-    let content: (String) -> Content
+    @ViewBuilder let content: (String) -> Content
 
     @State private var drag: CGFloat = 0
     /// Locked on the first movement of a drag so a vertical scroll inside a card

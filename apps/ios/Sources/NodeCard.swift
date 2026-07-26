@@ -1,5 +1,17 @@
 import SwiftUI
 
+extension Color {
+    /// Bridge the core's resolved RGBA to a SwiftUI color.
+    init(_ rgba: RgbaColor) {
+        self.init(
+            red: Double(rgba.r),
+            green: Double(rgba.g),
+            blue: Double(rgba.b),
+            opacity: Double(rgba.a)
+        )
+    }
+}
+
 /// The content of a single node — an image (for image file nodes) or its fully
 /// rendered markdown. Reused for both the focused card and the following cards,
 /// so full content is always shown; there is no separate detail view.
@@ -97,12 +109,17 @@ private struct FollowingCard: View {
 
     var body: some View {
         let hasChildren = !graph.children(of: nodeId).isEmpty
+        let tint = graph.color(of: nodeId).map { Color($0) }
         let card = NodeContent(graph: graph, vault: vault, nodeId: nodeId)
             .padding(14)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
                 RoundedRectangle(cornerRadius: 14)
-                    .fill(Color.secondary.opacity(0.10))
+                    .fill((tint ?? Color.secondary).opacity(tint == nil ? 0.10 : 0.14))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 14)
+                    .strokeBorder(tint ?? Color.clear, lineWidth: tint == nil ? 0 : 1.5)
             )
             .overlay(alignment: .bottomTrailing) {
                 if hasChildren {

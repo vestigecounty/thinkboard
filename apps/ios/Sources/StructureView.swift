@@ -83,14 +83,18 @@ private struct LevelView: View {
                 siblingIndicator(index: idx)
             }
             PeekPager(ids: siblings, selection: $selection, peek: 20, spacing: 12) { id in
+                let tint = graph.color(of: id).map { Color($0) }
                 NodeCard(graph: graph, vault: vault, nodeId: id, onDescend: onDescend)
                     .background(
                         RoundedRectangle(cornerRadius: 20)
-                            .fill(Color.secondary.opacity(0.06))
+                            .fill((tint ?? Color.secondary).opacity(tint == nil ? 0.06 : 0.10))
                     )
                     .overlay(
                         RoundedRectangle(cornerRadius: 20)
-                            .strokeBorder(Color.secondary.opacity(0.18))
+                            .strokeBorder(
+                                tint ?? Color.secondary.opacity(0.18),
+                                lineWidth: tint == nil ? 1 : 2
+                            )
                     )
             }
         }

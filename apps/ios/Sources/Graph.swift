@@ -7,6 +7,9 @@ struct Graph {
     private let nodesById: [String: Node]
     private let childIds: [String: [String]]
     private let parentIds: [String: [String]]
+    /// Node colors resolved once (via the core's `parseColor`), for nodes that
+    /// carry an Obsidian preset code or hex value.
+    private let colorsById: [String: RgbaColor]
 
     /// Entry points: nodes with no incoming edge. Falls back to every node if
     /// the graph is fully cyclic, so navigation always has somewhere to start.
@@ -15,9 +18,13 @@ struct Graph {
     init(nodes: [Node], edges: [Edge]) {
         var byId: [String: Node] = [:]
         var order: [String] = []
+        var colors: [String: RgbaColor] = [:]
         for node in nodes {
             byId[node.id] = node
             order.append(node.id)
+            if let raw = node.color, let rgba = parseColor(value: raw) {
+                colors[node.id] = rgba
+            }
         }
 
         var children: [String: [String]] = [:]
@@ -34,6 +41,7 @@ struct Graph {
         self.nodesById = byId
         self.childIds = children
         self.parentIds = parents
+        self.colorsById = colors
 
         let roots = order.filter { !hasParent.contains($0) }
         self.roots = roots.isEmpty ? order : roots
@@ -42,6 +50,7 @@ struct Graph {
     func node(_ id: String) -> Node? { nodesById[id] }
     func children(of id: String) -> [String] { childIds[id] ?? [] }
     func parents(of id: String) -> [String] { parentIds[id] ?? [] }
+    func color(of id: String) -> RgbaColor? { colorsById[id] }
 
     /// A short one-line label for a node: its first non-empty text line, else
     /// its file name, else a placeholder.
