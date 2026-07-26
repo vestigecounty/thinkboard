@@ -1,0 +1,37 @@
+name: ThinkBoard
+options:
+  bundleIdPrefix: com.vestigecounty
+  deploymentTarget:
+    iOS: "16.0"
+  createIntermediateGroups: true
+
+targets:
+  ThinkBoard:
+    type: application
+    platform: iOS
+    sources:
+      - path: Sources
+      # The uniffi-generated Swift API — build it first with
+      # ../../crates/ffi/build-xcframework.sh (git-ignored build output).
+      - path: ../../crates/ffi/build/ThinkBoardFFI.swift
+        group: Generated
+        createIntermediateGroups: true
+    dependencies:
+      # Static-lib xcframework: linked, not embedded.
+      - framework: ../../crates/ffi/build/ThinkBoardFFI.xcframework
+        embed: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.vestigecounty.thinkboard
+        MARKETING_VERSION: "0.1.0"
+        CURRENT_PROJECT_VERSION: "1"
+        SWIFT_VERSION: "5.0"
+        TARGETED_DEVICE_FAMILY: "1,2"
+        GENERATE_INFOPLIST_FILE: YES
+        INFOPLIST_KEY_CFBundleDisplayName: ThinkBoard
+        INFOPLIST_KEY_UILaunchScreen_Generation: YES
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_STYLE: Automatic
+        # The Rust static lib needs libiconv (per `--print native-static-libs`);
+        # -lSystem/-lc/-lm are linked automatically.
+        OTHER_LDFLAGS: [-liconv]
