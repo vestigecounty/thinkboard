@@ -11,7 +11,9 @@ struct PeekPager<Content: View>: View {
     /// How much of each neighbouring card peeks in at the edges.
     let peek: CGFloat
     let spacing: CGFloat
-    @ViewBuilder let content: (String) -> Content
+    /// `(id, cardWidth)`. The page is a little wider than the card so the scroll
+    /// indicator lands in the gap to the card's right, not on its border.
+    @ViewBuilder let content: (String, CGFloat) -> Content
 
     @State private var drag: CGFloat = 0
     /// Locked on the first movement of a drag so a vertical scroll inside a card
@@ -27,11 +29,16 @@ struct PeekPager<Content: View>: View {
             // Left edge of card `index` should sit at `peek + spacing`, leaving
             // the previous card peeking on the left and the next on the right.
             let base = peek + spacing - CGFloat(index) * step
+            // Each page runs `lane` past its card into the right gap; the card is
+            // left-aligned, so the scroll indicator (at the page's right edge)
+            // sits centered in the gap. Halving the HStack spacing keeps the total
+            // card-to-card gap equal to `spacing`.
+            let lane = spacing / 2
 
-            HStack(spacing: spacing) {
+            HStack(spacing: spacing - lane) {
                 ForEach(ids, id: \.self) { id in
-                    content(id)
-                        .frame(width: cardWidth, height: geo.size.height)
+                    content(id, cardWidth)
+                        .frame(width: cardWidth + lane, height: geo.size.height, alignment: .leading)
                 }
             }
             .frame(width: geo.size.width, height: geo.size.height, alignment: .leading)
