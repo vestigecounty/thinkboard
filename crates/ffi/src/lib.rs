@@ -136,6 +136,12 @@ impl Document {
         self.inner.lock().unwrap().set_node_text(&id, text)
     }
 
+    /// Set or clear a node's color (an Obsidian preset code or hex string; pass
+    /// `None` to clear it). Returns whether `id` matched.
+    pub fn set_node_color(&self, id: String, color: Option<String>) -> bool {
+        self.inner.lock().unwrap().set_node_color(&id, color)
+    }
+
     /// Move a node's top-left corner; returns whether `id` matched.
     pub fn move_node(&self, id: String, x: f32, y: f32) -> bool {
         self.inner.lock().unwrap().move_node(&id, x, y)
@@ -160,6 +166,23 @@ impl Document {
     /// Remove the edge with `id`; returns whether it existed.
     pub fn remove_edge(&self, id: String) -> bool {
         self.inner.lock().unwrap().remove_edge_by_id(&id)
+    }
+
+    /// Add a child of `parent_id` (placed and linked from the parent); returns
+    /// the new node's id, or `None` if the parent doesn't exist.
+    pub fn add_child(&self, parent_id: String, text: String) -> Option<String> {
+        self.inner.lock().unwrap().add_child(&parent_id, text)
+    }
+
+    /// Add a sibling of `node_id` (same parent, or a new cluster for a root);
+    /// returns the new node's id, or `None` if `node_id` doesn't exist.
+    pub fn add_sibling(&self, node_id: String, text: String) -> Option<String> {
+        self.inner.lock().unwrap().add_sibling(&node_id, text)
+    }
+
+    /// Add a standalone node as a new cluster in empty space; returns its id.
+    pub fn add_root(&self, text: String) -> String {
+        self.inner.lock().unwrap().add_root(text)
     }
 
     /// Lay out every node (as [`Document::layout`]) and write the new positions

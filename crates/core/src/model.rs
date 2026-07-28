@@ -135,6 +135,20 @@ impl CanvasDocument {
     }
 }
 
+/// Default size of a node created through the add-node helpers (Obsidian's
+/// text-node default), and the gap left between a new node and its neighbours.
+const NEW_NODE_W: f32 = 250.0;
+const NEW_NODE_H: f32 = 60.0;
+const NEW_NODE_GAP: f32 = 40.0;
+
+/// Whether two axis-aligned rectangles overlap. Each is `(x, y, w, h)` with
+/// `(x, y)` the top-left corner.
+fn rects_overlap(a: (f32, f32, f32, f32), b: (f32, f32, f32, f32)) -> bool {
+    let (ax, ay, aw, ah) = a;
+    let (bx, by, bw, bh) = b;
+    ax < bx + bw && bx < ax + aw && ay < by + bh && by < ay + ah
+}
+
 /// Editing operations. Kept in the core so every front-end mutates a canvas the
 /// same way; ids are generated with [`random_id`] in Obsidian's style.
 impl CanvasDocument {
@@ -161,6 +175,18 @@ impl CanvasDocument {
         match self.nodes.iter_mut().find(|n| n.id == id) {
             Some(node) => {
                 node.text = Some(text);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Sets or clears a node's color — an Obsidian preset code (`"1"`–`"6"`) or a
+    /// hex string; `None` clears it. Returns whether a node with `id` was found.
+    pub fn set_node_color(&mut self, id: &str, color: Option<String>) -> bool {
+        match self.nodes.iter_mut().find(|n| n.id == id) {
+            Some(node) => {
+                node.color = color;
                 true
             }
             None => false,
@@ -217,6 +243,97 @@ impl CanvasDocument {
         let before = self.edges.len();
         self.edges.retain(|e| e.id != id);
         self.edges.len() != before
+    }
+
+    /// Adds a child of `parent_id`: a text node placed just past the parent
+    /// along the flow (to its right), linked `parent -> child`. Returns the new
+    /// node's id, or `None` if `parent_id` doesn't exist.
+    pub fn add_child(&mut self, parent_id: &str, text: String) -> Option<String> {
+        let parent = self.nodes.iter().find(|n| n.id == parent_id)?;
+        let (px, py, pw, ph) = (parent.x, parent.y, parent.width, parent.height);
+        let (x, y) = self.free_placement(px + pw + NEW_NODE_GAP, py + ph / 2.0 - NEW_NODE_H / 2.0);
+        let id = self.add_text_node(text, x, y, NEW_NODE_W, NEW_NODE_H);
+        self.add_edge(parent_id.to_owned(), "right".to_owned(), id.clone(), "left".to_owned());
+        Some(id)
+    }
+
+    /// Adds a sibling of `node_id`: a node under the same parent, placed just
+    /// below it. A root has no parent to share, so this starts a fresh cluster
+    /// instead. Returns the new id, or `None` if `node_id` doesn't exist.
+    pub fn add_sibling(&mut self, node_id: &str, text: String) -> Option<String> {
+        let node = self.nodes.iter().find(|n| n.id == node_id)?;
+        let (nx, ny, nh) = (node.x, node.y, node.height);
+        match self
+            .edges
+            .iter()
+            .find(|e| e.to_node == node_id)
+            .map(|e| e.from_node.clone())
+        {
+            Some(parent_id) => {
+                let (x, y) = self.free_placement(nx, ny + nh + NEW_NODE_GAP);
+                let id = self.add_text_node(text, x, y, NEW_NODE_W, NEW_NODE_H);
+                self.add_edge(parent_id, "right".to_owned(), id.clone(), "left".to_owned());
+                Some(id)
+            }
+            None => Some(self.add_root(text)),
+        }
+    }
+
+    /// Adds a standalone node (no edges) as a new cluster, in empty space below
+    /// everything already on the canvas. Returns the new node's id.
+    pub fn add_root(&mut self, text: String) -> String {
+        let (x, y) = self.new_cluster_origin();
+        self.add_text_node(text, x, y, NEW_NODE_W, NEW_NODE_H)
+    }
+
+    /// Top-left for a new `NEW_NODE_W`×`NEW_NODE_H` node near `(req_x, req_y)`
+    /// that clears existing nodes, spiralling outward if the spot is taken.
+    /// Mirrors the desktop's placement search.
+    fn free_placement(&self, req_x: f32, req_y: f32) -> (f32, f32) {
+        const MARGIN: f32 = 20.0;
+        let fits = |x: f32, y: f32| {
+            !self.nodes.iter().any(|n| {
+                rects_overlap(
+                    (
+                        x - MARGIN,
+                        y - MARGIN,
+                        NEW_NODE_W + 2.0 * MARGIN,
+                        NEW_NODE_H + 2.0 * MARGIN,
+                    ),
+                    (n.x, n.y, n.width, n.height),
+                )
+            })
+        };
+        if fits(req_x, req_y) {
+            return (req_x, req_y);
+        }
+        let step = NEW_NODE_H + MARGIN;
+        for ring in 1..=8 {
+            let radius = step * ring as f32;
+            for ray in 0..12 {
+                let angle = std::f32::consts::TAU * ray as f32 / 12.0;
+                let (x, y) = (req_x + radius * angle.cos(), req_y + radius * angle.sin());
+                if fits(x, y) {
+                    return (x, y);
+                }
+            }
+        }
+        (req_x, req_y)
+    }
+
+    /// The top-left corner for a fresh cluster: below the current bounding box,
+    /// or the origin when the canvas is empty.
+    fn new_cluster_origin(&self) -> (f32, f32) {
+        if self.nodes.is_empty() {
+            return (0.0, 0.0);
+        }
+        let min_x = self.nodes.iter().map(|n| n.x).fold(f32::INFINITY, f32::min);
+        let max_y = self
+            .nodes
+            .iter()
+            .map(|n| n.y + n.height)
+            .fold(f32::NEG_INFINITY, f32::max);
+        (min_x, max_y + NEW_NODE_GAP + 40.0)
     }
 }
 
@@ -554,6 +671,69 @@ mod tests {
         assert!(doc.remove_edge_by_id(&e));
         assert!(doc.edges.is_empty());
         assert!(!doc.remove_edge_by_id(&e));
+    }
+
+    #[test]
+    fn add_child_links_the_new_node_to_its_parent() {
+        let mut doc = CanvasDocument::from_json(r#"{"nodes":[],"edges":[]}"#).unwrap();
+        let parent = doc.add_text_node("parent".to_owned(), 0.0, 0.0, 250.0, 60.0);
+
+        let child = doc.add_child(&parent, String::new()).unwrap();
+        assert_eq!(doc.nodes.len(), 2);
+        assert_eq!(doc.edges.len(), 1);
+        assert_eq!(doc.edges[0].from_node, parent);
+        assert_eq!(doc.edges[0].to_node, child);
+        // Placed clear of the parent (to its right).
+        let c = doc.nodes.iter().find(|n| n.id == child).unwrap();
+        assert!(c.x >= 250.0, "child sits past the parent's right edge");
+
+        assert!(doc.add_child("nope", String::new()).is_none());
+    }
+
+    #[test]
+    fn add_sibling_shares_the_parent_or_starts_a_cluster() {
+        let mut doc = CanvasDocument::from_json(r#"{"nodes":[],"edges":[]}"#).unwrap();
+        let parent = doc.add_text_node("parent".to_owned(), 0.0, 0.0, 250.0, 60.0);
+        let child = doc.add_child(&parent, String::new()).unwrap();
+
+        // A sibling of the child hangs off the same parent.
+        let sib = doc.add_sibling(&child, String::new()).unwrap();
+        assert_eq!(doc.edges.iter().filter(|e| e.to_node == sib).count(), 1);
+        assert!(doc.edges.iter().any(|e| e.from_node == parent && e.to_node == sib));
+
+        // A sibling of a root (no parent) is a fresh, unconnected cluster.
+        let cluster = doc.add_sibling(&parent, String::new()).unwrap();
+        assert!(doc.edges.iter().all(|e| e.to_node != cluster));
+    }
+
+    #[test]
+    fn add_root_places_a_disconnected_node_clear_of_others() {
+        let mut doc = CanvasDocument::from_json(r#"{"nodes":[],"edges":[]}"#).unwrap();
+        doc.add_text_node("a".to_owned(), 0.0, 0.0, 250.0, 60.0);
+
+        let root = doc.add_root(String::new());
+        assert!(doc.edges.is_empty(), "a new cluster has no edges");
+        let r = doc.nodes.iter().find(|n| n.id == root).unwrap();
+        // Below the existing node's bounding box, so they don't overlap.
+        assert!(r.y >= 60.0);
+    }
+
+    #[test]
+    fn free_placement_avoids_overlap() {
+        let mut doc = CanvasDocument::from_json(r#"{"nodes":[],"edges":[]}"#).unwrap();
+        let p = doc.add_text_node("p".to_owned(), 0.0, 0.0, 250.0, 60.0);
+        // Two children at the same requested spot must not land on each other.
+        let a = doc.add_child(&p, String::new()).unwrap();
+        let b = doc.add_child(&p, String::new()).unwrap();
+        let ra = doc.nodes.iter().find(|n| n.id == a).unwrap();
+        let rb = doc.nodes.iter().find(|n| n.id == b).unwrap();
+        assert!(
+            !rects_overlap(
+                (ra.x, ra.y, ra.width, ra.height),
+                (rb.x, rb.y, rb.width, rb.height)
+            ),
+            "sibling children should not overlap"
+        );
     }
 
     #[test]
