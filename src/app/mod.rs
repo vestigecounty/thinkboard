@@ -2982,7 +2982,21 @@ impl App {
             // The editor styles bold/italic/code inline, so measure the source
             // the same way — plain measure under-counts wrapped lines for bold
             // content and the card (and its editor) end up a line short.
-            text_raster::measure_source(&text, max_width - 12.0, FONT_SIZE, 1.0, &self.theme)
+            //
+            // Measure at the editor's inner column (inset `EDITOR_INSET` a side,
+            // as read mode insets `MD_PADDING`) and add that inset back — exactly
+            // as `measure_markdown` does. Sizing to the bare source width instead
+            // leaves the card 2·`EDITOR_INSET` too narrow to lay its own text out
+            // on one line, so it wraps and the width chases the single-line extent
+            // while typing, then snaps wider on commit.
+            let (w, h) = text_raster::measure_source(
+                &text,
+                max_width - 12.0 - 2.0 * EDITOR_INSET,
+                FONT_SIZE,
+                1.0,
+                &self.theme,
+            );
+            (w + 2.0 * EDITOR_INSET, h)
         };
 
         let mut width =

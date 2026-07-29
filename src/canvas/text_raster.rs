@@ -782,6 +782,51 @@ mod measure_tests {
     }
 
     #[test]
+    fn editing_and_commit_autosize_to_the_same_width() {
+        warm_up();
+        let theme = Theme::default();
+        // Mirror src/app/mod.rs::autosize_node: node width = measured text width
+        // + NODE_PADDING_X, measured at (max_node_width - 12). Both branches inset
+        // the editor/read padding (EDITOR_INSET == MD_PADDING) a side and add it
+        // back — the editing branch explicitly, the commit branch inside
+        // measure_markdown — so a plain-text card is the same width whether you're
+        // editing or reading it, and its text never reflows on commit.
+        const NODE_PADDING_X: f32 = 24.0;
+        const EDITOR_INSET: f32 = 8.0; // == MD_PADDING
+        const CARD_FUDGE: f32 = 12.0;
+        const MIN_W: f32 = 250.0;
+        const MAX_W: f32 = 420.0;
+        let node = |text_w: f32| (text_w + NODE_PADDING_X).clamp(MIN_W, MAX_W);
+
+        // Plain text (no markup, so the editor and read view lay out identically)
+        // sized to clear the min-width clamp but stay under the cap — the band
+        // where both branches are free to hug the text and so must agree.
+        let text = "alpha beta gamma delta epsilon zeta eta theta";
+        let (sw, _) = measure_source(text, MAX_W - CARD_FUDGE - 2.0 * EDITOR_INSET, 17.0, 1.0, &theme);
+        let w_edit = node(sw + 2.0 * EDITOR_INSET);
+        let (mw, _) = measure_markdown(text, MAX_W - CARD_FUDGE, 17.0, &theme);
+        let w_commit = node(mw);
+
+        // Guard: only meaningful when neither side is pinned to a bound on this
+        // machine's font (else a difference could be a clamp, not a real gap).
+        assert!(
+            w_edit > MIN_W && w_edit < MAX_W && w_commit > MIN_W && w_commit < MAX_W,
+            "calibration: widths clamped (edit {w_edit:.1}, commit {w_commit:.1}); \
+             pick a sample whose single-line width lands mid-band",
+        );
+
+        // Sizing the editing card to the *bare* source width (dropping the
+        // inset add-back) regresses this by 2*EDITOR_INSET: the card would then
+        // widen mid-edit and snap to one line on Done.
+        assert!(
+            (w_edit - w_commit).abs() < 1.0,
+            "editing width {w_edit:.1} must equal commit width {w_commit:.1} \
+             (off by {:.1})",
+            w_commit - w_edit,
+        );
+    }
+
+    #[test]
     fn measure_source_matches_measure_for_plain_text() {
         warm_up();
         let theme = Theme::default();
