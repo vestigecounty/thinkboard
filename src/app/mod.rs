@@ -49,9 +49,6 @@ use startup::{config_path_arg, hotkey_toggles, is_windowed};
 use sync::{file_mtime, should_reload, should_save, watch_file};
 
 const FONT_SIZE: f32 = 17.0;
-/// Horizontal inset (per side) of the editing overlay's text within the card,
-/// matching read mode's `MD_PADDING` so entering edit mode doesn't reflow.
-const EDITOR_INSET: f32 = 8.0;
 
 /// The find bar's text input, so opening the bar can focus it.
 static SEARCH_INPUT: LazyLock<iced::advanced::widget::Id> =
@@ -293,11 +290,6 @@ const PINCH_SPEED: f32 = 1.0;
 /// config).
 const FOCUS_TAU: f32 = 0.12;
 
-/// Total padding (both sides together) around a text node's text block. The
-/// node's min/max size bounds are in config.
-const NODE_PADDING_X: f32 = 24.0;
-const NODE_PADDING_Y: f32 = 20.0;
-
 /// Smallest height a text node can be resized to when node scrollbars are on
 /// (with them off, the floor is the fitted content height instead).
 const MIN_SCROLLABLE_NODE_HEIGHT: f32 = 40.0;
@@ -309,7 +301,7 @@ fn resize_min_height(scrollbars: bool, content_height: f32) -> f32 {
     if scrollbars {
         MIN_SCROLLABLE_NODE_HEIGHT
     } else {
-        (content_height + NODE_PADDING_Y).max(60.0)
+        (content_height + text_raster::NODE_PAD_Y).max(60.0)
     }
 }
 
@@ -1669,8 +1661,12 @@ impl App {
                     // scrollbars on, drop the content floor so the node can shrink
                     // past its text and the overflow scrolls.
                     let text = node.text.clone().unwrap_or_default();
-                    let (_, text_height) =
-                        text_raster::measure_markdown(text.trim(), width - 12.0, FONT_SIZE, &self.theme);
+                    let (_, text_height) = text_raster::measure_markdown(
+                        text.trim(),
+                        text_raster::card_text_wrap(width),
+                        FONT_SIZE,
+                        &self.theme,
+                    );
                     let min_height = resize_min_height(self.config.node_scrollbars, text_height);
                     let height = drag_h.max(min_height).max(MIN_SCROLLABLE_NODE_HEIGHT);
                     (width, height)
@@ -2976,32 +2972,24 @@ impl App {
             .max_node_width
             .min(cap.max(me.width))
             .max(self.config.new_node_min_width);
+        // Both branches measure at the same card wrap column and inset
+        // `MD_PADDING` a side, so the card is the same width whether editing or
+        // rendered — `measure_source_card` styles bold/italic/code inline (which
+        // plain measure under-counts) for the live editor; `measure_markdown`
+        // lays out the read view. Sizing the editing card any narrower makes its
+        // text wrap while the width chases the single-line extent, then snap on
+        // commit.
+        let wrap = text_raster::card_text_wrap(max_width);
         let (text_width, text_height) = if rendered {
-            text_raster::measure_markdown(&text, max_width - 12.0, FONT_SIZE, &self.theme)
+            text_raster::measure_markdown(&text, wrap, FONT_SIZE, &self.theme)
         } else {
-            // The editor styles bold/italic/code inline, so measure the source
-            // the same way — plain measure under-counts wrapped lines for bold
-            // content and the card (and its editor) end up a line short.
-            //
-            // Measure at the editor's inner column (inset `EDITOR_INSET` a side,
-            // as read mode insets `MD_PADDING`) and add that inset back — exactly
-            // as `measure_markdown` does. Sizing to the bare source width instead
-            // leaves the card 2·`EDITOR_INSET` too narrow to lay its own text out
-            // on one line, so it wraps and the width chases the single-line extent
-            // while typing, then snaps wider on commit.
-            let (w, h) = text_raster::measure_source(
-                &text,
-                max_width - 12.0 - 2.0 * EDITOR_INSET,
-                FONT_SIZE,
-                1.0,
-                &self.theme,
-            );
-            (w + 2.0 * EDITOR_INSET, h)
+            text_raster::measure_source_card(&text, wrap, FONT_SIZE, &self.theme)
         };
 
-        let mut width =
-            (text_width + NODE_PADDING_X).clamp(self.config.new_node_min_width, max_width);
-        let mut height = (text_height + NODE_PADDING_Y).max(self.config.new_node_min_height);
+        let mut width = (text_width + text_raster::NODE_PAD_X)
+            .clamp(self.config.new_node_min_width, max_width);
+        let mut height =
+            (text_height + text_raster::NODE_PAD_Y).max(self.config.new_node_min_height);
 
         // Snap-to-grid: round the fitted size *up* to whole cells so the text
         // still fits, and grow from a fixed (grid-aligned) top-left rather than
@@ -4708,11 +4696,10 @@ impl App {
         let editing = self.editing.as_ref()?;
         let rect = self.camera.rect_to_screen(node_world_rect(node));
         let zoom = self.camera.zoom;
-        let wrap = (node.width - 12.0).max(20.0);
-        // The editor renders inset a `MD_PADDING`-equivalent each side (like read
-        // mode), so measure and size the text at that inner column, not the full
-        // card wrap — otherwise a wrapping note measures a line short.
-        let text_wrap = (wrap - 2.0 * EDITOR_INSET).max(20.0);
+        let wrap = text_raster::card_text_wrap(node.width);
+        // Measure/size the text at the editor's inner column (inset a side like
+        // read mode), not the full card wrap, or a wrapping note is a line short.
+        let text_wrap = text_raster::editor_text_wrap(node.width);
         let text = editing.content.text();
         let (text_width, text_height) =
             text_raster::measure_source(&text, text_wrap, FONT_SIZE, zoom, &self.theme);
@@ -4903,12 +4890,11 @@ impl App {
             // node, so editing keeps the card's shape and (approximately)
             // the canvas text's centered layout — the widget itself only
             // supports top-left alignment.
-            let wrap = (node.width - 12.0).max(20.0);
-            // The editor renders inset an `EDITOR_INSET` each side (matching read
-            // mode's `MD_PADDING`), so measure and size the text at that inner
-            // column, not the full card wrap — otherwise a wrapping note measures
-            // a line short and the box mis-centers.
-            let text_wrap = (wrap - 2.0 * EDITOR_INSET).max(20.0);
+            let wrap = text_raster::card_text_wrap(node.width);
+            // Measure/size the text at the editor's inner column (inset a side
+            // like read mode), not the full card wrap, or a wrapping note is a
+            // line short and the box mis-centers.
+            let text_wrap = text_raster::editor_text_wrap(node.width);
             let text = editing.content.text();
             let (text_width, text_height) =
                 text_raster::measure_source(&text, text_wrap, FONT_SIZE, zoom, &self.theme);
@@ -5565,7 +5551,7 @@ impl App {
                             &text,
                             width,
                             height,
-                            (width - 12.0).max(20.0),
+                            text_raster::card_text_wrap(width),
                             FONT_SIZE,
                             theme,
                             center,

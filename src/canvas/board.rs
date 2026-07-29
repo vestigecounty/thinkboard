@@ -378,10 +378,10 @@ const CORNER_GRAB: f32 = 18.0;
 
 /// Width (screen px, pre-zoom) of a node's scrollbar thumb.
 const NODE_SCROLLBAR_WIDTH: f32 = 6.0;
-/// Total vertical padding (world px) around a scrollable node's text, split
-/// top/bottom. Matches the app's `NODE_PADDING_Y`, so a fitted node has no
-/// overflow and a scrolled one keeps padding at both ends.
-const NODE_TEXT_PAD_Y: f32 = 20.0;
+/// Total vertical padding (world px) around a text node's text, split top/bottom
+/// — the shared `NODE_PAD_Y`, so a fitted node has no overflow and a scrolled one
+/// keeps padding at both ends.
+const NODE_TEXT_PAD_Y: f32 = crate::text_raster::NODE_PAD_Y;
 
 /// The scrollbar thumb rect (screen) within a node `rect`, plus the world
 /// overflow, or `None` when the content fits within `node_height`. Sizes/scroll
@@ -1459,7 +1459,7 @@ impl Board<'_> {
         }
         let text = node.text.as_deref()?;
         let zoom = self.camera.zoom;
-        let wrap = (node.width - 12.0).max(20.0);
+        let wrap = crate::text_raster::card_text_wrap(node.width);
         crate::text_raster::with_markdown_layout(
             text,
             rect.width / zoom,
@@ -1769,7 +1769,8 @@ impl Board<'_> {
     /// height has no overflow, and a scrolled one keeps `NODE_TEXT_PAD_Y / 2`
     /// padding at each end rather than butting the text against the card edge.
     fn node_content_height(&self, text: &str, width: f32) -> f32 {
-        crate::text_raster::measure_markdown(text.trim(), width - 12.0, FONT_SIZE, self.theme).1
+        let wrap = crate::text_raster::card_text_wrap(width);
+        crate::text_raster::measure_markdown(text.trim(), wrap, FONT_SIZE, self.theme).1
             + NODE_TEXT_PAD_Y
     }
 
@@ -1975,7 +1976,7 @@ impl Board<'_> {
 
             if self.editing != Some(index) {
                 let text = node.text.as_deref().unwrap_or("(no content)");
-                let wrap = (node.width - 12.0).max(20.0);
+                let wrap = crate::text_raster::card_text_wrap(node.width);
                 let highlight = self.search.as_ref().map(|s| (s.query, s.current_node == Some(index)));
 
                 // A scrollable node (scrollbars on, content overflows) draws the
@@ -2389,7 +2390,7 @@ impl Board<'_> {
                     ..Stroke::default().with_color(accent(0.55)).with_width(1.5 * zoom)
                 },
             );
-            let wrap = (ghost.rect.width - 12.0).max(20.0);
+            let wrap = crate::text_raster::card_text_wrap(ghost.rect.width);
             self.draw_markdown_live(frame, rect, &ghost.text, FONT_SIZE, wrap, 0.5 * a, None);
 
             // A small "×" in the top-right corner dismisses the card (on the

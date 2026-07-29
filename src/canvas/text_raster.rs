@@ -45,9 +45,48 @@ const MIN_DIMENSION: f32 = 512.0;
 /// (unlike iced widgets, which default to 1.3).
 pub const LINE_HEIGHT: f32 = 1.2;
 
+// --- Card text geometry -----------------------------------------------------
+//
+// A text card's outer width breaks down, from the edge inward, as: `CARD_H_PAD`
+// of card chrome, then `MD_PADDING` of text inset per side, then the text wrap
+// column. When a card auto-sizes to its text it adds `NODE_PAD_X` / `NODE_PAD_Y`
+// around the measured extent. These live here — the one module both the app
+// (which sizes cards) and the board (which draws them) depend on — so the sizing
+// and drawing geometry can't drift apart; a mismatch reflows or clips the text.
+
 /// Horizontal padding (logical px per side) inset into the wrap column when
-/// rendering Markdown, so left-aligned lines have a left margin.
-const MD_PADDING: f32 = 8.0;
+/// rendering Markdown, so left-aligned lines have a left margin. The editor
+/// insets the same amount, so entering edit mode doesn't reflow.
+pub(crate) const MD_PADDING: f32 = 8.0;
+
+/// Card chrome (world px) between a card's outer width and its text wrap column.
+pub(crate) const CARD_H_PAD: f32 = 12.0;
+
+/// Horizontal and vertical padding (world px) added around a node's measured
+/// text when it auto-sizes to fit.
+pub(crate) const NODE_PAD_X: f32 = 24.0;
+pub(crate) const NODE_PAD_Y: f32 = 20.0;
+
+/// Smallest wrap column ever handed to the shaper, so a sliver-width card still
+/// lays out a (clipped) line rather than collapsing.
+const MIN_TEXT_WRAP: f32 = 20.0;
+
+/// The wrap width to measure or draw a card's Markdown at, for a card of outer
+/// `width`. This is the `wrap_width` [`measure_markdown`], [`snapshot_markdown`],
+/// and [`with_markdown_layout`] expect — they inset `MD_PADDING` a side of it
+/// themselves.
+pub(crate) fn card_text_wrap(width: f32) -> f32 {
+    (width - CARD_H_PAD).max(MIN_TEXT_WRAP)
+}
+
+/// The inner column the editor lays a card's text out in, for a card of outer
+/// `width`: [`card_text_wrap`] minus the `MD_PADDING` inset each side. The editor
+/// measures with [`measure_source`], which — unlike [`measure_markdown`] — does
+/// not apply that inset, so it passes this column explicitly. Keeping the two in
+/// lockstep is what stops a card reflowing as you enter or leave edit mode.
+pub(crate) fn editor_text_wrap(width: f32) -> f32 {
+    (card_text_wrap(width) - 2.0 * MD_PADDING).max(MIN_TEXT_WRAP)
+}
 
 struct Raster {
     font_system: FontSystem,
@@ -240,6 +279,18 @@ pub fn measure_source(
         }
         (width, lines.max(logical_lines).max(1) as f32 * line_px)
     })
+}
+
+/// Measures the source for auto-sizing, taking the card wrap width (as
+/// [`measure_markdown`] does) rather than the inner text column: insets
+/// `MD_PADDING` a side to lay the source out where the editor will, then adds it
+/// back, so the result is directly comparable to [`measure_markdown`]. Sizing a
+/// card to this while editing makes it exactly the width the rendered card will
+/// be, so the text doesn't reflow when the edit commits.
+pub fn measure_source_card(text: &str, wrap_width: f32, font_size: f32, theme: &Theme) -> (f32, f32) {
+    let inner = (wrap_width - 2.0 * MD_PADDING).max(1.0);
+    let (width, height) = measure_source(text, inner, font_size, 1.0, theme);
+    (width + 2.0 * MD_PADDING, height)
 }
 
 /// Measures the *rendered* Markdown (max line width, total height) at logical
@@ -785,27 +836,22 @@ mod measure_tests {
     fn editing_and_commit_autosize_to_the_same_width() {
         warm_up();
         let theme = Theme::default();
-        // Mirror src/app/mod.rs::autosize_node: node width = measured text width
-        // + NODE_PADDING_X, measured at (max_node_width - 12). Both branches inset
-        // the editor/read padding (EDITOR_INSET == MD_PADDING) a side and add it
-        // back — the editing branch explicitly, the commit branch inside
-        // measure_markdown — so a plain-text card is the same width whether you're
-        // editing or reading it, and its text never reflows on commit.
-        const NODE_PADDING_X: f32 = 24.0;
-        const EDITOR_INSET: f32 = 8.0; // == MD_PADDING
-        const CARD_FUDGE: f32 = 12.0;
-        const MIN_W: f32 = 250.0;
-        const MAX_W: f32 = 420.0;
-        let node = |text_w: f32| (text_w + NODE_PADDING_X).clamp(MIN_W, MAX_W);
+        // Mirror src/app/mod.rs::autosize_node exactly: node width = measured text
+        // width + NODE_PAD_X, both branches measuring at the same card wrap column.
+        // The editing branch (measure_source_card) and the commit branch
+        // (measure_markdown) both inset MD_PADDING a side and add it back, so a
+        // plain-text card is the same width whether you're editing or reading it —
+        // its text never reflows on commit.
+        const MIN_W: f32 = 250.0; // config.new_node_min_width
+        const MAX_W: f32 = 420.0; // config.max_node_width
+        let node = |text_w: f32| (text_w + NODE_PAD_X).clamp(MIN_W, MAX_W);
 
         // Plain text (no markup, so the editor and read view lay out identically)
         // sized to clear the min-width clamp but stay under the cap — the band
         // where both branches are free to hug the text and so must agree.
         let text = "alpha beta gamma delta epsilon zeta eta theta";
-        let (sw, _) = measure_source(text, MAX_W - CARD_FUDGE - 2.0 * EDITOR_INSET, 17.0, 1.0, &theme);
-        let w_edit = node(sw + 2.0 * EDITOR_INSET);
-        let (mw, _) = measure_markdown(text, MAX_W - CARD_FUDGE, 17.0, &theme);
-        let w_commit = node(mw);
+        let w_edit = node(measure_source_card(text, card_text_wrap(MAX_W), 17.0, &theme).0);
+        let w_commit = node(measure_markdown(text, card_text_wrap(MAX_W), 17.0, &theme).0);
 
         // Guard: only meaningful when neither side is pinned to a bound on this
         // machine's font (else a difference could be a clamp, not a real gap).
@@ -815,9 +861,9 @@ mod measure_tests {
              pick a sample whose single-line width lands mid-band",
         );
 
-        // Sizing the editing card to the *bare* source width (dropping the
-        // inset add-back) regresses this by 2*EDITOR_INSET: the card would then
-        // widen mid-edit and snap to one line on Done.
+        // Sizing the editing card to the *bare* source width (measuring at the
+        // card wrap without the MD_PADDING inset dance) regresses this by
+        // 2*MD_PADDING: the card would then widen mid-edit and snap on Done.
         assert!(
             (w_edit - w_commit).abs() < 1.0,
             "editing width {w_edit:.1} must equal commit width {w_commit:.1} \
