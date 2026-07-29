@@ -561,6 +561,60 @@ fn node_world_rect(node: &CanvasNode) -> Rectangle {
     )
 }
 
+/// Clearance kept between a node and its horizontal neighbours as it auto-sizes,
+/// matching the breathing room [`App::find_free_placement`] leaves when a node
+/// is first placed.
+const NEIGHBOR_GAP: f32 = 20.0;
+
+/// The widest a text node occupying `me` may auto-size to before its box would
+/// horizontally overlap a neighbour it shares vertical extent with.
+///
+/// Vertical overlap is allowed, so only neighbours on the same row constrain the
+/// width, and only along the axis the card grows: centred growth (`anchor_left`
+/// = false, the off-grid default) is bounded by the nearer of its left/right
+/// neighbours; left-anchored growth (`anchor_left` = true, how a snapped node
+/// grows from its fixed top-left) only by neighbours to its right. `gap` is the
+/// clearance to keep. [`f32::INFINITY`] when nothing on the row blocks it.
+fn horizontal_width_cap(
+    me: Rectangle,
+    others: impl Iterator<Item = Rectangle>,
+    anchor_left: bool,
+    gap: f32,
+) -> f32 {
+    let center_x = me.x + me.width / 2.0;
+    let (my_left, my_top, my_bottom) = (me.x, me.y, me.y + me.height);
+    let mut cap = f32::INFINITY;
+    for other in others {
+        let (o_left, o_right) = (other.x, other.x + other.width);
+        // Off this row (no shared vertical extent) → vertical overlap is fine,
+        // so it never bounds the width.
+        if my_top >= other.y + other.height || other.y >= my_bottom {
+            continue;
+        }
+        let bound = if anchor_left {
+            // Fixed left edge, grows right: only a neighbour at/after our left
+            // edge is in the way; one already overlapping on the left holds us.
+            if o_left >= my_left {
+                o_left - gap - my_left
+            } else if o_right > my_left {
+                me.width
+            } else {
+                continue;
+            }
+        } else if o_right <= center_x {
+            // Symmetric about the centre: double the nearer side's half-width.
+            2.0 * (center_x - o_right - gap)
+        } else if o_left >= center_x {
+            2.0 * (o_left - center_x - gap)
+        } else {
+            // Straddles the centre (already overlapping) — hold the width.
+            me.width
+        };
+        cap = cap.min(bound);
+    }
+    cap
+}
+
 /// Snaps a newly created node's position and size to the grid. A `grid` of
 /// `0.0` (snap-to-grid off) leaves it unchanged. Text nodes are further kept
 /// aligned as they grow by [`App::autosize_node`]; this handles the initial
@@ -2896,9 +2950,32 @@ impl App {
         // Raw text (not trimmed): while editing, trailing newlines must
         // already grow the card. The text is trimmed when editing ends.
         let text = node.text.clone().unwrap_or_default();
-        // Measure against the widest allowed wrap; below the cap the node
-        // hugs the text, at the cap the display wraps at the same width.
-        let max_width = self.config.max_node_width;
+        // A snapped node grows rightward from its fixed top-left; off the grid
+        // it grows about its centre. That anchor decides which neighbours a
+        // widening card can run into.
+        let grid = self.snap_grid();
+        let snapped = grid > 0.0;
+
+        // Cap the width so the card doesn't widen into a horizontal neighbour —
+        // one sharing vertical extent. Vertical overlap is allowed, so a capped
+        // card just wraps its text and grows downward instead, mirroring the
+        // clearance `find_free_placement` leaves around a node at creation.
+        let me = node_world_rect(&self.nodes[index]);
+        let others = self
+            .nodes
+            .iter()
+            .enumerate()
+            .filter(|(i, _)| *i != index)
+            .map(|(_, n)| node_world_rect(n));
+        let cap = horizontal_width_cap(me, others, snapped, NEIGHBOR_GAP);
+        // Only limit growth — never force the card narrower than it already is
+        // (a genuine content shrink is handled by the clamp below). Below the
+        // cap the node hugs the text; at the cap the display wraps to the width.
+        let max_width = self
+            .config
+            .max_node_width
+            .min(cap.max(me.width))
+            .max(self.config.new_node_min_width);
         let (text_width, text_height) = if rendered {
             text_raster::measure_markdown(&text, max_width - 12.0, FONT_SIZE, &self.theme)
         } else {
@@ -2916,8 +2993,6 @@ impl App {
         // still fits, and grow from a fixed (grid-aligned) top-left rather than
         // recentering — so a grid-aligned node stays aligned as it grows (e.g.
         // a streaming AI note). Off the grid, keep the centered grow.
-        let grid = self.snap_grid();
-        let snapped = grid > 0.0;
         if snapped {
             (width, height) = crate::snap::fit_size(width, height, grid);
         }
@@ -5650,6 +5725,88 @@ mod tests {
         // of the conflict with autoresize — the two behaviors must diverge here.
         assert_eq!(resize_min_height(true, 200.0), MIN_SCROLLABLE_NODE_HEIGHT);
         assert!(resize_min_height(true, 200.0) < resize_min_height(false, 200.0));
+    }
+
+    fn rect(x: f32, y: f32, w: f32, h: f32) -> Rectangle {
+        Rectangle::new(Point::new(x, y), Size::new(w, h))
+    }
+
+    #[test]
+    fn width_cap_is_unbounded_without_neighbours() {
+        // Nothing to run into → the caller's own min/max bounds apply, unchanged.
+        let cap = horizontal_width_cap(
+            rect(0.0, 0.0, 250.0, 60.0),
+            std::iter::empty(),
+            false,
+            NEIGHBOR_GAP,
+        );
+        assert!(cap.is_infinite());
+    }
+
+    #[test]
+    fn width_cap_allows_vertical_overlap() {
+        let me = rect(0.0, 0.0, 250.0, 60.0);
+        // Directly below (no shared vertical extent): vertical overlap is fine,
+        // so it never bounds the width — the whole point of the feature.
+        let below = [rect(0.0, 100.0, 250.0, 60.0)];
+        assert!(
+            horizontal_width_cap(me, below.into_iter(), false, NEIGHBOR_GAP).is_infinite()
+        );
+        // Rows that merely touch (my bottom == its top) are still off-row.
+        let touching = [rect(300.0, 60.0, 100.0, 60.0)];
+        assert!(
+            horizontal_width_cap(me, touching.into_iter(), false, NEIGHBOR_GAP).is_infinite()
+        );
+    }
+
+    #[test]
+    fn width_cap_bounds_centred_growth_by_the_nearer_neighbour() {
+        let me = rect(0.0, 0.0, 250.0, 60.0); // centre_x = 125
+        // Right neighbour at x=300 → 2*(300 - 20 - 125) = 310.
+        let right = [rect(300.0, 0.0, 50.0, 60.0)];
+        assert_eq!(horizontal_width_cap(me, right.into_iter(), false, NEIGHBOR_GAP), 310.0);
+        // Left neighbour ending at x=0 → 2*(125 - 0 - 20) = 210.
+        let left = [rect(-80.0, 0.0, 80.0, 60.0)];
+        assert_eq!(horizontal_width_cap(me, left.into_iter(), false, NEIGHBOR_GAP), 210.0);
+        // With both, the tighter side (left, 210) wins.
+        let both = [rect(300.0, 0.0, 50.0, 60.0), rect(-80.0, 0.0, 80.0, 60.0)];
+        assert_eq!(horizontal_width_cap(me, both.into_iter(), false, NEIGHBOR_GAP), 210.0);
+    }
+
+    #[test]
+    fn width_cap_counts_partial_vertical_overlap_as_a_neighbour() {
+        // Only rows 40..60 are shared, but that still makes it a horizontal
+        // neighbour → bounds the width the same as a full-height one.
+        let me = rect(0.0, 0.0, 250.0, 60.0);
+        let overlap = [rect(300.0, 40.0, 100.0, 100.0)];
+        assert_eq!(horizontal_width_cap(me, overlap.into_iter(), false, NEIGHBOR_GAP), 310.0);
+    }
+
+    #[test]
+    fn width_cap_left_anchored_ignores_left_neighbours() {
+        // A snapped card grows rightward from a fixed left edge (x = 100).
+        let me = rect(100.0, 0.0, 250.0, 60.0);
+        // A neighbour fully to the left is out of the growth path → unbounded.
+        let left = [rect(0.0, 0.0, 50.0, 60.0)];
+        assert!(
+            horizontal_width_cap(me, left.into_iter(), true, NEIGHBOR_GAP).is_infinite()
+        );
+        // A right neighbour bounds it: 500 - 20 - 100 = 380.
+        let right = [rect(500.0, 0.0, 100.0, 60.0)];
+        assert_eq!(horizontal_width_cap(me, right.into_iter(), true, NEIGHBOR_GAP), 380.0);
+    }
+
+    #[test]
+    fn width_cap_holds_the_current_width_when_already_overlapping() {
+        // Centred: a neighbour straddling the centre can't be grown clear of, so
+        // the card holds its current width rather than widening further in.
+        let me = rect(0.0, 0.0, 250.0, 60.0); // centre_x = 125
+        let straddling = [rect(100.0, 0.0, 60.0, 60.0)]; // spans 100..160 over 125
+        assert_eq!(horizontal_width_cap(me, straddling.into_iter(), false, NEIGHBOR_GAP), 250.0);
+        // Left-anchored: a neighbour overlapping the fixed left edge holds it too.
+        let me = rect(100.0, 0.0, 250.0, 60.0);
+        let over_left = [rect(50.0, 0.0, 80.0, 60.0)]; // spans 50..130 over left edge 100
+        assert_eq!(horizontal_width_cap(me, over_left.into_iter(), true, NEIGHBOR_GAP), 250.0);
     }
 
     #[test]
