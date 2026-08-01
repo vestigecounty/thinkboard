@@ -1528,12 +1528,11 @@ impl App {
                     self.overlay_configured = true;
                     platform::configure_overlay_window();
                     // Create the tray icon now that the app is running (macOS
-                    // needs the run loop live). Leaked so it lives for the
-                    // process; the OS removes it on exit.
+                    // needs the run loop live). It's parked in a main-thread slot
+                    // for the process, so later toggles (e.g. the monochrome icon)
+                    // can retint it.
                     #[cfg(any(target_os = "macos", windows))]
-                    if let Some(tray_icon) = tray::create() {
-                        std::mem::forget(tray_icon);
-                    }
+                    tray::create(self.config.tray_icon_monochrome);
                     // Restart the entrance clock now that the window is
                     // actually on screen.
                     self.phase = Phase::Entering {
@@ -3238,6 +3237,13 @@ impl App {
                 }
                 Task::none()
             }
+            // Retint the live menu-bar icon (macOS template mode); a no-op
+            // elsewhere and before the tray exists. We're on the main thread,
+            // which the tray requires.
+            settings::Field::TrayIconMonochrome => {
+                tray::set_monochrome(self.config.tray_icon_monochrome);
+                Task::none()
+            }
             _ => Task::none(),
         }
     }
@@ -3759,6 +3765,7 @@ impl App {
             Field::SummonGesture => c.summon_gesture,
             Field::CenterNodeText => c.center_node_text,
             Field::OverlayTransparent => c.overlay_transparent,
+            Field::TrayIconMonochrome => c.tray_icon_monochrome,
             Field::RasterizeText => c.rasterize_text,
             Field::NodeScrollbars => c.node_scrollbars,
             Field::AiCompletions => c.ai_completions,

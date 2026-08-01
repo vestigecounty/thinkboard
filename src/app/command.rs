@@ -126,6 +126,12 @@ static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             "setting macos trackpad",
             "",
         ));
+        list.push(cmd(
+            ToggleSetting(Field::TrayIconMonochrome),
+            "Toggle monochrome menu bar icon",
+            "setting macos tray menu bar icon",
+            "",
+        ));
     }
     list
 });

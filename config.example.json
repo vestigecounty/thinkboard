@@ -3,6 +3,7 @@
   "dismiss_on_background_click": true,
   "persist_across_spaces": false,
   "overlay_transparent": true,
+  "tray_icon_monochrome": false,
   "summon_hotkey": "Pause",
 
   "min_zoom": 0.1,

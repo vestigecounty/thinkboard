@@ -39,6 +39,10 @@ pub struct Config {
     /// The `--windowed` CLI flag forces this on regardless. Takes effect on the
     /// next launch.
     pub windowed: bool,
+    /// macOS only: draw the menu-bar icon as a monochrome template image that
+    /// tracks the menu bar's light/dark appearance, instead of the colored icon.
+    /// No effect on other platforms (Windows/Linux tray icons stay colored).
+    pub tray_icon_monochrome: bool,
     /// The global summon/dismiss hotkey, e.g. "Alt+F12", "Cmd+Shift+K",
     /// "Ctrl+Space", "PrintScreen". Modifiers: Cmd/Command/Super, Ctrl/Control,
     /// Alt/Option, Shift (and CmdOrCtrl). Defaults to the Pause key; a blank
@@ -160,6 +164,7 @@ impl Default for Config {
             persist_across_spaces: false,
             overlay_transparent: true,
             windowed: false,
+            tray_icon_monochrome: false,
             summon_hotkey: "Pause".to_owned(),
             summon_gesture: false,
 

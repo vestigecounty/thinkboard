@@ -9,22 +9,32 @@
 //! each is a separate submodule behind the same `events` surface.
 
 #[cfg(any(target_os = "macos", windows))]
-pub(super) use desktop::{create, events};
+pub(super) use desktop::{create, events, set_monochrome};
 #[cfg(target_os = "linux")]
-pub(super) use linux::events;
+pub(super) use linux::{events, set_monochrome};
 
 #[cfg(any(target_os = "macos", windows))]
 mod desktop {
+    use std::cell::RefCell;
+
     use iced::futures::Stream;
     use tray_icon::menu::{Menu, MenuEvent, MenuItem, PredefinedMenuItem};
     use tray_icon::{Icon, TrayIcon, TrayIconBuilder};
 
     use crate::Message;
 
-    /// Builds the tray icon and its menu. Must run on the main thread while the
-    /// app is live (macOS `NSStatusItem` requirement). The returned handle must
-    /// be kept alive for the icon to stay visible.
-    pub(crate) fn create() -> Option<TrayIcon> {
+    thread_local! {
+        /// The live tray handle, parked on the main thread for the process (the
+        /// OS removes the icon on exit). Held rather than leaked so later updates
+        /// — like the monochrome toggle — can reach it; macOS requires both
+        /// creation and mutation on the main thread, which is where this lives.
+        static TRAY: RefCell<Option<TrayIcon>> = const { RefCell::new(None) };
+    }
+
+    /// Builds the tray icon and its menu and parks it in `TRAY`. Must run on the
+    /// main thread while the app is live (macOS `NSStatusItem` requirement).
+    /// `monochrome` selects the macOS template-image icon; ignored elsewhere.
+    pub(crate) fn create(monochrome: bool) {
         let menu = Menu::new();
         if let Err(error) = menu
             .append(&MenuItem::with_id("show", "Show / Hide ThinkBoard", true, None))
@@ -35,32 +45,61 @@ mod desktop {
             .and_then(|()| menu.append(&MenuItem::with_id("quit", "Quit ThinkBoard", true, None)))
         {
             eprintln!("tray: menu build failed: {error}");
-            return None;
+            return;
         }
 
         let builder = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_tooltip("ThinkBoard")
-            .with_icon(icon());
-        // macOS menu-bar icons open their menu on a single left click. On Windows
-        // the menu is the right-click context menu and a double-click summons the
-        // app (see events()), so a left click shouldn't open the menu.
+            .with_icon(icon(monochrome));
+        // macOS menu-bar icons open their menu on a single left click, and can be
+        // drawn as a monochrome template (the silhouette asset above) that tracks
+        // the menu bar's tint. On Windows the menu is the right-click context menu
+        // and a double-click summons the app (see events()), so a left click
+        // shouldn't open the menu; there's no template mode.
         #[cfg(target_os = "macos")]
-        let builder = builder.with_menu_on_left_click(true);
+        let builder = builder
+            .with_menu_on_left_click(true)
+            .with_icon_as_template(monochrome);
         #[cfg(windows)]
         let builder = builder.with_menu_on_left_click(false);
 
         match builder.build() {
-            Ok(tray) => Some(tray),
-            Err(error) => {
-                eprintln!("tray: could not create icon: {error}");
-                None
-            }
+            Ok(tray) => TRAY.with(|slot| *slot.borrow_mut() = Some(tray)),
+            Err(error) => eprintln!("tray: could not create icon: {error}"),
         }
     }
 
-    fn icon() -> Icon {
-        let (w, h, rgba) = super::tray_icon_rgba();
+    /// Retints the live menu-bar icon: the monochrome template silhouette
+    /// (macOS) or the colored mark. Swaps the image *and* the template flag —
+    /// flagging the colored icon as a template is what draws the "white blob".
+    /// A no-op before the tray exists, and on Windows (whose notification-area
+    /// icons have no template mode). Main thread only.
+    pub(crate) fn set_monochrome(monochrome: bool) {
+        TRAY.with(|slot| {
+            if let Some(tray) = slot.borrow().as_ref()
+                && let Err(error) = tray.set_icon_with_as_template(Some(icon(monochrome)), monochrome)
+            {
+                eprintln!("tray: could not update icon: {error}");
+            }
+        });
+    }
+
+    /// The tray icon: on macOS a monochrome template silhouette when
+    /// `monochrome`, otherwise the colored mark (also used on Windows, which has
+    /// no template mode).
+    fn icon(monochrome: bool) -> Icon {
+        #[cfg(target_os = "macos")]
+        let (w, h, rgba) = if monochrome {
+            super::decode_png(include_bytes!("../../assets/thinkboard_tray_template.png"))
+        } else {
+            super::tray_icon_rgba()
+        };
+        #[cfg(not(target_os = "macos"))]
+        let (w, h, rgba) = {
+            let _ = monochrome;
+            super::tray_icon_rgba()
+        };
         Icon::from_rgba(rgba, w, h).expect("valid tray icon")
     }
 
@@ -119,6 +158,10 @@ mod linux {
     use ksni::TrayMethods;
 
     use crate::Message;
+
+    /// The monochrome menu-bar icon is a macOS-only (template-image) concept, so
+    /// this is a no-op — it just keeps the toggle's apply path cross-platform.
+    pub(crate) fn set_monochrome(_monochrome: bool) {}
 
     struct Tray {
         sender: UnboundedSender<Message>,
@@ -221,12 +264,16 @@ mod linux {
     }
 }
 
-/// The tray icon as raw RGBA8 pixels, decoded from the PNG embedded from
+/// The colored tray icon as raw RGBA8 pixels, decoded from the PNG embedded from
 /// `assets/`. Returns `(width, height, rgba)`; callers reorder the channels for
 /// their backend (tray-icon wants RGBA, ksni wants ARGB).
 fn tray_icon_rgba() -> (u32, u32, Vec<u8>) {
-    const PNG: &[u8] = include_bytes!("../../assets/thinkboard_tray.png");
-    let image = image::load_from_memory(PNG)
+    decode_png(include_bytes!("../../assets/thinkboard_tray.png"))
+}
+
+/// Decodes an embedded PNG to raw RGBA8 `(width, height, rgba)`.
+fn decode_png(png: &[u8]) -> (u32, u32, Vec<u8>) {
+    let image = image::load_from_memory(png)
         .expect("embedded tray icon decodes")
         .into_rgba8();
     let (w, h) = image.dimensions();

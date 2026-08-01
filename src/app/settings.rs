@@ -32,6 +32,10 @@ pub(crate) enum Field {
     SummonGesture,
     OverlayTransparent,
     Windowed,
+    // macOS-only menu-bar icon appearance; plumbing stays cross-platform so a
+    // hand-set value is honored if a config is copied between machines.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    TrayIconMonochrome,
     MinZoom,
     MaxZoom,
     ZoomSmoothing,
@@ -170,6 +174,13 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         "Overlay dim",
         feel_slider(Field::OverlayDim, c.overlay_dim, 1.0),
         "How much the overlay dims the desktop (0 none, 1 solid black).",
+    ));
+    // Template-image menu-bar icon, macOS-only (the template concept is AppKit's).
+    #[cfg(target_os = "macos")]
+    items.push(setting(
+        "Monochrome menu bar icon",
+        toggle(Field::TrayIconMonochrome, c.tray_icon_monochrome),
+        "Draw the menu bar icon as a monochrome template that matches the menu bar (light/dark).",
     ));
 
     items.push(header("AI"));
@@ -653,6 +664,7 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
         (Field::SummonGesture, Value::Bool(b)) => config.summon_gesture = b,
         (Field::OverlayTransparent, Value::Bool(b)) => config.overlay_transparent = b,
         (Field::Windowed, Value::Bool(b)) => config.windowed = b,
+        (Field::TrayIconMonochrome, Value::Bool(b)) => config.tray_icon_monochrome = b,
         (Field::CenterNodeText, Value::Bool(b)) => config.center_node_text = b,
         (Field::RasterizeText, Value::Bool(b)) => config.rasterize_text = b,
         (Field::NodeScrollbars, Value::Bool(b)) => config.node_scrollbars = b,
