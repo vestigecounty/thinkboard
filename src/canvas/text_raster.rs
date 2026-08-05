@@ -75,7 +75,7 @@ const MIN_TEXT_WRAP: f32 = 20.0;
 /// `width`. This is the `wrap_width` [`measure_markdown`], [`snapshot_markdown`],
 /// and [`with_markdown_layout`] expect — they inset `MD_PADDING` a side of it
 /// themselves.
-pub(crate) fn card_text_wrap(width: f32) -> f32 {
+pub fn card_text_wrap(width: f32) -> f32 {
     (width - CARD_H_PAD).max(MIN_TEXT_WRAP)
 }
 
@@ -487,6 +487,19 @@ const LAYOUT_CACHE_CAP: usize = 1024;
 /// `LAYOUT_CACHE`.
 type MeasureCache = HashMap<(String, i32, i32), (f32, f32)>;
 static MEASURE_CACHE: Mutex<Option<MeasureCache>> = Mutex::new(None);
+
+/// Empties the layout and measurement caches.
+///
+/// Nothing in the app calls this — both caches are self-capping. It exists so
+/// benchmarks can measure the *cold* cost of a text path, which is what a board
+/// pays the first time it lays out and what dominates a recluster (font fitting
+/// binary-searches ~22 distinct sizes per cluster, none of which can hit a
+/// cache entry left by another). Measuring only the warm path would report the
+/// cost of a hash lookup and call it text layout.
+pub fn clear_caches() {
+    *LAYOUT_CACHE.lock().unwrap() = None;
+    *MEASURE_CACHE.lock().unwrap() = None;
+}
 const MEASURE_CACHE_CAP: usize = 2048;
 
 static LAYOUT_HITS: AtomicU64 = AtomicU64::new(0);

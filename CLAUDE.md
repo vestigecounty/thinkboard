@@ -121,6 +121,46 @@ module and its `impl App` block there — keep `update` a dispatch table.
   left-align per `center_node_text`. Keep new kinds consistent with whichever
   of the two they resemble.
 
+## Benchmarks
+
+```sh
+cargo bench --workspace              # everything
+cargo bench -- rasterize             # one group in the desktop benches
+cargo bench -p thinkboard-core       # the pure document algorithms
+```
+
+`benches/render.rs` covers the CPU work behind a frame — text measurement,
+rasterization, live Markdown layout, reclustering, link hover.
+`crates/core/benches/document.rs` covers the pure algorithms — clustering,
+layered layout, canvas parse/serialize, Markdown, syntax highlighting.
+
+CI compiles both (`--all-targets` includes benches) but never runs them.
+
+Two things to know before trusting a number:
+
+- **Most text paths are cached**, so every one is measured *cold and warm*.
+  Warm is the steady state on a settled board; cold is what a fresh board, a
+  zoom out of the quality band, or a recluster pays. A warm-only number is
+  measuring a hash lookup.
+- **Give every generated node distinct text.** The measurement cache is keyed
+  by the text, so a board built from one repeated string lets each cluster's
+  font fitting reuse another's entries — which made `recluster/cold/300` report
+  1 ms instead of its real 23 ms.
+
+The GPU draw itself isn't benchmarkable here: a `canvas::Frame` needs a live
+wgpu renderer. Everything feeding it is, and that's where the time goes.
+
+Standing results worth knowing (Apple silicon, release):
+
+- Rasterizing one card is the most expensive thing on the board, and scales
+  with *glyph* size, not bitmap area. A small 250×120 card at 2× zoom costs
+  ~1.3 ms — about 6× a 800×600 card — because `scale_for`'s `MAX_DIMENSION`
+  cap only binds on the longest side, so a small card renders glyphs at the
+  full `zoom * RASTER_DENSITY` (8×).
+- A cold recluster is dominated by font fitting, not by grouping: ~76 µs per
+  node, because `fit_font_size` binary-searches ~22 sizes per cluster and each
+  is a distinct cache key. The grouping it wraps costs ~1 µs per node.
+
 ## Testing
 
 Tests live next to what they test, in `#[cfg(test)] mod tests`. Pure helpers are

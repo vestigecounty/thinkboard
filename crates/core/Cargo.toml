@@ -13,3 +13,18 @@ pulldown-cmark = { version = "0.13", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.150", features = ["preserve_order"] }
+
+# `cargo bench` would otherwise also run the unit-test binary as a benchmark,
+# where it rejects criterion's own flags.
+[lib]
+bench = false
+
+# Benchmarks only. Criterion's default features pull in plotters and rayon;
+# `cargo_bench_support` alone is what `cargo bench` actually needs.
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
+# Criterion supplies its own `main`, so the default libtest harness is off.
+[[bench]]
+name = "document"
+harness = false

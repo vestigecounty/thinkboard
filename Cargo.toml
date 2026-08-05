@@ -38,6 +38,20 @@ wuff = { version = "0.2.5", default-features = false, features = ["brotli"] }
 
 # Menu-bar / notification-area tray. Only macOS + Windows: the Linux backend
 # links GTK/libappindicator (C), which our zig cross-build can't satisfy.
+# `cargo bench` would otherwise also run the unit-test binaries as benchmarks,
+# where they reject criterion's own flags.
+[lib]
+bench = false
+
+[[bin]]
+name = "thinkboard"
+bench = false
+
+# Benchmarks only. Criterion's default features pull in plotters and rayon;
+# `cargo_bench_support` alone is what `cargo bench` actually needs.
+[dev-dependencies]
+criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 tray-icon = "0.19"
 
@@ -77,3 +91,8 @@ iced_graphics = { path = "vendor/iced_graphics" }
 # the DirectComposition swapchain (transparent overlay on Windows): see
 # vendor/iced_wgpu/src/window/compositor.rs
 iced_wgpu = { path = "vendor/iced_wgpu" }
+
+# Criterion supplies its own `main`, so the default libtest harness is off.
+[[bench]]
+name = "render"
+harness = false

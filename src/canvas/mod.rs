@@ -1,4 +1,5 @@
 pub mod board;
+pub mod geometry;
 pub mod camera;
 pub mod hue_picker;
 pub mod md_edit;

@@ -9,6 +9,9 @@ license = "MIT"
 # is what `uniffi-bindgen --library` reads to emit the Swift bindings; `lib`
 # lets the in-crate `uniffi-bindgen` binary build.
 [lib]
+# Not benchmarked; keeps `cargo bench --workspace` from running the unit-test
+# binary as a benchmark, where it rejects criterion's flags.
+bench = false
 name = "thinkboard_ffi"
 crate-type = ["lib", "staticlib", "cdylib"]
 
@@ -21,3 +24,4 @@ uniffi = { version = "0.28", features = ["cli"] }
 [[bin]]
 name = "uniffi-bindgen"
 path = "src/bin/uniffi-bindgen.rs"
+bench = false

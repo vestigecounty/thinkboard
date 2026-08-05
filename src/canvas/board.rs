@@ -23,6 +23,7 @@ use iced::{Color, Point, Rectangle, Renderer, Size, Theme, Vector};
 
 use crate::Message;
 use crate::camera::Camera;
+use super::geometry::{EdgeGeometry, bezier_distance};
 use crate::document::IntoColor;
 use crate::model::{CanvasEdge, CanvasNode, NodeKind};
 use crate::theme::Theme as ColorTheme;
@@ -186,14 +187,6 @@ pub struct AiFlow {
 }
 
 /// Bezier geometry of an edge in screen space.
-struct EdgeGeometry {
-    start: Point,
-    control1: Point,
-    control2: Point,
-    end: Point,
-    alpha: f32,
-}
-
 /// Redraw pacing stats for the `--fps` meter. Measured draw-to-draw, so it
 /// reflects the redraw rate the user actually perceives during interaction.
 /// Redraws farther apart than this are treated as separate interaction bursts
@@ -3077,40 +3070,6 @@ fn bezier_path(g: &EdgeGeometry) -> Path {
         builder.move_to(g.start);
         builder.bezier_curve_to(g.control1, g.control2, g.end);
     })
-}
-
-fn cubic_bezier(g: &EdgeGeometry, t: f32) -> Point {
-    let u = 1.0 - t;
-    let (a, b, c, d) = (u * u * u, 3.0 * u * u * t, 3.0 * u * t * t, t * t * t);
-    Point::new(
-        a * g.start.x + b * g.control1.x + c * g.control2.x + d * g.end.x,
-        a * g.start.y + b * g.control1.y + c * g.control2.y + d * g.end.y,
-    )
-}
-
-/// Minimum distance from a point to an edge's bezier, via polyline sampling.
-fn bezier_distance(point: Point, g: &EdgeGeometry) -> f32 {
-    const SAMPLES: usize = 24;
-    let mut previous = g.start;
-    let mut min = f32::MAX;
-    for i in 1..=SAMPLES {
-        let current = cubic_bezier(g, i as f32 / SAMPLES as f32);
-        min = min.min(point_segment_distance(point, previous, current));
-        previous = current;
-    }
-    min
-}
-
-fn point_segment_distance(p: Point, a: Point, b: Point) -> f32 {
-    let (abx, aby) = (b.x - a.x, b.y - a.y);
-    let len2 = abx * abx + aby * aby;
-    let t = if len2 > 0.0 {
-        (((p.x - a.x) * abx + (p.y - a.y) * aby) / len2).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let (cx, cy) = (a.x + t * abx, a.y + t * aby);
-    ((p.x - cx).powi(2) + (p.y - cy).powi(2)).sqrt()
 }
 
 const RING_RADIUS: f32 = 30.0;
