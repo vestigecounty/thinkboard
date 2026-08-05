@@ -6,6 +6,7 @@
 //! doesn't need the UI belongs here.
 
 pub mod ai;
+pub mod cluster;
 pub mod color;
 pub mod history;
 pub mod layout;

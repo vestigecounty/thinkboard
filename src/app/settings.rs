@@ -1,6 +1,7 @@
 //! The settings window — a grouped, scrollable form over [`Config`], opened from
-//! the tray. This module owns the view and the message/field vocabulary; the
-//! edits are applied and persisted in `App::update` (live, no Save button).
+//! the tray. This module owns the view, the message/field vocabulary, and the
+//! `App` side of applying an edit: each one is written to the config, clamped,
+//! persisted, and anything it affects live is refreshed (no Save button).
 //!
 //! Text fields are backed by `App::settings_drafts` (populated from the config
 //! when the window opens) so what you type is what's shown — parsing a number
@@ -10,7 +11,7 @@ use iced::widget::{
     Column, Space, button, column, container, pick_list, row, rule, scrollable, slider, text,
     text_input, toggler,
 };
-use iced::{Alignment, Color, Element, Fill, Font, Padding};
+use iced::{Alignment, Color, Element, Fill, Font, Padding, Task};
 
 use crate::config::Config;
 
@@ -693,6 +694,204 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
 
         // Type/field mismatches (shouldn't happen — editors and fields agree).
         _ => {}
+    }
+}
+
+impl App {
+    /// The raw text of a settings text/number field (seeded from the config when
+    /// the window opens; reflects exactly what the user has typed since).
+    pub(super) fn draft(&self, field: Field) -> &str {
+        self.settings_drafts
+            .get(&field)
+            .map(String::as_str)
+            .unwrap_or("")
+    }
+
+    /// Seeds `settings_drafts` from the current config for every text-editable
+    /// field, so the form opens showing the live values.
+    pub(super) fn populate_settings_drafts(&mut self) {
+        use Field::*;
+        self.settings_drafts.clear();
+        for field in [
+            Canvas, SummonHotkey, ThemeCss, AiUrl, AiModel, AiApiKey, MinZoom, MaxZoom,
+            ZoomSmoothing, WheelZoomStep, PinchZoomStep, AutosaveDebounceMs, ClusterZoom,
+            AutoZoomTrigger, AutoZoomLevel, NewNodeMinWidth, NewNodeMinHeight, MaxNodeWidth,
+            LayoutRankGap, LayoutNodeGap, MaxAiNodes,
+        ] {
+            self.settings_drafts.insert(field, config_text(&self.config, field));
+        }
+    }
+
+    pub(super) fn persist_config(&self) {
+        self.config.save(super::config_path_arg().as_deref());
+    }
+
+    /// Applies one settings edit: mutates the config, clamps it, persists (except
+    /// mid-drag/mid-type, which persist on `Commit`), and refreshes anything the
+    /// change affects live.
+    pub(super) fn apply_setting(&mut self, msg: Msg) -> Task<Message> {
+        match msg {
+            Msg::Toggle(field, b) => {
+                apply(&mut self.config, field, Value::Bool(b));
+                self.config.sanitize();
+                self.persist_config();
+                self.after_setting_change(field)
+            }
+            Msg::Pick(field, choice) => {
+                apply(&mut self.config, field, Value::Text(choice));
+                self.config.sanitize();
+                self.persist_config();
+                self.after_setting_change(field)
+            }
+            Msg::Slide(field, v) => {
+                apply(&mut self.config, field, Value::Num(v));
+                self.config.sanitize();
+                self.after_setting_change(field)
+            }
+            Msg::Edit(field, s) => {
+                if is_number(field) {
+                    if let Ok(v) = s.trim().parse::<f32>() {
+                        apply(&mut self.config, field, Value::Num(v));
+                        self.config.sanitize();
+                    }
+                } else {
+                    apply(&mut self.config, field, Value::Text(s.clone()));
+                    self.config.sanitize();
+                }
+                self.settings_drafts.insert(field, s);
+                self.after_setting_change(field)
+            }
+            Msg::Commit => {
+                self.persist_config();
+                Task::none()
+            }
+            Msg::Browse(field) => self.browse_for(field),
+            Msg::Paste(field) => {
+                if let Some(text) = super::clipboard::read_text() {
+                    let text = text.trim().to_owned();
+                    apply(&mut self.config, field, Value::Text(text.clone()));
+                    self.config.sanitize();
+                    self.settings_drafts.insert(field, text);
+                    self.persist_config();
+                    return self.after_setting_change(field);
+                }
+                Task::none()
+            }
+            Msg::PickPreset(name) => {
+                // "Off" clears the endpoint (AI disabled); a known provider fills
+                // it; "Custom" keeps whatever the user typed.
+                if name == PROVIDER_OFF {
+                    self.config.ai_url = String::new();
+                } else if let Some(preset) = crate::ai::PRESETS.iter().find(|p| p.name == name) {
+                    self.config.ai_url = preset.url.to_owned();
+                } else {
+                    return Task::none();
+                }
+                self.config.sanitize();
+                self.persist_config();
+                // Reflect the change in the URL text field.
+                self.settings_drafts
+                    .insert(Field::AiUrl, self.config.ai_url.clone());
+                Task::none()
+            }
+            Msg::ToggleAdvanced => {
+                self.settings_advanced_open = !self.settings_advanced_open;
+                Task::none()
+            }
+        }
+    }
+
+    /// Live side effects of a settings change (over and above the config write).
+    fn after_setting_change(&mut self, field: Field) -> Task<Message> {
+        self.cache.clear();
+        match field {
+            // These change how node *and* cluster text is drawn — re-rasterize
+            // both. Cluster snapshots aren't produced while rasterize is off, so
+            // turning it on must regenerate them or clusters render empty.
+            Field::RasterizeText | Field::CenterNodeText => {
+                Task::batch([self.refresh_snapshots(), self.schedule_recluster()])
+            }
+            // Arm or disarm the trackpad tap immediately (we're on the main
+            // thread here). The subscription registers the handler separately.
+            Field::SummonGesture => {
+                if crate::platform::SUPPORTS_GESTURES {
+                    crate::platform::set_summon_gesture_enabled(self.config.summon_gesture);
+                }
+                Task::none()
+            }
+            // Retint the live menu-bar icon (macOS template mode); a no-op
+            // elsewhere and before the tray exists. We're on the main thread,
+            // which the tray requires.
+            Field::TrayIconMonochrome => {
+                super::tray::set_monochrome(self.config.tray_icon_monochrome);
+                Task::none()
+            }
+            _ => Task::none(),
+        }
+    }
+
+    /// Opens a file dialog for a path setting. macOS/Windows use the blocking
+    /// dialog on the (main) update thread; Linux runs the async portal dialog on
+    /// iced's runtime (its zbus backend needs one — iced is built with tokio).
+    fn browse_for(&mut self, field: Field) -> Task<Message> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            let picked = rfd::FileDialog::new().pick_file();
+            Task::done(Message::SettingsBrowsed(field, picked))
+        }
+        #[cfg(target_os = "linux")]
+        {
+            Task::perform(
+                async {
+                    rfd::AsyncFileDialog::new()
+                        .pick_file()
+                        .await
+                        .map(|handle| handle.path().to_path_buf())
+                },
+                move |picked| Message::SettingsBrowsed(field, picked),
+            )
+        }
+    }
+
+    /// The current value of a boolean setting, so the palette can flip it.
+    pub(super) fn setting_bool(&self, field: Field) -> bool {
+        let c = &self.config;
+        match field {
+            Field::DismissOnBackgroundClick => c.dismiss_on_background_click,
+            Field::PersistAcrossSpaces => c.persist_across_spaces,
+            Field::SummonGesture => c.summon_gesture,
+            Field::CenterNodeText => c.center_node_text,
+            Field::OverlayTransparent => c.overlay_transparent,
+            Field::TrayIconMonochrome => c.tray_icon_monochrome,
+            Field::RasterizeText => c.rasterize_text,
+            Field::NodeScrollbars => c.node_scrollbars,
+            Field::AiCompletions => c.ai_completions,
+            Field::AiThinking => c.ai_thinking,
+            _ => false,
+        }
+    }
+
+    /// Applies a resolved "Browse…" dialog result to its field.
+    pub(super) fn settings_browsed(&mut self, field: Field, path: Option<std::path::PathBuf>) {
+        let Some(path) = path else {
+            return;
+        };
+        let text = path.to_string_lossy().into_owned();
+        self.settings_drafts.insert(field, text.clone());
+        apply(&mut self.config, field, Value::Text(text));
+        self.config.sanitize();
+        self.persist_config();
+    }
+
+    /// Closes the settings window's state (its drafts and the Advanced
+    /// disclosure), persisting whatever was typed.
+    pub(super) fn close_settings_window(&mut self, persist: bool) {
+        if persist {
+            self.persist_config();
+        }
+        self.settings_window = None;
+        self.settings_drafts.clear();
+        self.settings_advanced_open = false;
     }
 }
 

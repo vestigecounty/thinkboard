@@ -372,10 +372,128 @@ pub(super) fn style(app: &App, theme: &Theme) -> iced::theme::Style {
     style
 }
 
+/// Builds a `"Ctrl+Shift+K"`-style hotkey string from a captured key + modifiers,
+/// in the token format the registrar's parser accepts (it uppercases and takes
+/// `"K"`, `"F12"`, `"Space"`, `"Super"`, …). Returns `None` for a bare modifier
+/// or an unidentified key — meaning "no complete combination yet".
+fn hotkey_string(
+    key: &iced::keyboard::Key,
+    physical: iced::keyboard::key::Physical,
+    modifiers: iced::keyboard::Modifiers,
+) -> Option<String> {
+    use iced::keyboard::key::{Key, Named};
+
+    let token = match key {
+        Key::Named(
+            Named::Shift | Named::Control | Named::Alt | Named::Super | Named::Meta | Named::Hyper,
+        ) => return None,
+        Key::Named(named) => format!("{named:?}"),
+        // Record the latin letter for the physical position (the same trick the
+        // in-app shortcuts use), so a letter recorded on a non-QWERTY layout
+        // still maps to the physical Code the global hotkey actually fires on.
+        // Fall back to the layout character for keys with no latin mapping.
+        Key::Character(c) => key
+            .to_latin(physical)
+            .map_or_else(|| c.to_uppercase(), |latin| latin.to_uppercase().to_string()),
+        Key::Unidentified => return None,
+    };
+
+    let mut parts: Vec<String> = Vec::new();
+    if modifiers.control() {
+        parts.push("Ctrl".to_owned());
+    }
+    if modifiers.alt() {
+        parts.push("Alt".to_owned());
+    }
+    if modifiers.shift() {
+        parts.push("Shift".to_owned());
+    }
+    if modifiers.logo() {
+        parts.push("Super".to_owned());
+    }
+    parts.push(token);
+    Some(parts.join("+"))
+}
+
+/// Filters raw events while recording a summon hotkey: forwards each key press
+/// so [`App::capture_hotkey`] can turn one into the shortcut. Subscribed only
+/// while recording (see `App::subscription`).
+pub(super) fn capture_hotkey_event(
+    event: iced::Event,
+    _status: iced::event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    if let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+        key,
+        physical_key,
+        modifiers,
+        ..
+    }) = event
+    {
+        Some(Message::HotkeyCaptured(key, physical_key, modifiers))
+    } else {
+        None
+    }
+}
+
+impl App {
+    /// Turns a captured key + modifiers into a summon-hotkey string, validates it
+    /// with the real parser, and sets it if valid. Escape cancels; a bare
+    /// modifier keeps waiting for the actual key.
+    pub(super) fn capture_hotkey(
+        &mut self,
+        key: iced::keyboard::Key,
+        physical: iced::keyboard::key::Physical,
+        modifiers: iced::keyboard::Modifiers,
+    ) {
+        use iced::keyboard::key::{Key, Named};
+
+        // Escape cancels; a bare modifier (or nothing yet) keeps waiting.
+        if matches!(&key, Key::Named(Named::Escape)) {
+            self.hotkey_recording = false;
+            return;
+        }
+        let Some(candidate) = hotkey_string(&key, physical, modifiers) else {
+            return;
+        };
+
+        // Only accept combinations the registrar can actually parse.
+        if parse_hotkey(&candidate).is_some() {
+            self.config.summon_hotkey = candidate.clone();
+            self.persist_config();
+            self.settings_drafts
+                .insert(super::settings::Field::SummonHotkey, candidate);
+            self.hotkey_recording = false;
+            self.reregister_hotkey();
+        }
+    }
+
+    /// Re-registers the summon hotkey with the OS after it changes in settings,
+    /// so it takes effect without a restart.
+    fn reregister_hotkey(&mut self) {
+        let Some(manager) = &self.hotkey_manager else {
+            return;
+        };
+        if let Some(old) = self.registered_hotkey.take() {
+            let _ = manager.unregister(old);
+        }
+        if let Some(hotkey) = summon_hotkey(&self.config.summon_hotkey) {
+            match manager.register(hotkey) {
+                Ok(()) => self.registered_hotkey = Some(hotkey),
+                Err(error) => eprintln!("could not register the summon hotkey: {error}"),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{platform_key, preselected_canvas, summon_hotkey};
+    use super::{hotkey_string, parse_hotkey, platform_key, preselected_canvas, summon_hotkey};
     use global_hotkey::hotkey::{Code, Modifiers};
+    // The recorder works in iced's key vocabulary; the registrar in
+    // global_hotkey's. Both name a `Code`/`Modifiers`, so alias iced's apart.
+    use iced::keyboard::Modifiers as KeyMods;
+    use iced::keyboard::key::{Code as KeyCode, Key, Named, Physical};
 
     #[test]
     fn canvas_arg_wins_over_config() {
@@ -435,5 +553,59 @@ mod tests {
         assert_eq!(platform_key(Code::Pause), if mac { Code::F15 } else { Code::Pause });
         // Ordinary keys are unchanged on every platform.
         assert_eq!(platform_key(Code::F12), Code::F12);
+    }
+
+    #[test]
+    fn hotkey_string_builds_parseable_combinations() {
+        let k = Physical::Code(KeyCode::KeyK);
+        // A plain letter (uppercased); modifiers ordered Ctrl, Alt, Shift, Super.
+        assert_eq!(
+            hotkey_string(&Key::Character("k".into()), k, KeyMods::empty()),
+            Some("K".to_owned())
+        );
+        // Modifier order follows macOS's ⌃⌥⇧⌘ (Super/Cmd last).
+        assert_eq!(
+            hotkey_string(&Key::Character("k".into()), k, KeyMods::LOGO | KeyMods::SHIFT),
+            Some("Shift+Super+K".to_owned())
+        );
+        // Named keys use their code name.
+        assert_eq!(
+            hotkey_string(&Key::Named(Named::F12), k, KeyMods::ALT),
+            Some("Alt+F12".to_owned())
+        );
+
+        // Every produced string must be accepted by the registrar's parser —
+        // otherwise pressing the current hotkey can't re-bind it.
+        for combo in [
+            hotkey_string(&Key::Character("k".into()), k, KeyMods::LOGO | KeyMods::SHIFT),
+            hotkey_string(&Key::Named(Named::F12), k, KeyMods::ALT),
+            hotkey_string(&Key::Named(Named::Space), k, KeyMods::CTRL),
+        ] {
+            let combo = combo.expect("a complete combination");
+            assert!(parse_hotkey(&combo).is_some(), "parser rejected {combo:?}");
+        }
+    }
+
+    #[test]
+    fn hotkey_string_records_the_physical_latin_key_off_qwerty() {
+        // A Cyrillic 'к' pressed on the physical K position records as latin "K",
+        // so the recorded hotkey matches the physical Code the global hotkey
+        // fires on (and the registrar's parser accepts it).
+        let combo = hotkey_string(
+            &Key::Character("к".into()),
+            Physical::Code(KeyCode::KeyK),
+            KeyMods::LOGO,
+        );
+        assert_eq!(combo, Some("Super+K".to_owned()));
+        assert!(parse_hotkey(&combo.unwrap()).is_some());
+    }
+
+    #[test]
+    fn hotkey_string_waits_through_bare_modifiers() {
+        let k = Physical::Code(KeyCode::KeyK);
+        // A held modifier alone (or an unidentified key) is not a combination.
+        assert_eq!(hotkey_string(&Key::Named(Named::Shift), k, KeyMods::SHIFT), None);
+        assert_eq!(hotkey_string(&Key::Named(Named::Super), k, KeyMods::LOGO), None);
+        assert_eq!(hotkey_string(&Key::Unidentified, k, KeyMods::empty()), None);
     }
 }
