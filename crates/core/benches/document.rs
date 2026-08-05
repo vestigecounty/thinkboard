@@ -11,7 +11,7 @@
 use criterion::{BenchmarkId, Criterion, Throughput, black_box, criterion_group, criterion_main};
 use serde_json::Map;
 use thinkboard_core::model::{CanvasDocument, CanvasEdge, CanvasNode};
-use thinkboard_core::{cluster, layout, markdown, model, syntax};
+use thinkboard_core::{cluster, layout, markdown, model, search, syntax};
 
 /// Board sizes to measure at. 800 is well past a comfortable hand-made board;
 /// it's here to expose super-linear behaviour, not because anyone has one.
@@ -201,6 +201,29 @@ fn upstream(c: &mut Criterion) {
     group.finish();
 }
 
+/// Search-as-you-type: the whole board is rescanned on every keystroke in the
+/// find bar, on the main thread. Measured on a hit-free query (the common case
+/// while typing a word out) and an all-ASCII board, which is the fast path.
+fn search(c: &mut Criterion) {
+    let mut group = c.benchmark_group("find_matches");
+    for size in SIZES {
+        let (nodes, _) = board(size);
+        group.throughput(Throughput::Elements(size as u64));
+        group.bench_with_input(BenchmarkId::new("miss", size), &size, |b, _| {
+            b.iter(|| search::find_matches(black_box(&nodes), black_box("zzzz")))
+        });
+        group.bench_with_input(BenchmarkId::new("hit", size), &size, |b, _| {
+            b.iter(|| search::find_matches(black_box(&nodes), black_box("note")))
+        });
+    }
+    // Non-ASCII forces the folded-char path for every node.
+    let (nodes, _) = board(300);
+    group.bench_function("unicode_query/300", |b| {
+        b.iter(|| search::find_matches(black_box(&nodes), black_box("nöte")))
+    });
+    group.finish();
+}
+
 /// Id generation, called for every node, edge and paste.
 fn ids(c: &mut Criterion) {
     c.bench_function("random_id", |b| b.iter(model::random_id));
@@ -215,6 +238,7 @@ criterion_group!(
     markdown_parse,
     syntax_highlight,
     upstream,
+    search,
     ids,
 );
 criterion_main!(benches);

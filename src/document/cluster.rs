@@ -273,8 +273,16 @@ mod tests {
     fn a_bigger_card_fits_a_bigger_font() {
         // The font is fitted to the box, so the same text in a larger cluster
         // renders larger — the point of the fit.
-        let small = compute(&[text_node("a", 0.0, 0.0, 200.0, 100.0)], &[], &Theme::default());
-        let large = compute(&[text_node("a", 0.0, 0.0, 800.0, 400.0)], &[], &Theme::default());
+        let small = compute(
+            &[text_node("a", 0.0, 0.0, 200.0, 100.0)],
+            &[],
+            &Theme::default(),
+        );
+        let large = compute(
+            &[text_node("a", 0.0, 0.0, 800.0, 400.0)],
+            &[],
+            &Theme::default(),
+        );
         assert!(large.clusters[0].font_size > small.clusters[0].font_size);
     }
 
@@ -310,7 +318,12 @@ mod tests {
         // Boxes wide enough for "fits" to be monotonic in size, which is what
         // both searches assume. A cluster card is at least a member node wide,
         // so these are the shapes that actually occur.
-        let boxes = [(300.0, 200.0), (400.0, 300.0), (900.0, 400.0), (1600.0, 1200.0)];
+        let boxes = [
+            (300.0, 200.0),
+            (400.0, 300.0),
+            (900.0, 400.0),
+            (1600.0, 1200.0),
+        ];
         for text in texts {
             for (w, h) in boxes {
                 let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(w, h));
@@ -333,7 +346,12 @@ mod tests {
         // standing behaviour, not something this search introduced.
         let theme = Theme::default();
         let text = "# Ideas\n\nSome **bold** text and a list:\n\n- one\n- two";
-        for (w, h) in [(200.0, 120.0), (300.0, 200.0), (400.0, 300.0), (900.0, 400.0)] {
+        for (w, h) in [
+            (200.0, 120.0),
+            (300.0, 200.0),
+            (400.0, 300.0),
+            (900.0, 400.0),
+        ] {
             let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(w, h));
             let size = fit_font_size(text, bounds, &theme);
             let avail_w = (w - PADDING * 2.0).max(20.0);

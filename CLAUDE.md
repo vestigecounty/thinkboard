@@ -98,6 +98,10 @@ module and its `impl App` block there — keep `update` a dispatch table.
   tool wrote survive a load/save cycle. Same for top-level keys (`doc_extra`).
 - `to_canvas_json` mimics Obsidian's own formatting: tab-indented top level,
   each node/edge as one compact line, integer coordinates.
+- Edges carry `label`, `color`, `fromEnd` and `toEnd`, all read through
+  accessors off `extra` like the node fields. `toEnd` defaults to an arrow and
+  `fromEnd` to none — that's how Obsidian omits them for the common case, so an
+  absent field is meaningful, not missing data.
 - Node `type` is a `String` in the file, but never match on it directly: call
   `CanvasNode::node_kind()`, which resolves the four stored types into what a
   node actually *is* — text, image, note, attachment, link or group. The
@@ -178,8 +182,10 @@ splitting the global `with_raster` mutex — a keystroke's auto-size costs
 the lock is taken per call rather than held across a batch. The `contention`
 bench guards that last claim.
 
-Still live: `find_matches` re-scans every node per keystroke and folds each into
-a fresh `Vec<char>` — 830 µs at 800 nodes, on the main thread.
+- `find_matches` (now `thinkboard_core::search`) compares ASCII text and query
+  as bytes with no intermediate, falling back to a folded `char` buffer reused
+  across nodes. 830 µs → 64 µs at 800 nodes. The Unicode path is ~5× the ASCII
+  one, which is the right place to pay it.
 
 ## Testing
 

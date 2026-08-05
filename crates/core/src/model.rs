@@ -186,6 +186,58 @@ fn default_to_side() -> String {
     "left".to_owned()
 }
 
+/// How a link terminates at one of its ends.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EdgeEnd {
+    /// The line simply stops — an undirected link.
+    None,
+    Arrow,
+}
+
+impl CanvasEdge {
+    /// The link's caption, drawn along the curve.
+    ///
+    /// Like a group's label and a link node's URL, this lives in `extra`: the
+    /// app renders it but never writes it, and `extra` round-trips it untouched.
+    pub fn label(&self) -> Option<&str> {
+        self.extra
+            .get("label")
+            .and_then(Value::as_str)
+            .filter(|label| !label.trim().is_empty())
+    }
+
+    /// The link's own color, if the document gives it one. Same value space as
+    /// a node's: an Obsidian preset code or a hex string.
+    pub fn palette_color(&self) -> Option<Rgba> {
+        self.extra
+            .get("color")
+            .and_then(Value::as_str)
+            .and_then(parse_color)
+    }
+
+    /// How the link terminates at its source. Obsidian omits `fromEnd` for the
+    /// common case, which means a bare end.
+    pub fn from_end(&self) -> EdgeEnd {
+        edge_end(self.extra.get("fromEnd"), EdgeEnd::None)
+    }
+
+    /// How the link terminates at its target — an arrowhead unless the document
+    /// says otherwise.
+    pub fn to_end(&self) -> EdgeEnd {
+        edge_end(self.extra.get("toEnd"), EdgeEnd::Arrow)
+    }
+}
+
+/// Reads an `arrow`/`none` end marker, falling back to `default` when the field
+/// is absent or holds something unrecognized.
+fn edge_end(value: Option<&Value>, default: EdgeEnd) -> EdgeEnd {
+    match value.and_then(Value::as_str) {
+        Some("arrow") => EdgeEnd::Arrow,
+        Some("none") => EdgeEnd::None,
+        _ => default,
+    }
+}
+
 /// Removes the edge at `index`, returning whether the list changed. An
 /// out-of-range index — e.g. a selection left dangling after the edge list
 /// shrank — is a no-op rather than a panic.
@@ -697,6 +749,64 @@ mod tests {
 
         // Absent on the kinds that don't carry them.
         assert_eq!(node(json!({"id": "n", "type": "text"})).label(), None);
+    }
+
+    fn edge_json(json: serde_json::Value) -> CanvasEdge {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn an_edges_ends_default_the_way_obsidian_omits_them() {
+        use serde_json::json;
+        let bare = edge_json(json!({"id": "e", "fromNode": "a", "toNode": "b"}));
+        // The common case is written with neither field: a plain arrow.
+        assert_eq!(bare.from_end(), EdgeEnd::None);
+        assert_eq!(bare.to_end(), EdgeEnd::Arrow);
+
+        let two_way = edge_json(json!({
+            "id": "e", "fromNode": "a", "toNode": "b",
+            "fromEnd": "arrow", "toEnd": "arrow",
+        }));
+        assert_eq!(two_way.from_end(), EdgeEnd::Arrow);
+        assert_eq!(two_way.to_end(), EdgeEnd::Arrow);
+
+        let undirected = edge_json(json!({
+            "id": "e", "fromNode": "a", "toNode": "b", "toEnd": "none",
+        }));
+        assert_eq!(undirected.to_end(), EdgeEnd::None);
+
+        // Junk falls back to the default rather than losing the arrow.
+        let junk = edge_json(json!({"id": "e", "fromNode": "a", "toNode": "b", "toEnd": "wat"}));
+        assert_eq!(junk.to_end(), EdgeEnd::Arrow);
+    }
+
+    #[test]
+    fn an_edges_label_and_color_are_read_from_the_document() {
+        use serde_json::json;
+        let e = edge_json(json!({
+            "id": "e", "fromNode": "a", "toNode": "b",
+            "label": "depends on", "color": "4",
+        }));
+        assert_eq!(e.label(), Some("depends on"));
+        assert!(e.palette_color().is_some());
+
+        let bare = edge_json(json!({"id": "e", "fromNode": "a", "toNode": "b"}));
+        assert_eq!(bare.label(), None);
+        assert_eq!(bare.palette_color(), None);
+
+        // A blank label is the same as none — it must not reserve a chip.
+        let blank = edge_json(json!({"id": "e", "fromNode": "a", "toNode": "b", "label": "  "}));
+        assert_eq!(blank.label(), None);
+    }
+
+    #[test]
+    fn an_edges_own_fields_round_trip() {
+        let source = r#"{"nodes":[],"edges":[{"id":"e","fromNode":"a","fromSide":"right","toNode":"b","toSide":"left","label":"depends on","color":"4","toEnd":"none"}]}"#;
+        let doc: CanvasDocument = serde_json::from_str(source).unwrap();
+        let json = doc.to_canvas_json().unwrap();
+        assert!(json.contains(r#""label":"depends on""#));
+        assert!(json.contains(r#""color":"4""#));
+        assert!(json.contains(r#""toEnd":"none""#));
     }
 
     #[test]

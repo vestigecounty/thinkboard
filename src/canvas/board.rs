@@ -23,9 +23,9 @@ use iced::{Color, Point, Rectangle, Renderer, Size, Theme, Vector};
 
 use crate::Message;
 use crate::camera::Camera;
-use super::geometry::{EdgeGeometry, bezier_distance, within_reach};
+use super::geometry::{EdgeGeometry, bezier_distance, cubic_bezier, within_reach};
 use crate::document::IntoColor;
-use crate::model::{CanvasEdge, CanvasNode, NodeKind};
+use crate::model::{CanvasEdge, CanvasNode, EdgeEnd, NodeKind};
 use crate::theme::Theme as ColorTheme;
 
 pub const BACKGROUND: Color = Color::from_rgb(0.12, 0.12, 0.13);
@@ -35,6 +35,12 @@ const CARD_BORDER: Color = Color::from_rgb(0.45, 0.45, 0.45);
 /// Node rendering uses the (possibly themed) color from `Board::theme`.
 pub const TEXT_COLOR: Color = Color::from_rgb(0.86, 0.87, 0.87);
 const EDGE_COLOR: Color = Color::from_rgba(0.35, 0.62, 1.0, 0.75);
+
+/// Point size (world px) of a link's caption, and the zoom below which drawing
+/// one is pointless — the text is sub-pixel and the board is heading for
+/// cluster mode anyway.
+const EDGE_LABEL_SIZE: f32 = 12.0;
+const EDGE_LABEL_MIN_ZOOM: f32 = 0.45;
 /// Lavender sheen swept along the chain feeding a pending AI request, echoing
 /// the default response-node tint (Obsidian's purple).
 const SHIMMER: Color = Color::from_rgba(0.80, 0.74, 0.97, 1.0);
@@ -2491,9 +2497,20 @@ impl Board<'_> {
     }
 
     fn draw_edges(&self, frame: &mut Frame) {
-        for (index, _) in self.edges.iter().enumerate() {
-            self.draw_edge_line(frame, index, EDGE_COLOR);
+        for (index, edge) in self.edges.iter().enumerate() {
+            self.draw_edge_line(frame, index, self.edge_color(edge));
         }
+        // Labels last, so a caption is never crossed by a later edge's line.
+        for (index, edge) in self.edges.iter().enumerate() {
+            self.draw_edge_label(frame, index, edge);
+        }
+    }
+
+    /// A link's own colour, falling back to the board's default. The hover and
+    /// selection passes override this with their highlight colours, so a
+    /// coloured link still shows the same feedback as any other.
+    fn edge_color(&self, edge: &CanvasEdge) -> Color {
+        edge.palette_color().map(IntoColor::into_color).unwrap_or(EDGE_COLOR)
     }
 
     /// The opaque outline (ring) of a highlighted edge: drawn wider than, and
@@ -2502,6 +2519,52 @@ impl Board<'_> {
     /// true and the overlapping line/arrowhead strokes don't compound alpha.
     /// `thickness` scales the ring width (hover uses 1.0; selection a heavier
     /// ring to stand apart).
+    /// Draws a link's caption at the midpoint of its curve, on a small filled
+    /// chip so the text stays readable where it crosses the line.
+    ///
+    /// Sized from the character count rather than measured: the chip only has to
+    /// cover the glyphs behind it, and running the shaper per edge per frame to
+    /// get that exactly right would cost far more than it's worth.
+    fn draw_edge_label(&self, frame: &mut Frame, index: usize, edge: &CanvasEdge) {
+        let Some(label) = edge.label() else {
+            return;
+        };
+        // Below this the caption is unreadable anyway, and a board zoomed out
+        // to its clusters shouldn't pay to draw one per link.
+        let zoom = self.camera.zoom;
+        if zoom < EDGE_LABEL_MIN_ZOOM || self.show_clusters() {
+            return;
+        }
+        let Some(g) = self.edges.get(index).and_then(|e| self.edge_geometry(e)) else {
+            return;
+        };
+
+        let size = EDGE_LABEL_SIZE * zoom;
+        let center = cubic_bezier(&g, 0.5);
+        // ~0.55em per character is a reasonable average for the UI font; the
+        // chip is padded either way, so a little slack is harmless.
+        let width = label.chars().count() as f32 * size * 0.55 + size;
+        let height = size * crate::text_raster::LINE_HEIGHT + size * 0.35;
+        let chip = Rectangle::new(
+            Point::new(center.x - width / 2.0, center.y - height / 2.0),
+            Size::new(width, height),
+        );
+        frame.fill(
+            &Path::rounded_rectangle(chip.position(), chip.size(), (height / 2.0).into()),
+            Color { a: 0.92 * g.alpha, ..self.theme.background },
+        );
+        frame.fill_text(canvas::Text {
+            content: label.to_owned(),
+            position: center,
+            color: Color { a: g.alpha, ..self.theme.text_muted },
+            size: size.into(),
+            font: self.theme.ui_font(),
+            align_x: TextAlignment::Center,
+            align_y: Vertical::Center,
+            ..canvas::Text::default()
+        });
+    }
+
     fn draw_edge_outline(&self, frame: &mut Frame, index: usize, color: Color, thickness: f32) {
         let Some(edge) = self.edges.get(index) else {
             return;
@@ -2554,7 +2617,16 @@ impl Board<'_> {
                     .with_width(2.5 * zoom)
             },
         );
-        self.draw_arrowhead(frame, g.end, &edge.to_side, g.alpha, 8.0 * zoom, 2.0 * zoom, color);
+        // Obsidian records an arrow at the target and none at the source
+        // unless the document says otherwise — an undirected or bidirectional
+        // link is drawn as authored.
+        let (head, width) = (8.0 * zoom, 2.0 * zoom);
+        if edge.to_end() == EdgeEnd::Arrow {
+            self.draw_arrowhead(frame, g.end, &edge.to_side, g.alpha, head, width, color);
+        }
+        if edge.from_end() == EdgeEnd::Arrow {
+            self.draw_arrowhead(frame, g.start, &edge.from_side, g.alpha, head, width, color);
+        }
     }
 
     /// The suggestion card under `world`, if any (including the placeholder,

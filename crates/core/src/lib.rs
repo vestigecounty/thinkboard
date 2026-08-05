@@ -12,5 +12,6 @@ pub mod history;
 pub mod layout;
 pub mod markdown;
 pub mod model;
+pub mod search;
 pub mod snap;
 pub mod syntax;

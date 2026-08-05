@@ -381,30 +381,6 @@ fn per_frame_overheads(c: &mut Criterion) {
             })
         });
 
-        // Search-as-you-type: the whole board is rescanned per keystroke, and
-        // the current implementation folds each node's text into a fresh
-        // `Vec<char>` to do it.
-        group.bench_with_input(BenchmarkId::new("find_matches", size), &size, |b, _| {
-            b.iter(|| {
-                let needle: Vec<char> = "search".chars().collect();
-                let mut hits = 0usize;
-                for node in black_box(&nodes) {
-                    let Some(text) = node.text.as_deref() else { continue };
-                    let hay: Vec<char> =
-                        text.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect();
-                    let mut start = 0;
-                    while start + needle.len() <= hay.len() {
-                        if hay[start..start + needle.len()] == needle[..] {
-                            hits += 1;
-                            start += needle.len();
-                        } else {
-                            start += 1;
-                        }
-                    }
-                }
-                hits
-            })
-        });
     }
     // A warm measurement is dominated by building its cache key, which clones
     // the node's text on every call — including the hits.
