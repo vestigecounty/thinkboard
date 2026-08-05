@@ -98,11 +98,20 @@ module and its `impl App` block there — keep `update` a dispatch table.
   tool wrote survive a load/save cycle. Same for top-level keys (`doc_extra`).
 - `to_canvas_json` mimics Obsidian's own formatting: tab-indented top level,
   each node/edge as one compact line, integer coordinates.
-- Node `type` is a `String`, not an enum. Only `"text"` and `"file"` are
-  rendered today — `"group"` and `"link"` nodes load and round-trip but draw as
-  ordinary cards, and a `file` node pointing at a `.md` note renders blank
-  (every `file` node is loaded as an image, with no extension check). These are
-  known gaps, not invariants to preserve.
+- Node `type` is a `String` in the file, but never match on it directly: call
+  `CanvasNode::node_kind()`, which resolves the four stored types into what a
+  node actually *is* — text, image, note, attachment, link or group. The
+  image-vs-Markdown distinction for `file` nodes lives only in that one place
+  (it depends on the path's extension, not on `type`).
+- Only what the app itself *writes* is a struct field. A group's `label` and a
+  link's `url` are read through accessors off `extra`, which already
+  round-trips them — so the app renders them without ever having to serialize
+  them back.
+- **Groups are frames, not cards.** They draw behind everything, are grabbable
+  only by their header strip, and are excluded from clustering, marquee
+  selection, ports, shadows — and, importantly, from every *obstacle* set
+  (placement, auto-size neighbours, AI sibling stacking). A frame encloses
+  other nodes, so counting it as occupied space pins the cards inside it.
 
 ## Testing
 

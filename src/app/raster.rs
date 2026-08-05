@@ -232,7 +232,7 @@ impl App {
             .iter()
             .enumerate()
             .filter(|(index, node)| {
-                node.kind == "text"
+                node.is_text()
                     && editing != Some(*index)
                     // Search matches draw live so their highlight shows.
                     && !self.is_search_match(*index)

@@ -193,7 +193,7 @@ impl App {
         let Some(node) = self.nodes.get(index) else {
             return;
         };
-        if node.kind != "text" {
+        if !node.is_text() {
             return;
         }
 
@@ -215,7 +215,9 @@ impl App {
             .nodes
             .iter()
             .enumerate()
-            .filter(|(i, _)| *i != index)
+            // Frames are not neighbours: a group encloses this card, so it
+            // straddles the card's centre and would pin its width forever.
+            .filter(|(i, n)| *i != index && !n.is_group())
             .map(|(_, n)| node_world_rect(n));
         let cap = horizontal_width_cap(me, others, snapped, NEIGHBOR_GAP);
         // Only limit growth — never force the card narrower than it already is
@@ -320,6 +322,10 @@ impl App {
             !self
                 .nodes
                 .iter()
+                // Frames aren't obstacles — a group is drawn *around* nodes, so
+                // treating it as occupied space would push every new node out
+                // of it.
+                .filter(|node| !node.is_group())
                 .any(|node| rect.intersects(&node_world_rect(node)))
                 && !avoid.iter().any(|other| rect.intersects(other))
         };
@@ -543,7 +549,7 @@ impl App {
             .nodes
             .iter()
             .enumerate()
-            .filter(|(i, _)| !ignore.contains(i))
+            .filter(|(i, node)| !ignore.contains(i) && !node.is_group())
             .map(|(_, node)| node_world_rect(node))
             .collect();
         let (dx, dy) = nearest_free_offset(&block, &obstacles);

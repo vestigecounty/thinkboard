@@ -36,7 +36,7 @@ pub(super) fn find_matches(nodes: &[CanvasNode], query: &str) -> Vec<Match> {
 
     let mut matches = Vec::new();
     for (node, canvas_node) in nodes.iter().enumerate() {
-        if canvas_node.kind != "text" {
+        if !canvas_node.is_text() {
             continue;
         }
         let Some(text) = canvas_node.text.as_deref() else {

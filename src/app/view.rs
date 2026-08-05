@@ -181,6 +181,7 @@ impl App {
                 .collect(),
             edges: &self.edges,
             images: &self.images,
+            notes: &self.notes,
             clusters: &self.clusters.list,
             cluster_links: &self.clusters.links,
             cluster_snapshots: &self.clusters.snapshots,
@@ -249,7 +250,10 @@ impl App {
 
         if cluster_weight < 1.0 {
             let node_alpha = 0.6 * content_alpha * (1.0 - cluster_weight);
-            instances.extend(self.nodes.iter().enumerate().map(|(index, node)| {
+            // Frames get no shadow: they sit behind the cards they enclose, so
+            // one would fall *across* their own contents.
+            let cards = self.nodes.iter().enumerate().filter(|(_, node)| !node.is_group());
+            instances.extend(cards.map(|(index, node)| {
                 let mut rect = camera.rect_to_screen(node_world_rect(node));
                 let mut alpha = node_alpha;
                 // Track the spawn zoom-in of freshly created nodes.

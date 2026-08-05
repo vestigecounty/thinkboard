@@ -13,7 +13,7 @@
 
 use iced::{Point, Rectangle, Size};
 
-use crate::model::{CanvasEdge, CanvasNode};
+use crate::model::{CanvasEdge, CanvasNode, NodeKind};
 use crate::text_raster;
 use crate::theme::Theme;
 
@@ -55,7 +55,7 @@ pub fn compute(nodes: &[CanvasNode], edges: &[CanvasEdge], theme: &Theme) -> Clu
             let bounds = Rectangle::new(Point::new(x, y), Size::new(width, height));
             let node = &nodes[group.main];
 
-            if node.kind == "file" {
+            if node.node_kind() == NodeKind::Image {
                 Cluster {
                     bounds,
                     text: String::new(),
@@ -64,7 +64,10 @@ pub fn compute(nodes: &[CanvasNode], edges: &[CanvasEdge], theme: &Theme) -> Clu
                     members: group.members,
                 }
             } else {
-                let text = node.text.as_deref().unwrap_or("").trim().to_owned();
+                // Notes, links and attachments summarize by name rather than by
+                // body: at cluster zoom the title is what identifies them, and
+                // a note's text isn't in the document at all.
+                let text = summary_text(node);
                 let font_size = fit_font_size(&text, bounds, theme);
                 Cluster {
                     bounds,
@@ -80,6 +83,17 @@ pub fn compute(nodes: &[CanvasNode], edges: &[CanvasEdge], theme: &Theme) -> Clu
     Clustering {
         clusters,
         links: grouping.links,
+    }
+}
+
+/// The text a cluster card shows for its main note: the note's own text for a
+/// canvas note, and the file title / URL for the kinds whose content isn't in
+/// the document.
+fn summary_text(node: &CanvasNode) -> String {
+    match node.node_kind() {
+        NodeKind::Note | NodeKind::Attachment => node.file_title().unwrap_or_default(),
+        NodeKind::Link => node.url().unwrap_or_default().to_owned(),
+        _ => node.text.as_deref().unwrap_or("").trim().to_owned(),
     }
 }
 

@@ -51,7 +51,26 @@ pub struct Group {
 /// Groups nearby notes (single-linkage by [`PROXIMITY`]) and picks each
 /// group's main note — the text root with the most edges, else the
 /// highest-degree member.
+///
+/// Group nodes take no part: they are frames the user draws *around* other
+/// nodes, so their boxes would swallow every member through the containment
+/// pass and collapse the whole board into one cluster.
 pub fn group(nodes: &[CanvasNode], edges: &[CanvasEdge]) -> Grouping {
+    let clustered: Vec<usize> = (0..nodes.len()).filter(|&i| !nodes[i].is_group()).collect();
+    if clustered.len() < nodes.len() {
+        // Re-run over just the participating nodes, then map the local indices
+        // in the result back onto the caller's array.
+        let subset: Vec<CanvasNode> = clustered.iter().map(|&i| nodes[i].clone()).collect();
+        let mut grouping = group(&subset, edges);
+        for group in &mut grouping.groups {
+            group.main = clustered[group.main];
+            for member in &mut group.members {
+                *member = clustered[*member];
+            }
+        }
+        return grouping;
+    }
+
     let n = nodes.len();
     if n == 0 {
         return Grouping {
@@ -245,7 +264,7 @@ fn select_main(
     let text: Vec<usize> = members
         .iter()
         .copied()
-        .filter(|&i| nodes[i].kind == "text")
+        .filter(|&i| nodes[i].is_text())
         .collect();
     let pool = if text.is_empty() { members } else { &text };
 
@@ -431,6 +450,53 @@ mod tests {
         ];
         let grouping = group(&nodes, &[edge("a", "b")]);
         assert!(grouping.links.is_empty());
+    }
+
+    #[test]
+    fn a_group_frame_takes_no_part_in_clustering() {
+        // A group's box encloses both notes and is far larger than PROXIMITY.
+        // Left in, containment would absorb everything into one cluster and the
+        // frame itself would become a member.
+        let nodes = vec![
+            text_node("a", 0.0, 0.0, 100.0, 100.0),
+            text_node("b", 1000.0, 0.0, 100.0, 100.0),
+            node("frame", "group", -50.0, -50.0, 1200.0, 200.0),
+        ];
+        let grouping = group(&nodes, &[]);
+
+        assert_eq!(grouping.groups.len(), 2, "the frame must not merge them");
+        assert!(
+            grouping.groups.iter().all(|g| !g.members.contains(&2)),
+            "the frame itself is never a cluster member"
+        );
+        // The surviving indices still address the caller's array.
+        assert!(grouping.groups.iter().any(|g| g.members == [0]));
+        assert!(grouping.groups.iter().any(|g| g.members == [1]));
+    }
+
+    #[test]
+    fn indices_survive_the_group_filter() {
+        // A group node *between* two notes shifts the local indices; the mapping
+        // back must undo that for both `members` and `main`.
+        let nodes = vec![
+            text_node("a", 0.0, 0.0, 100.0, 100.0),
+            node("frame", "group", -50.0, -50.0, 1200.0, 200.0),
+            text_node("b", 1000.0, 0.0, 100.0, 100.0),
+        ];
+        let grouping = group(&nodes, &[]);
+
+        let a = group_with(&grouping, 0);
+        assert_eq!(a.main, 0);
+        assert_eq!(a.members, [0]);
+        let b = group_with(&grouping, 2);
+        assert_eq!(b.main, 2, "main indexes the caller's array, not the subset");
+        assert_eq!(b.members, [2]);
+    }
+
+    #[test]
+    fn a_board_of_only_groups_clusters_nothing() {
+        let nodes = vec![node("frame", "group", 0.0, 0.0, 400.0, 300.0)];
+        assert!(group(&nodes, &[]).groups.is_empty());
     }
 
     #[test]

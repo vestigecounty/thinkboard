@@ -12,7 +12,7 @@
 use super::*;
 
 /// An app holding `nodes` and `edges`, as if a board were already open.
-fn app_with(nodes: Vec<CanvasNode>, edges: Vec<CanvasEdge>) -> App {
+pub(super) fn app_with(nodes: Vec<CanvasNode>, edges: Vec<CanvasEdge>) -> App {
     App::build(Init {
         config: config::Config::default(),
         theme: ColorTheme::default(),
@@ -380,4 +380,77 @@ fn undo_leaves_no_stale_selection_behind() {
 
     assert!(app.selected.is_empty());
     assert_eq!(app.selected_edge, None);
+}
+
+// --- Obsidian node kinds ---
+
+fn node_of(id: &str, kind: &str) -> CanvasNode {
+    CanvasNode {
+        id: id.to_owned(),
+        kind: kind.to_owned(),
+        text: None,
+        file: None,
+        x: 0.0,
+        y: 0.0,
+        width: 800.0,
+        height: 600.0,
+        color: None,
+        extra: Default::default(),
+    }
+}
+
+#[test]
+fn a_group_frame_never_blocks_placement_inside_it() {
+    // A frame is drawn around nodes, so a new node has to be allowed to land
+    // inside one. Treating it as occupied space flung every new node clear of
+    // the whole group.
+    let mut app = app_with(vec![node_of("frame", "group")], Vec::new());
+
+    let requested = Point::new(400.0, 300.0); // dead centre of the frame
+    assert_eq!(app.find_free_placement(requested, 200.0, 100.0), requested);
+
+    // And creating one there really does leave it there.
+    send(&mut app, Message::CreateNode { world: requested });
+    let created = &app.nodes[1];
+    assert!(
+        created.x > 0.0 && created.y > 0.0 && created.x < 800.0,
+        "a new node should sit inside the frame, got ({}, {})",
+        created.x,
+        created.y
+    );
+}
+
+#[test]
+fn a_card_inside_a_frame_still_widens_to_fit() {
+    // The frame straddles the card's centre, so counted as a horizontal
+    // neighbour it pins the card at its current width — the card can then only
+    // ever grow downwards, however much room the frame actually leaves.
+    let mut inner = text_node("a", "");
+    inner.x = 100.0;
+    inner.y = 100.0;
+    inner.width = 250.0; // the configured minimum, so growth is unambiguous
+    let mut app = app_with(vec![node_of("frame", "group"), inner], Vec::new());
+
+    send(&mut app, Message::StartEditing { index: 1, at: None });
+    // One long line with nowhere to wrap: fitting it means widening.
+    type_text(&mut app, "one long unbroken line of text that has to widen the card");
+
+    assert!(
+        app.nodes[1].width > 250.0,
+        "the card should have widened to fit; got {}",
+        app.nodes[1].width
+    );
+}
+
+#[test]
+fn frames_take_no_part_in_clustering() {
+    let mut a = text_node("a", "node a");
+    a.x = 0.0;
+    let mut b = text_node("b", "node b");
+    b.x = 2000.0;
+    let app = app_with(vec![node_of("frame", "group"), a, b], Vec::new());
+
+    // Two distant notes stay two clusters, and the frame joins neither.
+    assert_eq!(app.clusters.list.len(), 2);
+    assert!(app.clusters.list.iter().all(|c| !c.members.contains(&0)));
 }

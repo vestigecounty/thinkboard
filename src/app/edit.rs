@@ -200,7 +200,7 @@ impl App {
         let Some(node) = self.nodes.get(index) else {
             return Task::none();
         };
-        if node.kind != "text" {
+        if !node.is_text() {
             return Task::none();
         }
         // Capture a pre-edit snapshot to make the edit undoable — but not for

@@ -128,6 +128,7 @@ impl App {
         self.nodes = nodes;
         self.edges = edges;
         self.images = self.load_images(&self.nodes);
+        self.notes = self.load_notes(&self.nodes);
         // Re-key the carried bitmaps onto the restored nodes, keeping one only
         // where the node's text and size still match what it depicts.
         self.rasters.text = self

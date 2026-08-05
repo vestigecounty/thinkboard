@@ -36,7 +36,7 @@ use crate::canvas::text_raster;
 use crate::config;
 use crate::document::cluster;
 use crate::document::layout;
-use crate::document::model::{self, CanvasDocument, CanvasEdge, CanvasNode};
+use crate::document::model::{self, CanvasDocument, CanvasEdge, CanvasNode, NodeKind};
 use crate::platform;
 use crate::theme::Theme as ColorTheme;
 
@@ -414,6 +414,10 @@ struct App {
     nodes: Vec<CanvasNode>,
     edges: Vec<CanvasEdge>,
     images: HashMap<String, image::Handle>,
+    /// Body text of the file nodes that embed a Markdown note, keyed by node
+    /// id. Read from the vault at load; a note that can't be read is absent and
+    /// the card shows just its title.
+    notes: HashMap<String, String>,
     /// User configuration loaded at startup.
     config: config::Config,
     /// Node/card colors, optionally read from an Obsidian theme.
@@ -659,6 +663,7 @@ impl App {
         let images = document
             .nodes
             .iter()
+            .filter(|node| node.node_kind() == NodeKind::Image)
             .filter_map(|node| {
                 let file = node.file.as_ref()?;
                 let path = base_path.join(file);
@@ -680,6 +685,7 @@ impl App {
             nodes: document.nodes,
             edges: document.edges,
             images,
+            notes: HashMap::new(),
             config,
             theme,
             canvas_path,
@@ -746,6 +752,7 @@ impl App {
             },
             reveal: if windowed { 1.0 } else { 0.0 },
         };
+        app.notes = app.load_notes(&app.nodes);
         app.clusters = app.initial_clusters();
         app
     }
@@ -1303,7 +1310,7 @@ impl App {
         };
         let (drag_w, drag_h) = ((cursor.x - anchor.x).abs(), (cursor.y - anchor.y).abs());
 
-        let (width, height) = if node.kind == "text" {
+        let (width, height) = if node.is_text() {
             self.resized_text_size(node, drag_w, drag_h)
         } else {
             // Image nodes keep their aspect ratio so the picture never

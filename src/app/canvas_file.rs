@@ -10,7 +10,7 @@ use iced::{Task, window};
 
 use super::sync::{file_mtime, should_reload};
 use super::{App, Message};
-use crate::model::{CanvasDocument, CanvasNode};
+use crate::model::{CanvasDocument, CanvasNode, NodeKind};
 
 /// The embedded scratch board shown when no real canvas is configured. A
 /// throwaway playground: never written to disk, reset on every launch. Its
@@ -41,6 +41,37 @@ pub(super) fn drop_event(
         return None;
     };
     is_canvas_file(&path).then_some(Message::OpenDropped(path))
+}
+
+/// The most a note's body is read into memory. A card shows a few hundred
+/// characters at most, so anything past this can't be seen — and a stray
+/// multi-megabyte file shouldn't be pulled in just to render one card.
+const MAX_NOTE_BYTES: usize = 64 * 1024;
+
+/// Reads a Markdown note, truncated to [`MAX_NOTE_BYTES`] on a char boundary.
+/// `None` if it isn't a readable file (missing, a directory, not UTF-8).
+fn read_note(path: &FsPath) -> Option<String> {
+    let mut text = std::fs::read_to_string(path).ok()?;
+    if text.len() > MAX_NOTE_BYTES {
+        let end = (0..=MAX_NOTE_BYTES).rev().find(|&i| text.is_char_boundary(i))?;
+        text.truncate(end);
+    }
+    // Obsidian notes often open with a YAML front-matter block, which is
+    // metadata rather than content — drop it so the card shows the note.
+    Some(strip_front_matter(&text).to_owned())
+}
+
+/// The note body with a leading `---`-delimited YAML front-matter block
+/// removed. Text that doesn't open with one is returned unchanged.
+fn strip_front_matter(text: &str) -> &str {
+    let Some(rest) = text.strip_prefix("---\n").or_else(|| text.strip_prefix("---\r\n")) else {
+        return text;
+    };
+    let Some(end) = rest.find("\n---") else {
+        return text;
+    };
+    let after = &rest[end + "\n---".len()..];
+    after.trim_start_matches(['\r', '\n'])
 }
 
 /// The vault root that a canvas's image `file` paths resolve against. Obsidian
@@ -149,17 +180,37 @@ impl App {
         }
     }
 
-    /// Image handles for every file node, resolved against the vault root.
-    /// Rebuilt on every document swap, since the handles are keyed by node id.
+    /// Image handles for the file nodes that embed an *image*, resolved against
+    /// the vault root. Rebuilt on every document swap, since the handles are
+    /// keyed by node id.
     pub(super) fn load_images(&self, nodes: &[CanvasNode]) -> HashMap<String, image::Handle> {
         nodes
             .iter()
+            .filter(|node| node.node_kind() == NodeKind::Image)
             .filter_map(|node| {
                 let file = node.file.as_ref()?;
                 Some((
                     node.id.clone(),
                     image::Handle::from_path(self.base_path.as_path().join(file)),
                 ))
+            })
+            .collect()
+    }
+
+    /// The body text of every file node that embeds a Markdown note, read from
+    /// the vault and keyed by node id. A note that can't be read is absent, and
+    /// the board falls back to drawing just its title.
+    pub(super) fn load_notes(&self, nodes: &[CanvasNode]) -> HashMap<String, String> {
+        nodes
+            .iter()
+            .filter(|node| node.node_kind() == NodeKind::Note)
+            .filter_map(|node| {
+                let file = node.file.as_ref()?;
+                let path = self.base_path.as_path().join(file);
+                // Obsidian's links often omit the `.md`; try it before giving up.
+                let text = read_note(&path)
+                    .or_else(|| read_note(&path.with_extension("md")))?;
+                Some((node.id.clone(), text))
             })
             .collect()
     }
@@ -290,6 +341,7 @@ impl App {
     /// different board and reloading the same one after an external write.
     fn adopt_document(&mut self, document: CanvasDocument) {
         self.images = self.load_images(&document.nodes);
+        self.notes = self.load_notes(&document.nodes);
         self.nodes = document.nodes;
         self.edges = document.edges;
         self.doc_extra = document.extra;
@@ -397,6 +449,73 @@ mod tests {
         let canvas = hobbies.join("board.canvas");
         assert_eq!(vault_root(&canvas, &document), temp);
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    fn file_node(id: &str, file: &str) -> CanvasNode {
+        CanvasNode {
+            id: id.to_owned(),
+            kind: "file".to_owned(),
+            text: None,
+            file: Some(file.to_owned()),
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+            color: None,
+            extra: Default::default(),
+        }
+    }
+
+    #[test]
+    fn front_matter_is_dropped_from_a_note_body() {
+        let note = "---\ntitle: Ideas\ntags: [a, b]\n---\n\n# Ideas\n\nbody";
+        assert_eq!(strip_front_matter(note), "# Ideas\n\nbody");
+    }
+
+    #[test]
+    fn text_without_front_matter_is_untouched() {
+        assert_eq!(strip_front_matter("# Ideas\n\nbody"), "# Ideas\n\nbody");
+        // A horizontal rule further down is not front matter.
+        assert_eq!(strip_front_matter("intro\n\n---\n\nmore"), "intro\n\n---\n\nmore");
+        // An unterminated block is left alone rather than eating the note.
+        assert_eq!(strip_front_matter("---\nstill going"), "---\nstill going");
+    }
+
+    #[test]
+    fn only_image_nodes_get_image_handles() {
+        // The bug this guards: every file node used to become an image handle,
+        // so a note embedded in a canvas rendered as an empty card.
+        let dir = std::env::temp_dir().join(format!("tb-embeds-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("Ideas.md"), "---\ntitle: x\n---\nthe body").unwrap();
+
+        let mut app = super::super::update_tests::app_with(
+            vec![
+                file_node("img", "sketch.png"),
+                file_node("note", "Ideas.md"),
+                file_node("doc", "paper.pdf"),
+            ],
+            Vec::new(),
+        );
+        app.base_path = dir.clone();
+
+        let images = app.load_images(&app.nodes);
+        assert_eq!(images.len(), 1, "only the image is an image");
+        assert!(images.contains_key("img"));
+
+        let notes = app.load_notes(&app.nodes);
+        assert_eq!(notes.get("note").map(String::as_str), Some("the body"));
+        assert!(!notes.contains_key("doc"), "a PDF is not a note");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_missing_note_is_simply_absent() {
+        let app = super::super::update_tests::app_with(
+            vec![file_node("note", "Nowhere.md")],
+            Vec::new(),
+        );
+        assert!(app.load_notes(&app.nodes).is_empty());
     }
 
     #[test]

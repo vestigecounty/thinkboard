@@ -24,7 +24,7 @@ use iced::{Color, Point, Rectangle, Renderer, Size, Theme, Vector};
 use crate::Message;
 use crate::camera::Camera;
 use crate::document::IntoColor;
-use crate::model::{CanvasEdge, CanvasNode};
+use crate::model::{CanvasEdge, CanvasNode, NodeKind};
 use crate::theme::Theme as ColorTheme;
 
 pub const BACKGROUND: Color = Color::from_rgb(0.12, 0.12, 0.13);
@@ -105,6 +105,9 @@ pub struct Board<'a> {
     pub node_index: HashMap<&'a str, usize>,
     pub edges: &'a [CanvasEdge],
     pub images: &'a HashMap<String, image::Handle>,
+    /// Body text of the file nodes that embed a Markdown note, keyed by node id.
+    /// Absent when the note couldn't be read; the card then shows just its title.
+    pub notes: &'a HashMap<String, String>,
     pub clusters: &'a [crate::cluster::Cluster],
     pub cluster_links: &'a [crate::cluster::ClusterLink],
     pub cluster_snapshots: &'a HashMap<usize, crate::text_raster::Snapshot>,
@@ -382,6 +385,17 @@ const NODE_SCROLLBAR_WIDTH: f32 = 6.0;
 /// — the shared `NODE_PAD_Y`, so a fitted node has no overflow and a scrolled one
 /// keeps padding at both ends.
 const NODE_TEXT_PAD_Y: f32 = crate::text_raster::NODE_PAD_Y;
+/// Horizontal inset (world px, per side) of a reference card's title and body,
+/// matching where the Markdown renderer puts a text node's first column.
+const NODE_TEXT_PAD_X: f32 = crate::text_raster::NODE_PAD_X / 2.0 + crate::text_raster::MD_PADDING;
+
+/// Point size (world px) of a group frame's caption, and its inset from the
+/// frame's top-left corner.
+const GROUP_LABEL_SIZE: f32 = 15.0;
+const GROUP_LABEL_PAD: f32 = 10.0;
+/// Height (world px) of a frame's grabbable header band — the caption plus its
+/// padding above and below.
+const GROUP_HEADER_HEIGHT: f32 = GROUP_LABEL_SIZE + GROUP_LABEL_PAD * 2.0;
 
 /// The scrollbar thumb rect (screen) within a node `rect`, plus the world
 /// overflow, or `None` when the content fits within `node_height`. Sizes/scroll
@@ -612,6 +626,8 @@ impl canvas::Program<Message> for Board<'_> {
             let draw_clusters = weight > 0.0;
 
             let node_layer = |frame: &mut Frame| {
+                // Frames first: a group is a backdrop its members sit on.
+                self.draw_groups(frame);
                 self.draw_edges(frame);
                 // In cluster mode there's no overlay, so draw every node here;
                 // otherwise hold the selected node(s) back for the overlay.
@@ -934,7 +950,7 @@ impl Board<'_> {
                 }
 
                 match hit {
-                    Some(index) if is_double_click && self.nodes[index].kind == "text" => {
+                    Some(index) if is_double_click && self.nodes[index].is_text() => {
                         state.kind = Kind::Idle;
                         // Pass the click's world position so the caret lands under
                         // the cursor, not at the start of the note.
@@ -958,11 +974,14 @@ impl Board<'_> {
                         // A link on an already-selected node opens on release
                         // (drag still moves the node); the first click just
                         // selects, so links don't fire until the node has focus.
-                        state.link = self
-                            .selected
-                            .contains(&index)
-                            .then(|| self.link_at(index, position))
-                            .flatten();
+                        // A link *node* is the same gesture, but its whole card
+                        // is the link.
+                        state.link = self.selected.contains(&index).then(|| {
+                            match node.node_kind() {
+                                NodeKind::Link => node.url().map(str::to_owned),
+                                _ => self.link_at(index, position),
+                            }
+                        }).flatten();
                         state.kind = Kind::Dragging {
                             index,
                             grab: world - Point::new(node.x, node.y),
@@ -1411,10 +1430,18 @@ impl Board<'_> {
     }
 
     /// Topmost node containing the given world point.
+    ///
+    /// A group is a frame drawn *around* other nodes, so only its header strip
+    /// answers: a click anywhere in its interior has to reach the node it
+    /// encloses (or the empty canvas), not pick up the frame.
     fn hit_test(&self, world: Point) -> Option<usize> {
-        self.nodes
-            .iter()
-            .rposition(|node| self.node_rect(node).contains(world))
+        self.nodes.iter().rposition(|node| {
+            if node.is_group() {
+                group_header(self.node_rect(node), 1.0).contains(world)
+            } else {
+                self.node_rect(node).contains(world)
+            }
+        })
     }
 
     /// The active snap spacing (world px), or `0.0` when snap-to-grid is off.
@@ -1450,7 +1477,7 @@ impl Board<'_> {
     /// checks are cheap.
     fn link_at(&self, index: usize, point: Point) -> Option<String> {
         let node = self.nodes.get(index)?;
-        if node.kind != "text" || self.editing == Some(index) {
+        if !node.is_text() || self.editing == Some(index) {
             return None;
         }
         let rect = self.node_screen_rect(index, node);
@@ -1491,6 +1518,9 @@ impl Board<'_> {
         self.nodes
             .iter()
             .enumerate()
+            // Frames are excluded: a marquee over a group's contents means the
+            // nodes inside it, never the group itself.
+            .filter(|(_, node)| !node.is_group())
             .filter(|(index, node)| rect.intersects(&self.node_screen_rect(*index, node)))
             .map(|(index, _)| index)
             .collect()
@@ -1647,6 +1677,11 @@ impl Board<'_> {
     fn port_at(&self, position: Point) -> Option<(usize, &'static str)> {
         let grab = self.port_radius() + 10.0;
         for (index, node) in self.nodes.iter().enumerate().rev() {
+            // No ports on a frame: its border runs behind other nodes, and
+            // hovering anywhere near it would sprout dots over them.
+            if node.is_group() {
+                continue;
+            }
             let rect = self.node_screen_rect(index, node);
             for side in SIDES {
                 if side_anchor(rect, side).distance(position) < grab {
@@ -1663,7 +1698,7 @@ impl Board<'_> {
     /// surrounding [`SNAP_MARGIN`], the nearest side dot.
     fn connect_target(&self, from: usize, cursor: Point) -> Option<(usize, &'static str)> {
         for (index, node) in self.nodes.iter().enumerate().rev() {
-            if index == from {
+            if index == from || node.is_group() {
                 continue;
             }
             let rect = self.node_screen_rect(index, node);
@@ -1698,6 +1733,9 @@ impl Board<'_> {
     /// outside it), attributed to the nearest edge.
     fn hover_side(&self, position: Point) -> Option<(usize, &'static str)> {
         for (index, node) in self.nodes.iter().enumerate().rev() {
+            if node.is_group() {
+                continue; // frames have no ports to hover (see `port_at`)
+            }
             let rect = self.node_screen_rect(index, node);
             let inflated = Rectangle::new(
                 rect.position() - Vector::new(HOVER_MARGIN, HOVER_MARGIN),
@@ -1776,7 +1814,7 @@ impl Board<'_> {
 
     /// The clamped scroll offset (world px) for a node, 0 when it fits.
     fn node_scroll_offset(&self, node: &CanvasNode) -> f32 {
-        if !self.config.node_scrollbars || node.kind != "text" {
+        if !self.config.node_scrollbars || !node.is_text() {
             return 0.0;
         }
         let content = self.node_content_height(node.text.as_deref().unwrap_or(""), node.width);
@@ -1796,7 +1834,7 @@ impl Board<'_> {
             return None;
         }
         let node = self.nodes.get(index)?;
-        if node.kind != "text" {
+        if !node.is_text() {
             return None;
         }
         let content = self.node_content_height(node.text.as_deref().unwrap_or(""), node.width);
@@ -1907,13 +1945,14 @@ impl Board<'_> {
                 NodePass::Unselected => selected,
                 NodePass::SelectedOnly => !selected,
             };
-            if skip {
+            // Groups are frames, drawn in their own pass behind everything.
+            if skip || node.is_group() {
                 continue;
             }
             let rect = self.node_screen_rect(index, node);
             let alpha = scene_alpha * self.spawn_factors(index).1;
 
-            if node.kind == "file" {
+            if node.node_kind() == NodeKind::Image {
                 let radius = 8.0 * zoom;
 
                 if let Some(handle) = self.images.get(&node.id) {
@@ -1973,6 +2012,15 @@ impl Board<'_> {
                 None => self.theme.card_fill,
             };
             frame.fill(&card, Color { a: fill.a * alpha, ..fill });
+
+            // A note, attachment or link card shows content that isn't in the
+            // document — the note's body from the vault, or the file name / URL
+            // — so it draws its own way and skips the raster path entirely.
+            if node.node_kind() != NodeKind::Text {
+                self.draw_reference_card(frame, node, rect, alpha);
+                self.stroke_card(frame, &card, selected, accent, alpha);
+                continue;
+            }
 
             if self.editing != Some(index) {
                 let text = node.text.as_deref().unwrap_or("(no content)");
@@ -2038,24 +2086,180 @@ impl Board<'_> {
                 }
             }
 
-            let (border_color, border_width) = match (selected, accent) {
-                // A selected colored node keeps its own color (just thicker)
-                // rather than turning blue, so the chosen color stays visible.
-                (true, Some(color)) => (color, (3.5 * zoom).max(3.0)),
-                (true, None) => (self.theme.accent, (3.5 * zoom).max(3.0)),
-                (false, Some(color)) => (color, 1.5 * zoom),
-                (false, None) => (CARD_BORDER, (0.75 * zoom).max(0.5)),
-            };
+            self.stroke_card(frame, &card, selected, accent, alpha);
+        }
+    }
+
+    /// Draws the group frames: a rounded outline with a barely-there wash, and
+    /// the group's label sitting on the line at the top-left — a backdrop the
+    /// member nodes are then drawn on top of.
+    ///
+    /// Unlike a card this is deliberately almost transparent: a group encloses
+    /// other nodes, so anything more would tint everything inside it.
+    fn draw_groups(&self, frame: &mut Frame) {
+        let zoom = self.camera.zoom;
+        let alpha = self.node_layer_alpha();
+        if alpha <= 0.0 {
+            return;
+        }
+
+        for (index, node) in self.nodes.iter().enumerate().filter(|(_, n)| n.is_group()) {
+            let rect = self.node_screen_rect(index, node);
+            let selected = self.selected.contains(&index);
+            let accent = node
+                .palette_color()
+                .map(IntoColor::into_color)
+                .unwrap_or(self.theme.text_muted);
+
+            let radius = 12.0 * zoom;
+            let frame_path = Path::rounded_rectangle(rect.position(), rect.size(), radius.into());
+            frame.fill(&frame_path, Color { a: 0.05 * alpha, ..accent });
             frame.stroke(
-                &card,
+                &frame_path,
                 Stroke::default()
                     .with_color(Color {
-                        a: border_color.a * alpha,
-                        ..border_color
+                        a: if selected { 0.9 * alpha } else { 0.45 * alpha },
+                        ..accent
                     })
-                    .with_width(border_width),
+                    .with_width(if selected { (2.5 * zoom).max(2.0) } else { (1.5 * zoom).max(1.0) }),
             );
+
+            let Some(label) = node.label().filter(|l| !l.trim().is_empty()) else {
+                continue;
+            };
+            // The caption sits inside the top edge rather than above it, so it
+            // stays on screen when the frame's top is scrolled off.
+            let size = (GROUP_LABEL_SIZE * zoom).max(9.0);
+            frame.fill_text(canvas::Text {
+                content: label.to_owned(),
+                position: Point::new(
+                    rect.x + GROUP_LABEL_PAD * zoom,
+                    rect.y + GROUP_LABEL_PAD * zoom,
+                ),
+                color: Color { a: 0.85 * alpha, ..accent },
+                size: size.into(),
+                font: self.theme.ui_font(),
+                ..canvas::Text::default()
+            });
         }
+    }
+
+    /// Draws a card whose content lives outside the document: a Markdown note
+    /// or other file from the vault, or a URL bookmark. Each gets a title line
+    /// and, where there is one, a body — all drawn live, since none of it is in
+    /// `node.text` for the rasterizer to have picked up.
+    fn draw_reference_card(
+        &self,
+        frame: &mut Frame,
+        node: &CanvasNode,
+        rect: Rectangle,
+        alpha: f32,
+    ) {
+        let zoom = self.camera.zoom;
+        let kind = node.node_kind();
+        let (title, body) = match kind {
+            NodeKind::Link => (
+                node.url().unwrap_or("(no URL)").to_owned(),
+                None,
+            ),
+            _ => (
+                node.file_title().unwrap_or_else(|| "(no file)".to_owned()),
+                self.notes.get(&node.id).map(String::as_str),
+            ),
+        };
+
+        let pad = NODE_TEXT_PAD_X * zoom;
+        let title_size = (FONT_SIZE * zoom).max(6.0);
+        let title_y = rect.y + NODE_TEXT_PAD_Y * zoom / 2.0;
+
+        frame.with_clip(rect, |clipped| {
+            // The title: the note/file name, or the URL for a link.
+            clipped.fill_text(canvas::Text {
+                content: title,
+                position: Point::new(rect.x + pad, title_y),
+                color: Color { a: alpha, ..self.theme.text },
+                size: title_size.into(),
+                font: self.theme.ui_font(),
+                ..canvas::Text::default()
+            });
+
+            // A rule under the title separates it from the body, the way
+            // Obsidian's embedded-note header does.
+            let rule_y = title_y + title_size * crate::text_raster::LINE_HEIGHT;
+            clipped.fill(
+                &Path::rectangle(
+                    Point::new(rect.x + pad, rule_y),
+                    Size::new((rect.width - pad * 2.0).max(0.0), (1.0 * zoom).max(0.5)),
+                ),
+                Color { a: 0.35 * alpha, ..self.theme.text_muted },
+            );
+
+            match body {
+                Some(text) if !text.trim().is_empty() => {
+                    // Top-aligned (height 0 zeroes the layout's vertical
+                    // centering) and started below the rule.
+                    let origin = Rectangle {
+                        x: rect.x,
+                        y: rule_y + NODE_TEXT_PAD_Y * zoom / 2.0,
+                        width: rect.width,
+                        height: 0.0,
+                    };
+                    let wrap = crate::text_raster::card_text_wrap(node.width);
+                    self.draw_markdown_live(clipped, origin, text, FONT_SIZE, wrap, alpha, None);
+                }
+                _ => {
+                    // Nothing to show: say why rather than leaving a blank card.
+                    let note = match kind {
+                        NodeKind::Link => "",
+                        NodeKind::Attachment => "(not previewable)",
+                        _ => "(note not found)",
+                    };
+                    if !note.is_empty() {
+                        clipped.fill_text(canvas::Text {
+                            content: note.to_owned(),
+                            position: Point::new(
+                                rect.x + pad,
+                                rule_y + NODE_TEXT_PAD_Y * zoom / 2.0,
+                            ),
+                            color: Color { a: 0.7 * alpha, ..self.theme.text_muted },
+                            size: ((FONT_SIZE - 2.0) * zoom).max(6.0).into(),
+                            font: self.theme.ui_font(),
+                            ..canvas::Text::default()
+                        });
+                    }
+                }
+            }
+        });
+    }
+
+    /// The rounded border around a card, in the node's own color when it has
+    /// one. Shared by every card kind.
+    fn stroke_card(
+        &self,
+        frame: &mut Frame,
+        card: &Path,
+        selected: bool,
+        accent: Option<Color>,
+        alpha: f32,
+    ) {
+        let zoom = self.camera.zoom;
+        let (border_color, border_width) = match (selected, accent) {
+            // A selected colored node keeps its own color (just thicker)
+            // rather than turning blue, so the chosen color stays visible.
+            (true, Some(color)) => (color, (3.5 * zoom).max(3.0)),
+            (true, None) => (self.theme.accent, (3.5 * zoom).max(3.0)),
+            (false, Some(color)) => (color, 1.5 * zoom),
+            (false, None) => (CARD_BORDER, (0.75 * zoom).max(0.5)),
+        };
+        frame.stroke(
+            card,
+            Stroke::default()
+                .with_color(Color {
+                    a: border_color.a * alpha,
+                    ..border_color
+                })
+                .with_width(border_width),
+        );
     }
 
     /// Draws Markdown text live (not from a bitmap) into a card's screen
@@ -2776,6 +2980,16 @@ impl Board<'_> {
 
 /// The cubic bezier path of an edge (screen space).
 /// The axis-aligned rectangle spanning two corner points.
+/// The header strip along a group frame's top edge — the caption's band, and
+/// the only part of a frame the mouse can grab. `scale` is the zoom for a
+/// screen-space rect, or 1.0 for a world-space one.
+fn group_header(rect: Rectangle, scale: f32) -> Rectangle {
+    Rectangle {
+        height: (GROUP_HEADER_HEIGHT * scale).min(rect.height),
+        ..rect
+    }
+}
+
 fn rect_from_points(a: Point, b: Point) -> Rectangle {
     Rectangle::new(
         Point::new(a.x.min(b.x), a.y.min(b.y)),

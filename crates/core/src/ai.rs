@@ -11,7 +11,7 @@ use std::sync::{LazyLock, Mutex};
 use futures::channel::mpsc::{self, Sender};
 use futures::{SinkExt, Stream, StreamExt};
 
-use crate::model::{CanvasEdge, CanvasNode};
+use crate::model::{CanvasEdge, CanvasNode, NodeKind};
 
 /// A streamed event from the endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -113,7 +113,9 @@ pub fn upstream_prompt(nodes: &[CanvasNode], edges: &[CanvasEdge], target_id: &s
 pub fn upstream_images(nodes: &[CanvasNode], edges: &[CanvasEdge], target_id: &str) -> Vec<String> {
     upstream_nodes(nodes, edges, target_id)
         .iter()
-        .filter(|node| node.kind == "file")
+        // Images only: a `file` node can also embed a Markdown note or a PDF,
+        // neither of which a vision encoder can take.
+        .filter(|node| node.node_kind() == NodeKind::Image)
         .filter_map(|node| node.file.clone())
         .collect()
 }

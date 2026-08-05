@@ -50,9 +50,103 @@ pub struct CanvasNode {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub color: Option<String>,
     /// Fields we don't model (e.g. the custom `ai` field) — preserved so
-    /// round-tripping never drops another tool's data.
+    /// round-tripping never drops another tool's data. A group's `label` and a
+    /// link's `url` live here too: the app reads them (see [`CanvasNode::label`]
+    /// and [`CanvasNode::url`]) but never writes them, and `extra` already
+    /// round-trips them untouched.
     #[serde(flatten)]
     pub extra: Map<String, Value>,
+}
+
+/// What a node actually *is*, resolved from its `type` and (for file nodes) the
+/// extension of the file it points at.
+///
+/// The canvas format stores `type` as one of `"text"`, `"file"`, `"link"` or
+/// `"group"`, which leaves the interesting distinction — a `file` node embedding
+/// a Markdown note versus one embedding an image — implicit in the path. Callers
+/// should match on this rather than comparing [`CanvasNode::kind`] to strings,
+/// so that distinction lives in exactly one place.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NodeKind {
+    /// A note typed on the canvas itself; the only editable kind.
+    Text,
+    /// A file node embedding an image.
+    Image,
+    /// A file node embedding a Markdown note from the vault.
+    Note,
+    /// A file node embedding something we can't render (a PDF, a video, …);
+    /// drawn as a card naming the file.
+    Attachment,
+    /// A URL bookmark card.
+    Link,
+    /// A labelled frame drawn behind the nodes it encloses.
+    Group,
+}
+
+/// File extensions Obsidian renders as images in a canvas.
+const IMAGE_EXTENSIONS: [&str; 8] = ["png", "jpg", "jpeg", "gif", "bmp", "svg", "webp", "avif"];
+
+impl CanvasNode {
+    /// What this node is (see [`NodeKind`]). An unrecognized `type` is treated
+    /// as [`NodeKind::Text`], which is what the format's own default is and what
+    /// every earlier version of this app assumed.
+    pub fn node_kind(&self) -> NodeKind {
+        match self.kind.as_str() {
+            "group" => NodeKind::Group,
+            "link" => NodeKind::Link,
+            "file" => match self.file_extension().as_deref() {
+                Some("md") | Some("markdown") => NodeKind::Note,
+                Some(ext) if IMAGE_EXTENSIONS.contains(&ext) => NodeKind::Image,
+                // A file node with no extension at all is most likely an
+                // Obsidian note (its wiki-links often omit the `.md`).
+                None => NodeKind::Note,
+                Some(_) => NodeKind::Attachment,
+            },
+            _ => NodeKind::Text,
+        }
+    }
+
+    /// The lowercased extension of this node's `file`, if it has one.
+    fn file_extension(&self) -> Option<String> {
+        let file = self.file.as_deref()?;
+        let name = file.rsplit(['/', '\\']).next()?;
+        let (_, ext) = name.rsplit_once('.')?;
+        (!ext.is_empty()).then(|| ext.to_ascii_lowercase())
+    }
+
+    /// The display name of the file a file node points at — its base name with
+    /// any extension dropped, which for a note is the Obsidian note title.
+    pub fn file_title(&self) -> Option<String> {
+        let file = self.file.as_deref()?;
+        let name = file.rsplit(['/', '\\']).next()?;
+        Some(match name.rsplit_once('.') {
+            Some((stem, _)) if !stem.is_empty() => stem.to_owned(),
+            _ => name.to_owned(),
+        })
+    }
+
+    /// Whether this node holds text the user types on the canvas — the only
+    /// kind that is editable, auto-sized, searched and rasterized.
+    pub fn is_text(&self) -> bool {
+        self.node_kind() == NodeKind::Text
+    }
+
+    /// Whether this node is a frame rather than a card. Groups are geometry the
+    /// user arranges *around* other nodes, so they take no part in clustering,
+    /// hit-testing (beyond their header), linking or auto-layout.
+    pub fn is_group(&self) -> bool {
+        self.node_kind() == NodeKind::Group
+    }
+
+    /// A group node's caption, drawn above its frame.
+    pub fn label(&self) -> Option<&str> {
+        self.extra.get("label").and_then(Value::as_str)
+    }
+
+    /// A link node's target URL.
+    pub fn url(&self) -> Option<&str> {
+        self.extra.get("url").and_then(Value::as_str)
+    }
 }
 
 /// Obsidian stores canvas coordinates as integers; round f32 geometry back
@@ -549,6 +643,71 @@ mod tests {
         assert_eq!(doc.nodes.iter().filter(|n| n.kind == "file").count(), 2);
         // Node with the extra `ai` field parses fine.
         assert!(doc.nodes.iter().any(|n| n.id == "ai_summary"));
+    }
+
+    fn node(json: serde_json::Value) -> CanvasNode {
+        serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn a_file_node_is_an_image_or_a_note_by_its_extension() {
+        use serde_json::json;
+        let of = |file: &str| node(json!({"id": "n", "type": "file", "file": file})).node_kind();
+
+        assert_eq!(of("assets/sketch.png"), NodeKind::Image);
+        assert_eq!(of("assets/photo.JPEG"), NodeKind::Image); // case-insensitive
+        assert_eq!(of("Notes/Ideas.md"), NodeKind::Note);
+        assert_eq!(of("Notes/Ideas.markdown"), NodeKind::Note);
+        // Obsidian's links often omit the extension; those are notes.
+        assert_eq!(of("Notes/Ideas"), NodeKind::Note);
+        // Anything else is an attachment we name but can't render.
+        assert_eq!(of("refs/paper.pdf"), NodeKind::Attachment);
+    }
+
+    #[test]
+    fn the_other_types_resolve_from_the_type_field() {
+        use serde_json::json;
+        assert_eq!(node(json!({"id": "n", "type": "text"})).node_kind(), NodeKind::Text);
+        assert_eq!(node(json!({"id": "n", "type": "group"})).node_kind(), NodeKind::Group);
+        assert_eq!(node(json!({"id": "n", "type": "link"})).node_kind(), NodeKind::Link);
+        // An unknown type falls back to a plain card rather than vanishing.
+        assert_eq!(node(json!({"id": "n", "type": "wat"})).node_kind(), NodeKind::Text);
+    }
+
+    #[test]
+    fn a_file_title_is_the_base_name_without_its_extension() {
+        use serde_json::json;
+        let title = |file: &str| node(json!({"id": "n", "type": "file", "file": file})).file_title();
+        assert_eq!(title("Notes/Deep/Ideas.md").as_deref(), Some("Ideas"));
+        assert_eq!(title("Ideas").as_deref(), Some("Ideas"));
+        // A dotfile keeps its name rather than becoming empty.
+        assert_eq!(title(".hidden").as_deref(), Some(".hidden"));
+        assert_eq!(node(json!({"id": "n", "type": "text"})).file_title(), None);
+    }
+
+    #[test]
+    fn a_groups_label_and_a_links_url_are_read_from_the_document() {
+        use serde_json::json;
+        let group = node(json!({"id": "g", "type": "group", "label": "Ideas"}));
+        assert_eq!(group.label(), Some("Ideas"));
+        assert!(group.is_group());
+
+        let link = node(json!({"id": "l", "type": "link", "url": "https://example.com"}));
+        assert_eq!(link.url(), Some("https://example.com"));
+
+        // Absent on the kinds that don't carry them.
+        assert_eq!(node(json!({"id": "n", "type": "text"})).label(), None);
+    }
+
+    #[test]
+    fn a_group_and_a_link_round_trip_their_own_fields() {
+        // `label`/`url` live in `extra`, so a document Obsidian wrote comes back
+        // out byte-for-byte even though the app never writes them itself.
+        let source = r#"{"nodes":[{"id":"g","type":"group","x":0,"y":0,"width":400,"height":300,"label":"Ideas"},{"id":"l","type":"link","x":0,"y":0,"width":400,"height":300,"url":"https://example.com"}],"edges":[]}"#;
+        let doc: CanvasDocument = serde_json::from_str(source).unwrap();
+        let json = doc.to_canvas_json().unwrap();
+        assert!(json.contains(r#""label":"Ideas""#));
+        assert!(json.contains(r#""url":"https://example.com""#));
     }
 
     #[test]
