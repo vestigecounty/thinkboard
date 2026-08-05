@@ -112,6 +112,14 @@ module and its `impl App` block there — keep `update` a dispatch table.
   selection, ports, shadows — and, importantly, from every *obstacle* set
   (placement, auto-size neighbours, AI sibling stacking). A frame encloses
   other nodes, so counting it as occupied space pins the cards inside it.
+  Dragging one carries whatever it encloses (`App::drag_riders`), which is also
+  where multi-selection drags are resolved — as a set, so nothing that
+  qualifies twice moves at double speed.
+- **Card alignment follows what the card is.** A note or attachment is a
+  document: top-left under a muted file-name header and a hairline rule. A link
+  is a single label: host and URL centred in the card. Text nodes centre or
+  left-align per `center_node_text`. Keep new kinds consistent with whichever
+  of the two they resemble.
 
 ## Testing
 

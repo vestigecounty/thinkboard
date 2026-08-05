@@ -397,6 +397,11 @@ const GROUP_LABEL_PAD: f32 = 10.0;
 /// padding above and below.
 const GROUP_HEADER_HEIGHT: f32 = GROUP_LABEL_SIZE + GROUP_LABEL_PAD * 2.0;
 
+/// Point size (world px) of the file-name header on a note/attachment card.
+/// Smaller than the body so it reads as a label naming the file rather than as
+/// the note's own first line.
+const REFERENCE_TITLE_SIZE: f32 = FONT_SIZE - 3.0;
+
 /// The scrollbar thumb rect (screen) within a node `rect`, plus the world
 /// overflow, or `None` when the content fits within `node_height`. Sizes/scroll
 /// are world px; `zoom` scales the thumb width. Pure, so it's unit-tested.
@@ -2148,6 +2153,10 @@ impl Board<'_> {
     /// or other file from the vault, or a URL bookmark. Each gets a title line
     /// and, where there is one, a body — all drawn live, since none of it is in
     /// `node.text` for the rasterizer to have picked up.
+    /// Alignment differs by what the card *is*, deliberately: a note or an
+    /// attachment is a document, so it reads from the top-left under a header;
+    /// a link is a single label, so it sits centred in its card the way a text
+    /// note's own content does.
     fn draw_reference_card(
         &self,
         frame: &mut Frame,
@@ -2155,81 +2164,112 @@ impl Board<'_> {
         rect: Rectangle,
         alpha: f32,
     ) {
-        let zoom = self.camera.zoom;
-        let kind = node.node_kind();
-        let (title, body) = match kind {
-            NodeKind::Link => (
-                node.url().unwrap_or("(no URL)").to_owned(),
-                None,
-            ),
-            _ => (
-                node.file_title().unwrap_or_else(|| "(no file)".to_owned()),
-                self.notes.get(&node.id).map(String::as_str),
-            ),
-        };
+        frame.with_clip(rect, |clipped| match node.node_kind() {
+            NodeKind::Link => self.draw_link_card(clipped, node, rect, alpha),
+            _ => self.draw_note_card(clipped, node, rect, alpha),
+        });
+    }
 
+    /// A vault file embedded in the board: its name as a muted header over a
+    /// hairline rule, then the note's Markdown body (or why there isn't one).
+    fn draw_note_card(&self, frame: &mut Frame, node: &CanvasNode, rect: Rectangle, alpha: f32) {
+        let zoom = self.camera.zoom;
         let pad = NODE_TEXT_PAD_X * zoom;
-        let title_size = (FONT_SIZE * zoom).max(6.0);
+        // The header is deliberately smaller and muted: it names the file,
+        // while the body below is the content. Sized like the title, it read as
+        // a stray first line of the note.
+        let title_size = (REFERENCE_TITLE_SIZE * zoom).max(6.0);
         let title_y = rect.y + NODE_TEXT_PAD_Y * zoom / 2.0;
 
-        frame.with_clip(rect, |clipped| {
-            // The title: the note/file name, or the URL for a link.
-            clipped.fill_text(canvas::Text {
-                content: title,
-                position: Point::new(rect.x + pad, title_y),
-                color: Color { a: alpha, ..self.theme.text },
-                size: title_size.into(),
+        frame.fill_text(canvas::Text {
+            content: node.file_title().unwrap_or_else(|| "(no file)".to_owned()),
+            position: Point::new(rect.x + pad, title_y),
+            color: Color { a: 0.9 * alpha, ..self.theme.text_muted },
+            size: title_size.into(),
+            font: self.theme.ui_font(),
+            ..canvas::Text::default()
+        });
+
+        // A rule under the header separates it from the body, the way
+        // Obsidian's embedded-note header does.
+        let rule_y = title_y + title_size * crate::text_raster::LINE_HEIGHT;
+        frame.fill(
+            &Path::rectangle(
+                Point::new(rect.x + pad, rule_y),
+                Size::new((rect.width - pad * 2.0).max(0.0), (1.0 * zoom).max(0.5)),
+            ),
+            Color { a: 0.6 * alpha, ..self.theme.border },
+        );
+
+        let body_y = rule_y + NODE_TEXT_PAD_Y * zoom / 2.0;
+        match self.notes.get(&node.id).map(String::as_str) {
+            Some(text) if !text.trim().is_empty() => {
+                // Top-aligned (height 0 zeroes the layout's vertical centering)
+                // and started below the rule.
+                let origin = Rectangle {
+                    x: rect.x,
+                    y: body_y,
+                    width: rect.width,
+                    height: 0.0,
+                };
+                let wrap = crate::text_raster::card_text_wrap(node.width);
+                self.draw_markdown_live(frame, origin, text, FONT_SIZE, wrap, alpha, None);
+            }
+            _ => {
+                // Nothing to show: say why rather than leaving a blank card.
+                let reason = match node.node_kind() {
+                    NodeKind::Attachment => "(not previewable)",
+                    _ => "(note not found)",
+                };
+                frame.fill_text(canvas::Text {
+                    content: reason.to_owned(),
+                    position: Point::new(rect.x + pad, body_y),
+                    color: Color { a: 0.7 * alpha, ..self.theme.text_muted },
+                    size: ((FONT_SIZE - 2.0) * zoom).max(6.0).into(),
+                    font: self.theme.ui_font(),
+                    ..canvas::Text::default()
+                });
+            }
+        }
+    }
+
+    /// A URL bookmark: the host as the headline with the full URL muted beneath
+    /// it, centred in the card. There's no page title to show without fetching
+    /// the page, and the host is the part that identifies it at a glance.
+    fn draw_link_card(&self, frame: &mut Frame, node: &CanvasNode, rect: Rectangle, alpha: f32) {
+        let zoom = self.camera.zoom;
+        let url = node.url().unwrap_or("(no URL)");
+        let host = url_host(url);
+
+        let host_size = (FONT_SIZE * zoom).max(6.0);
+        let url_size = ((FONT_SIZE - 4.0) * zoom).max(5.0);
+        let line = crate::text_raster::LINE_HEIGHT;
+        // Both lines as one block, centred on the card.
+        let show_url = url != host;
+        let block = host_size * line + if show_url { url_size * line } else { 0.0 };
+        let top = rect.y + (rect.height - block).max(0.0) / 2.0;
+        let center_x = rect.x + rect.width / 2.0;
+
+        frame.fill_text(canvas::Text {
+            content: host.to_owned(),
+            position: Point::new(center_x, top),
+            color: Color { a: alpha, ..self.theme.text },
+            size: host_size.into(),
+            font: self.theme.ui_font(),
+            align_x: TextAlignment::Center,
+            ..canvas::Text::default()
+        });
+        if show_url {
+            frame.fill_text(canvas::Text {
+                content: url.to_owned(),
+                position: Point::new(center_x, top + host_size * line),
+                color: Color { a: 0.75 * alpha, ..self.theme.text_muted },
+                size: url_size.into(),
                 font: self.theme.ui_font(),
+                align_x: TextAlignment::Center,
                 ..canvas::Text::default()
             });
-
-            // A rule under the title separates it from the body, the way
-            // Obsidian's embedded-note header does.
-            let rule_y = title_y + title_size * crate::text_raster::LINE_HEIGHT;
-            clipped.fill(
-                &Path::rectangle(
-                    Point::new(rect.x + pad, rule_y),
-                    Size::new((rect.width - pad * 2.0).max(0.0), (1.0 * zoom).max(0.5)),
-                ),
-                Color { a: 0.35 * alpha, ..self.theme.text_muted },
-            );
-
-            match body {
-                Some(text) if !text.trim().is_empty() => {
-                    // Top-aligned (height 0 zeroes the layout's vertical
-                    // centering) and started below the rule.
-                    let origin = Rectangle {
-                        x: rect.x,
-                        y: rule_y + NODE_TEXT_PAD_Y * zoom / 2.0,
-                        width: rect.width,
-                        height: 0.0,
-                    };
-                    let wrap = crate::text_raster::card_text_wrap(node.width);
-                    self.draw_markdown_live(clipped, origin, text, FONT_SIZE, wrap, alpha, None);
-                }
-                _ => {
-                    // Nothing to show: say why rather than leaving a blank card.
-                    let note = match kind {
-                        NodeKind::Link => "",
-                        NodeKind::Attachment => "(not previewable)",
-                        _ => "(note not found)",
-                    };
-                    if !note.is_empty() {
-                        clipped.fill_text(canvas::Text {
-                            content: note.to_owned(),
-                            position: Point::new(
-                                rect.x + pad,
-                                rule_y + NODE_TEXT_PAD_Y * zoom / 2.0,
-                            ),
-                            color: Color { a: 0.7 * alpha, ..self.theme.text_muted },
-                            size: ((FONT_SIZE - 2.0) * zoom).max(6.0).into(),
-                            font: self.theme.ui_font(),
-                            ..canvas::Text::default()
-                        });
-                    }
-                }
-            }
-        });
+        }
     }
 
     /// The rounded border around a card, in the node's own color when it has
@@ -2983,6 +3023,20 @@ impl Board<'_> {
 /// The header strip along a group frame's top edge — the caption's band, and
 /// the only part of a frame the mouse can grab. `scale` is the zoom for a
 /// screen-space rect, or 1.0 for a world-space one.
+/// The host part of a URL, for a link card's headline: the scheme, any `www.`
+/// prefix, and everything from the path on are dropped. Falls back to the whole
+/// string when there's nothing recognisable to trim (so a malformed URL still
+/// shows something).
+fn url_host(url: &str) -> &str {
+    let after_scheme = url.split_once("://").map_or(url, |(_, rest)| rest);
+    let host = after_scheme
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or(after_scheme);
+    let host = host.strip_prefix("www.").unwrap_or(host);
+    if host.is_empty() { url } else { host }
+}
+
 fn group_header(rect: Rectangle, scale: f32) -> Rectangle {
     Rectangle {
         height: (GROUP_HEADER_HEIGHT * scale).min(rect.height),
@@ -3180,6 +3234,42 @@ fn iced_weight(weight: u16) -> iced::font::Weight {
         651..=750 => Weight::Bold,
         751..=850 => Weight::ExtraBold,
         _ => Weight::Black,
+    }
+}
+
+#[cfg(test)]
+mod node_kind_tests {
+    use super::{GROUP_HEADER_HEIGHT, group_header, url_host};
+    use iced::{Point, Rectangle, Size};
+
+    #[test]
+    fn a_link_headline_is_its_host() {
+        assert_eq!(url_host("https://obsidian.md"), "obsidian.md");
+        assert_eq!(url_host("https://www.example.com/a/b?c=1#d"), "example.com");
+        assert_eq!(url_host("http://localhost:1234/v1"), "localhost:1234");
+        // Nothing recognisable to trim: show it as-is rather than blank.
+        assert_eq!(url_host("obsidian.md"), "obsidian.md");
+        assert_eq!(url_host("not a url"), "not a url");
+        assert_eq!(url_host("https://"), "https://");
+    }
+
+    #[test]
+    fn a_frames_header_is_a_band_across_its_top() {
+        let frame = Rectangle::new(Point::new(10.0, 20.0), Size::new(400.0, 300.0));
+        let header = group_header(frame, 1.0);
+        assert_eq!(header.position(), frame.position());
+        assert_eq!(header.width, frame.width);
+        assert_eq!(header.height, GROUP_HEADER_HEIGHT);
+        // The interior is deliberately outside it, so clicks reach the nodes.
+        assert!(header.contains(Point::new(200.0, 25.0)));
+        assert!(!header.contains(Point::new(200.0, 200.0)));
+    }
+
+    #[test]
+    fn a_frame_shorter_than_its_header_is_all_header() {
+        // A frame dragged down to nothing still has to be grabbable.
+        let tiny = Rectangle::new(Point::new(0.0, 0.0), Size::new(400.0, 10.0));
+        assert_eq!(group_header(tiny, 1.0).height, 10.0);
     }
 }
 

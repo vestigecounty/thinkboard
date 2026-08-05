@@ -1262,24 +1262,67 @@ impl App {
 
     fn move_node(&mut self, index: usize, position: Point) {
         self.interacted = true;
-        if let Some(node) = self.nodes.get(index) {
-            // Dragging a node in a multi-selection moves the whole group by the
-            // same delta; otherwise just the one node.
-            let delta = position - Point::new(node.x, node.y);
-            if self.selected.contains(&index) && self.selected.len() > 1 {
-                for &i in &self.selected {
-                    if let Some(node) = self.nodes.get_mut(i) {
-                        node.x += delta.x;
-                        node.y += delta.y;
-                    }
-                }
-            } else if let Some(node) = self.nodes.get_mut(index) {
-                node.x = position.x;
-                node.y = position.y;
+        let Some(node) = self.nodes.get(index) else {
+            return;
+        };
+        let delta = position - Point::new(node.x, node.y);
+        for i in self.drag_riders(index) {
+            if let Some(node) = self.nodes.get_mut(i) {
+                node.x += delta.x;
+                node.y += delta.y;
             }
         }
         self.mark_dirty();
         self.cache.clear();
+    }
+
+    /// Every node that moves when `index` is dragged, `index` itself included.
+    ///
+    /// Dragging a node that's part of a multi-selection takes the whole
+    /// selection; dragging a group frame takes everything it encloses, since a
+    /// frame is a container and leaving its contents behind would empty it.
+    /// A set, so a node that qualifies twice (a selected member of a dragged
+    /// frame) still moves exactly one delta.
+    fn drag_riders(&self, index: usize) -> std::collections::HashSet<usize> {
+        let mut riders: std::collections::HashSet<usize> =
+            if self.selected.contains(&index) && self.selected.len() > 1 {
+                self.selected.iter().copied().collect()
+            } else {
+                std::iter::once(index).collect()
+            };
+        // Expand the frames among them. Nested frames come along as enclosed
+        // nodes themselves, so their own contents are picked up by the same
+        // enclosure test against the outer frame.
+        let frames: Vec<usize> = riders
+            .iter()
+            .copied()
+            .filter(|&i| self.nodes.get(i).is_some_and(CanvasNode::is_group))
+            .collect();
+        for frame in frames {
+            riders.extend(self.enclosed_by(frame));
+        }
+        riders
+    }
+
+    /// Indices of the nodes a group frame encloses — those whose centre falls
+    /// inside it. Centres rather than full containment, so a node poking over
+    /// the frame's edge still belongs to it (which is how it looks on screen).
+    fn enclosed_by(&self, frame: usize) -> Vec<usize> {
+        let Some(bounds) = self.nodes.get(frame).map(arrange::node_world_rect) else {
+            return Vec::new();
+        };
+        self.nodes
+            .iter()
+            .enumerate()
+            .filter(|&(i, node)| {
+                i != frame
+                    && bounds.contains(Point::new(
+                        node.x + node.width / 2.0,
+                        node.y + node.height / 2.0,
+                    ))
+            })
+            .map(|(i, _)| i)
+            .collect()
     }
 
     fn move_cluster(&mut self, index: usize, delta: Vector) {

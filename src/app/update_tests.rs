@@ -454,3 +454,96 @@ fn frames_take_no_part_in_clustering() {
     assert_eq!(app.clusters.list.len(), 2);
     assert!(app.clusters.list.iter().all(|c| !c.members.contains(&0)));
 }
+
+#[test]
+fn dragging_a_frame_carries_what_it_encloses() {
+    // A frame is a container: leaving its contents behind would empty it.
+    let mut inside = text_node("in", "inside");
+    inside.x = 100.0;
+    inside.y = 100.0;
+    let mut outside = text_node("out", "outside");
+    outside.x = 2000.0;
+    outside.y = 2000.0;
+    let mut app = app_with(vec![node_of("frame", "group"), inside, outside], Vec::new());
+
+    send(
+        &mut app,
+        Message::MoveNode {
+            index: 0,
+            position: Point::new(50.0, 30.0), // the frame starts at (0, 0)
+        },
+    );
+
+    assert_eq!((app.nodes[0].x, app.nodes[0].y), (50.0, 30.0), "the frame");
+    assert_eq!((app.nodes[1].x, app.nodes[1].y), (150.0, 130.0), "rides along");
+    assert_eq!(
+        (app.nodes[2].x, app.nodes[2].y),
+        (2000.0, 2000.0),
+        "a node outside the frame stays put"
+    );
+}
+
+#[test]
+fn dragging_a_card_carries_nothing() {
+    let mut a = text_node("a", "a");
+    a.x = 100.0;
+    let mut b = text_node("b", "b");
+    b.x = 200.0;
+    let mut app = app_with(vec![a, b], Vec::new());
+
+    send(
+        &mut app,
+        Message::MoveNode {
+            index: 0,
+            position: Point::new(500.0, 500.0),
+        },
+    );
+    assert_eq!((app.nodes[0].x, app.nodes[0].y), (500.0, 500.0));
+    assert_eq!((app.nodes[1].x, app.nodes[1].y), (200.0, 0.0));
+}
+
+#[test]
+fn a_frames_contents_move_exactly_one_delta() {
+    // The enclosed node is *also* in the selection being dragged. Counted
+    // twice it would slide at double speed away from its frame.
+    let mut inside = text_node("in", "inside");
+    inside.x = 100.0;
+    inside.y = 100.0;
+    let mut app = app_with(vec![node_of("frame", "group"), inside], Vec::new());
+
+    send(&mut app, Message::SelectNodes(vec![0, 1]));
+    send(
+        &mut app,
+        Message::MoveNode {
+            index: 0,
+            position: Point::new(10.0, 20.0),
+        },
+    );
+
+    assert_eq!((app.nodes[1].x, app.nodes[1].y), (110.0, 120.0));
+}
+
+#[test]
+fn a_nested_frame_and_its_contents_ride_along() {
+    // Outer frame (800x600 at origin) holds an inner frame, which holds a card.
+    let mut inner = node_of("inner", "group");
+    inner.x = 50.0;
+    inner.y = 50.0;
+    inner.width = 300.0;
+    inner.height = 200.0;
+    let mut card = text_node("card", "card");
+    card.x = 100.0;
+    card.y = 100.0;
+    let mut app = app_with(vec![node_of("outer", "group"), inner, card], Vec::new());
+
+    send(
+        &mut app,
+        Message::MoveNode {
+            index: 0,
+            position: Point::new(10.0, 10.0),
+        },
+    );
+
+    assert_eq!((app.nodes[1].x, app.nodes[1].y), (60.0, 60.0), "inner frame");
+    assert_eq!((app.nodes[2].x, app.nodes[2].y), (110.0, 110.0), "its card");
+}
