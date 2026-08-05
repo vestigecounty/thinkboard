@@ -23,7 +23,7 @@ use iced::{Color, Point, Rectangle, Renderer, Size, Theme, Vector};
 
 use crate::Message;
 use crate::camera::Camera;
-use super::geometry::{EdgeGeometry, bezier_distance};
+use super::geometry::{EdgeGeometry, bezier_distance, within_reach};
 use crate::document::IntoColor;
 use crate::model::{CanvasEdge, CanvasNode, NodeKind};
 use crate::theme::Theme as ColorTheme;
@@ -2477,6 +2477,11 @@ impl Board<'_> {
             let Some(geometry) = self.edge_geometry(edge) else {
                 continue;
             };
+            // Reject on the curve's hull box before sampling it; on a board
+            // with many links almost every edge stops here.
+            if !within_reach(point, &geometry, threshold) {
+                continue;
+            }
             let distance = bezier_distance(point, &geometry);
             if distance < threshold && best.is_none_or(|(_, best)| distance < best) {
                 best = Some((index, distance));

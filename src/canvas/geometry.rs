@@ -60,6 +60,29 @@ pub fn bezier_distance(point: Point, g: &EdgeGeometry) -> f32 {
     min
 }
 
+/// Whether `point` is close enough to the curve to be worth [`bezier_distance`].
+///
+/// A cubic Bézier is contained by the convex hull of its four control points,
+/// so the box around them bounds the curve. Testing that box first turns a hover
+/// test on a board full of links from "sample every edge" into "sample the
+/// couple of edges actually near the cursor" — the rest are rejected on four
+/// comparisons.
+///
+/// Conservative by construction: it can admit a curve that turns out to be
+/// farther than `threshold` (the hull is larger than the curve), never reject
+/// one that is within it. So it changes only the cost of a hover test, not
+/// its result.
+pub fn within_reach(point: Point, g: &EdgeGeometry, threshold: f32) -> bool {
+    let min_x = g.start.x.min(g.end.x).min(g.control1.x).min(g.control2.x);
+    let max_x = g.start.x.max(g.end.x).max(g.control1.x).max(g.control2.x);
+    let min_y = g.start.y.min(g.end.y).min(g.control1.y).min(g.control2.y);
+    let max_y = g.start.y.max(g.end.y).max(g.control1.y).max(g.control2.y);
+    point.x >= min_x - threshold
+        && point.x <= max_x + threshold
+        && point.y >= min_y - threshold
+        && point.y <= max_y + threshold
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -92,6 +115,36 @@ mod tests {
         assert!(bezier_distance(g.start, &g) < 0.001);
         // Well off to the side.
         assert!(bezier_distance(Point::new(50.0, -100.0), &g) > 90.0);
+    }
+
+    #[test]
+    fn the_reach_test_never_rejects_a_curve_within_the_threshold() {
+        // The contract that makes it safe as a pre-filter: it may admit a
+        // curve that is farther than the threshold, but never rejects one
+        // that is closer. Swept over a grid spanning the curve and well past
+        // it, on both sides of the threshold.
+        let g = curve();
+        let threshold = 6.0;
+        for x in (-200..=300).step_by(7) {
+            for y in (-200..=300).step_by(7) {
+                let p = Point::new(x as f32, y as f32);
+                if bezier_distance(p, &g) <= threshold {
+                    assert!(
+                        within_reach(p, &g, threshold),
+                        "rejected {p:?}, which is within {threshold} of the curve"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_reach_test_rejects_what_is_plainly_far_away() {
+        let g = curve(); // spans x 0..100, y 0..~30
+        assert!(!within_reach(Point::new(1000.0, 0.0), &g, 6.0));
+        assert!(!within_reach(Point::new(50.0, -500.0), &g, 6.0));
+        // Just outside the hull box but inside the threshold: still admitted.
+        assert!(within_reach(Point::new(-3.0, 0.0), &g, 6.0));
     }
 
     #[test]

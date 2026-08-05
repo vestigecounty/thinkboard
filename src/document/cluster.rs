@@ -97,11 +97,45 @@ fn summary_text(node: &CanvasNode) -> String {
     }
 }
 
+/// The smallest font size the search will settle on.
+const MIN_FIT: f32 = 8.0;
+
+/// How precisely the size is resolved.
+///
+/// Every step costs a full Markdown layout at a size nothing has measured
+/// before, so precision *is* the cost: the number of cold measurements is
+/// `log2(bracket / this)`. A cluster label is a display size fitted to a box —
+/// a pixel either way is invisible — so resolving past 1 px buys nothing and
+/// charges ~35 us a step for it.
+const FIT_PRECISION: f32 = 1.0;
+
 /// Largest font (world units) whose wrapped text fits the padded box —
 /// bigger boxes get proportionally bigger, readable text. Measures the
 /// *rendered* Markdown with the theme font, matching how the cluster is drawn,
 /// so the fitted size never overflows (measuring with a narrower fallback font
 /// would let wider theme text spill onto an extra line).
+///
+/// Font fitting, not the grouping it summarizes, is the bulk of a recluster: a
+/// cold measurement costs ~35 µs and a plain binary search over
+/// `[MIN_FIT, avail_h]` needs one per halving. So the search is seeded rather
+/// than started blind — one probe, then `probe_size * avail_h / probe_height`
+/// as an estimate, which is exact whenever the probe already wraps the way the
+/// answer does and an over-estimate otherwise (growing the size can only wrap
+/// text into *more* lines, never fewer). Bracketing tightly around that, and
+/// resolving only to [`FIT_PRECISION`], takes it from ~10 cold measurements to
+/// ~6.
+///
+/// Worth knowing before optimizing further: this is the *cold* path. A repeat
+/// recluster whose texts and boxes are unchanged probes the same sizes and hits
+/// the measurement cache throughout, which is why a warm recluster is ~75x
+/// cheaper. The cold cost is what a board pays on load.
+///
+/// Both this and the plain search it replaced assume "fits" is monotonic in
+/// size. It is, for any box a cluster card realistically takes — but not for a
+/// very narrow one, where a long word overflows the width at one size and
+/// rewraps at the next, so the predicate flips back and forth. Either search
+/// then returns *some* size that fits rather than provably the largest, which
+/// is the right failure: the card is legible either way.
 fn fit_font_size(text: &str, bounds: Rectangle, theme: &Theme) -> f32 {
     if text.is_empty() {
         return 16.0;
@@ -109,12 +143,48 @@ fn fit_font_size(text: &str, bounds: Rectangle, theme: &Theme) -> f32 {
     let avail_w = (bounds.width - PADDING * 2.0).max(20.0);
     let avail_h = (bounds.height - PADDING * 2.0).max(20.0);
 
-    let mut lo = 8.0;
-    let mut hi = avail_h;
-    for _ in 0..22 {
+    let fits = |size: f32| {
+        let (w, h) = text_raster::measure_markdown(text, avail_w, size, theme);
+        w <= avail_w && h <= avail_h
+    };
+
+    // One probe, in the middle of the plausible range, to calibrate.
+    let probe = (avail_h / 4.0).clamp(MIN_FIT, avail_h);
+    let (_, probe_h) = text_raster::measure_markdown(text, avail_w, probe, theme);
+    if probe_h <= 0.0 {
+        return probe;
+    }
+
+    // Height is linear in size at a fixed line count, so this lands on the
+    // answer whenever the probe already wraps the way the answer does, and
+    // over-estimates otherwise.
+    let estimate = (probe * avail_h / probe_h).clamp(MIN_FIT, avail_h);
+
+    // Bracket it. `hi` must not fit and `lo` must fit; the estimate is an upper
+    // bound in theory, but the width constraint and Markdown's block spacing
+    // can break that, so widen until the bracket really does straddle.
+    // `lo` is clamped to the floor: a box too small for the text at any legible
+    // size must settle on `MIN_FIT` and clip, never search below it.
+    let mut lo = (estimate * 0.92).max(MIN_FIT);
+    let mut hi = (estimate * 1.03).clamp(lo + FIT_PRECISION, avail_h.max(lo + FIT_PRECISION));
+    let mut guard = 0;
+    while lo > MIN_FIT && !fits(lo) && guard < 8 {
+        hi = lo;
+        lo = (lo * 0.6).max(MIN_FIT);
+        guard += 1;
+    }
+    while hi < avail_h && fits(hi) && guard < 16 {
+        lo = hi;
+        hi = (hi * 1.6).min(avail_h);
+        guard += 1;
+    }
+    if !fits(lo) {
+        return MIN_FIT; // even the floor overflows; nothing to search
+    }
+
+    while hi - lo > FIT_PRECISION {
         let mid = (lo + hi) / 2.0;
-        let (w, h) = text_raster::measure_markdown(text, avail_w, mid, theme);
-        if w <= avail_w && h <= avail_h {
+        if fits(mid) {
             lo = mid;
         } else {
             hi = mid;
@@ -206,6 +276,77 @@ mod tests {
         let small = compute(&[text_node("a", 0.0, 0.0, 200.0, 100.0)], &[], &Theme::default());
         let large = compute(&[text_node("a", 0.0, 0.0, 800.0, 400.0)], &[], &Theme::default());
         assert!(large.clusters[0].font_size > small.clusters[0].font_size);
+    }
+
+    /// The plain binary search the seeded fit replaced: the reference answer.
+    fn exhaustive_fit(text: &str, bounds: Rectangle, theme: &Theme) -> f32 {
+        let avail_w = (bounds.width - PADDING * 2.0).max(20.0);
+        let avail_h = (bounds.height - PADDING * 2.0).max(20.0);
+        let mut lo = 8.0;
+        let mut hi = avail_h;
+        for _ in 0..22 {
+            let mid = (lo + hi) / 2.0;
+            let (w, h) = text_raster::measure_markdown(text, avail_w, mid, theme);
+            if w <= avail_w && h <= avail_h {
+                lo = mid;
+            } else {
+                hi = mid;
+            }
+        }
+        lo
+    }
+
+    #[test]
+    fn the_seeded_fit_matches_an_exhaustive_search() {
+        // Speeding the search up must not change the sizes it lands on.
+        let theme = Theme::default();
+        let long = "word ".repeat(200);
+        let texts = [
+            "short",
+            "A single line of ordinary prose that will wrap once or twice.",
+            "# Heading\n\nBody text under it, with **bold** and a list:\n\n- one\n- two\n- three",
+            long.as_str(),
+        ];
+        // Boxes wide enough for "fits" to be monotonic in size, which is what
+        // both searches assume. A cluster card is at least a member node wide,
+        // so these are the shapes that actually occur.
+        let boxes = [(300.0, 200.0), (400.0, 300.0), (900.0, 400.0), (1600.0, 1200.0)];
+        for text in texts {
+            for (w, h) in boxes {
+                let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(w, h));
+                let seeded = fit_font_size(text, bounds, &theme);
+                let reference = exhaustive_fit(text, bounds, &theme);
+                assert!(
+                    (seeded - reference).abs() <= 1.0,
+                    "{w}x{h} {:?}: seeded {seeded}, exhaustive {reference}",
+                    &text[..text.len().min(20)]
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_fitted_size_fits_unless_even_the_floor_overflows() {
+        // The property that matters: the size handed back renders inside the
+        // card. The exception is a box too small for the text at any legible
+        // size, where the floor is returned and the draw clips it — long-
+        // standing behaviour, not something this search introduced.
+        let theme = Theme::default();
+        let text = "# Ideas\n\nSome **bold** text and a list:\n\n- one\n- two";
+        for (w, h) in [(200.0, 120.0), (300.0, 200.0), (400.0, 300.0), (900.0, 400.0)] {
+            let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(w, h));
+            let size = fit_font_size(text, bounds, &theme);
+            let avail_w = (w - PADDING * 2.0).max(20.0);
+            let avail_h = (h - PADDING * 2.0).max(20.0);
+            let (tw, th) = text_raster::measure_markdown(text, avail_w, size, &theme);
+
+            let fits = tw <= avail_w + 0.5 && th <= avail_h + 0.5;
+            assert!(
+                fits || size == MIN_FIT,
+                "{w}x{h}: fitted {size} renders {tw}x{th}, over {avail_w}x{avail_h}, \
+                 and isn't the floor"
+            );
+        }
     }
 
     #[test]

@@ -250,7 +250,7 @@ fn recluster(c: &mut Criterion) {
 /// cursor, on every mouse move. Cost is linear in the edge count, so this is
 /// measured as a whole scan rather than per curve.
 fn link_hover(c: &mut Criterion) {
-    use thinkboard::geometry::{EdgeGeometry, bezier_distance};
+    use thinkboard::geometry::{EdgeGeometry, bezier_distance, within_reach};
 
     let curves: Vec<EdgeGeometry> = (0..800)
         .map(|i| {
@@ -266,6 +266,17 @@ fn link_hover(c: &mut Criterion) {
         .collect();
     let cursor = Point::new(200.0, 1400.0);
 
+    // What `Board::edge_at` actually does per mouse move: reject on the hull
+    // box, then sample only what survives.
+    let threshold = 6.0_f32;
+    let scan = |slice: &[EdgeGeometry], point| {
+        slice
+            .iter()
+            .filter(|g| within_reach(point, g, threshold))
+            .map(|g| bezier_distance(point, g))
+            .fold(f32::MAX, f32::min)
+    };
+
     let mut group = c.benchmark_group("link_hover");
     group.bench_function("single_curve", |b| {
         b.iter(|| bezier_distance(black_box(cursor), black_box(&curves[0])))
@@ -274,16 +285,148 @@ fn link_hover(c: &mut Criterion) {
         let slice = &curves[..edges];
         group.throughput(Throughput::Elements(edges as u64));
         group.bench_with_input(BenchmarkId::new("scan", edges), &edges, |b, _| {
-            b.iter(|| {
-                slice
-                    .iter()
-                    .map(|g| bezier_distance(black_box(cursor), g))
-                    .fold(f32::MAX, f32::min)
-            })
+            b.iter(|| scan(slice, black_box(cursor)))
         });
     }
+    // The cursor sitting *on* a link, so the broad phase can't reject
+    // everything: the realistic worst case rather than the best.
+    group.bench_function("scan_on_a_link/800", |b| {
+        let on_link = curves[400].start;
+        b.iter(|| scan(&curves, black_box(on_link)))
+    });
     group.finish();
 }
 
-criterion_group!(benches, measure, rasterize, raster_scale, live_layout, recluster, link_hover);
+/// What the main thread actually pays when background text work is running.
+///
+/// Measurement and rasterization share one global mutex (`with_raster`), so a
+/// keystroke's auto-size can queue behind background work. The question this
+/// answers is *how long* — the lock is taken per call, not held across a batch,
+/// so the exposure should be one in-flight operation rather than the whole
+/// recluster or raster sweep. If that is right, the contended number sits about
+/// one rasterization above the quiet one, and splitting the mutex would buy
+/// very little.
+fn contention(c: &mut Criterion) {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, Ordering};
+
+    let theme = Theme::default();
+    let wrap = card_text_wrap(NODE_WIDTH);
+
+    let mut group = c.benchmark_group("contention");
+    group.sample_size(30);
+
+    // A keystroke's auto-size with nothing else running.
+    group.bench_function("autosize_quiet", |b| {
+        b.iter_batched(
+            text_raster::clear_caches,
+            |()| text_raster::measure_source_card(black_box(RICH), wrap, FONT_SIZE, &theme),
+            BatchSize::PerIteration,
+        )
+    });
+
+    // The same, while a background thread rasterizes cards back to back —
+    // what a zoom-settle or a recluster does.
+    let stop = Arc::new(AtomicBool::new(false));
+    let worker = {
+        let stop = Arc::clone(&stop);
+        std::thread::spawn(move || {
+            let theme = Theme::default();
+            let wrap = card_text_wrap(NODE_WIDTH);
+            let mut n = 0usize;
+            while !stop.load(Ordering::Relaxed) {
+                // Vary the text so it never short-circuits on a cache hit.
+                let text = format!("{RICH}\n\nbackground {n}");
+                text_raster::snapshot_markdown(
+                    &text, NODE_WIDTH, NODE_HEIGHT, wrap, FONT_SIZE, theme, false, 1.0,
+                );
+                n += 1;
+            }
+        })
+    };
+    group.bench_function("autosize_under_load", |b| {
+        b.iter_batched(
+            text_raster::clear_caches,
+            |()| text_raster::measure_source_card(black_box(RICH), wrap, FONT_SIZE, &theme),
+            BatchSize::PerIteration,
+        )
+    });
+    stop.store(true, Ordering::Relaxed);
+    worker.join().expect("background rasterizer");
+    group.finish();
+}
+
+/// The three candidates that were still guesses: a per-frame index rebuild, the
+/// allocation inside every measurement-cache lookup, and search-as-you-type.
+/// Measured so they can be ranked against the paths above rather than assumed.
+fn per_frame_overheads(c: &mut Criterion) {
+    use std::collections::HashMap;
+
+    let theme = Theme::default();
+    let wrap = card_text_wrap(NODE_WIDTH);
+
+    let mut group = c.benchmark_group("per_frame");
+    for size in [100, 800] {
+        let nodes = board(size);
+
+        // `view()` rebuilds this id -> index map on every frame.
+        group.throughput(Throughput::Elements(size as u64));
+        group.bench_with_input(BenchmarkId::new("node_index_rebuild", size), &size, |b, _| {
+            b.iter(|| {
+                black_box(&nodes)
+                    .iter()
+                    .enumerate()
+                    .map(|(index, node)| (node.id.as_str(), index))
+                    .collect::<HashMap<&str, usize>>()
+            })
+        });
+
+        // Search-as-you-type: the whole board is rescanned per keystroke, and
+        // the current implementation folds each node's text into a fresh
+        // `Vec<char>` to do it.
+        group.bench_with_input(BenchmarkId::new("find_matches", size), &size, |b, _| {
+            b.iter(|| {
+                let needle: Vec<char> = "search".chars().collect();
+                let mut hits = 0usize;
+                for node in black_box(&nodes) {
+                    let Some(text) = node.text.as_deref() else { continue };
+                    let hay: Vec<char> =
+                        text.chars().map(|c| c.to_lowercase().next().unwrap_or(c)).collect();
+                    let mut start = 0;
+                    while start + needle.len() <= hay.len() {
+                        if hay[start..start + needle.len()] == needle[..] {
+                            hits += 1;
+                            start += needle.len();
+                        } else {
+                            start += 1;
+                        }
+                    }
+                }
+                hits
+            })
+        });
+    }
+    // A warm measurement is dominated by building its cache key, which clones
+    // the node's text on every call — including the hits.
+    group.bench_function("measure_cache_key", |b| {
+        text_raster::measure_markdown(RICH, wrap, FONT_SIZE, &theme);
+        b.iter(|| text_raster::measure_markdown(black_box(RICH), wrap, FONT_SIZE, &theme))
+    });
+    group.bench_function("measure_cache_key_alloc_only", |b| {
+        b.iter(|| black_box(RICH).trim().to_owned())
+    });
+    group.finish();
+}
+
+criterion_group!(
+    benches,
+    measure,
+    rasterize,
+    raster_scale,
+    live_layout,
+    recluster,
+    link_hover,
+    contention,
+    per_frame_overheads,
+);
 criterion_main!(benches);

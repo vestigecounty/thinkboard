@@ -160,9 +160,26 @@ Standing results worth knowing (Apple silicon, release):
   cut the worst case (a small card at high zoom) by ~41% and left every other
   size untouched, since they were already texture-bound below it. Dropping it
   to 4 cuts the same case by ~71% but softens cards above zoom 2.
-- A cold recluster is dominated by font fitting, not by grouping: ~76 µs per
-  node, because `fit_font_size` binary-searches ~22 sizes per cluster and each
-  is a distinct cache key. The grouping it wraps costs ~1 µs per node.
+- A cold recluster is dominated by font fitting, not by grouping (~1 µs/node).
+  Seeding the search and resolving only to 1 px took it from ~10 cold
+  measurements per cluster to ~6 (23 ms → 19.5 ms at 300 nodes). It resists
+  further tuning: precision *is* the cost, one full layout per untried size.
+  The cold path only matters on board load — a repeat recluster probes the same
+  sizes, hits the cache throughout, and is ~75× cheaper.
+- Link hover rejects on the curve's hull box before sampling it, which took a
+  scan of 800 edges from 64 µs to 2.2 µs per mouse move.
+
+Measured and **not** worth optimizing — don't re-propose without a new number:
+clustering itself, layered layout, canvas parse/serialize, Markdown parse,
+syntax highlighting, `random_id`, the per-frame `node_index` rebuild (8.5 µs at
+800 nodes), the measurement cache key's allocation (15 ns of 54 ns), and
+splitting the global `with_raster` mutex — a keystroke's auto-size costs
+35.6 µs quiet and 41.8 µs under continuous background rasterization, because
+the lock is taken per call rather than held across a batch. The `contention`
+bench guards that last claim.
+
+Still live: `find_matches` re-scans every node per keystroke and folds each into
+a fresh `Vec<char>` — 830 µs at 800 nodes, on the main thread.
 
 ## Testing
 
