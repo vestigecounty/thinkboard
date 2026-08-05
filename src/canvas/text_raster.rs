@@ -29,10 +29,26 @@ use crate::theme::Theme;
 /// the scale it was captured at.
 const RASTER_DENSITY: f32 = 4.0;
 
-/// Cap on bitmap dimensions. Kept within a single atlas layer: larger
-/// textures fragment across layers and can take iced several frames to
-/// allocate, leaving the node blank meanwhile. Costs some sharpness on
-/// large nodes at extreme zoom.
+/// Ceiling on the raster scale itself — the cost/quality knob.
+///
+/// Rasterizing is dominated by the glyph size the shaper works at
+/// (`font_size * scale`), not by how many pixels the texture ends up with, so
+/// bounding the scale is what bounds the cost. Bounding only the *dimensions*
+/// (see [`MAX_DIMENSION`]) made resolution depend on a card's size for no good
+/// reason, and backwards at that: a 250 px card was left at 8.19x while an
+/// 800 px card, holding far more text, was held to 2.56x.
+///
+/// At scale `k` a card is pixel-exact on a 2x display up to zoom `k / 2`, and
+/// keeps its full re-raster reserve up to `k / RASTER_DENSITY`. So 6.0 is sharp
+/// through zoom 3 and reserved through 1.5; past that a card softens until the
+/// zoom settles, and stays slightly soft at the very top of the zoom range.
+const MAX_SCALE: f32 = 6.0;
+
+/// Cap on bitmap dimensions. Unlike [`MAX_SCALE`] this is a hard constraint,
+/// not a quality choice: a texture past this fragments across atlas layers and
+/// can take iced several frames to allocate, leaving the node blank meanwhile.
+/// It still binds before `MAX_SCALE` on large cards, which is unavoidable —
+/// the same scale simply needs more texture on a bigger card.
 const MAX_DIMENSION: f32 = 2048.0;
 
 /// Floor on bitmap dimensions (longest side). Zoomed all the way out, a node's
@@ -160,9 +176,13 @@ pub struct Snapshot {
 /// given zoom, after the dimension cap.
 pub fn scale_for(zoom: f32, width: f32, height: f32) -> f32 {
     let longest = width.max(height);
-    // Texture longest side kept within [MIN_DIMENSION, MAX_DIMENSION].
     (zoom * RASTER_DENSITY)
+        // What the resolution is actually worth (see MAX_SCALE) …
+        .min(MAX_SCALE)
+        // … then the hard texture bound, which still binds first on big cards.
         .min(MAX_DIMENSION / longest)
+        // The floor wins over both: a tiny on-screen node still bakes enough
+        // resolution to survive the first zoom-in.
         .max(MIN_DIMENSION / longest)
 }
 
@@ -805,6 +825,89 @@ fn blit_buffer(
         },
     );
     pixels
+}
+
+#[cfg(test)]
+mod scale_tests {
+    use super::*;
+
+    /// Card sizes spanning what the board actually holds.
+    const SMALL: (f32, f32) = (250.0, 120.0);
+    const LARGE: (f32, f32) = (800.0, 600.0);
+
+    #[test]
+    fn the_scale_ceiling_bounds_every_card_a_board_can_hold() {
+        // The point of capping on scale rather than dimension: however far you
+        // zoom, and whatever the card's size, glyphs are never rasterized past
+        // MAX_SCALE — which is what bounds the cost.
+        //
+        // `150.0` is the narrowest a text node can be dragged (see
+        // `App::resized_text_size`), so it's the smallest card that can reach
+        // this in practice.
+        for (w, h) in [SMALL, LARGE, (150.0, 40.0), (2000.0, 1500.0)] {
+            for zoom in [1.0, 2.0, 4.0, 6.0, 20.0] {
+                let k = scale_for(zoom, w, h);
+                assert!(
+                    k <= MAX_SCALE + f32::EPSILON,
+                    "{w}x{h} @ {zoom}x gave scale {k}, over the {MAX_SCALE} ceiling"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_minimum_texture_floor_outranks_the_ceiling() {
+        // A card smaller than `MIN_DIMENSION / MAX_SCALE` (~85 px) can't reach
+        // the floor's texture size without passing the ceiling, and the floor
+        // wins — deliberately. It stays cheap regardless, because the cost is
+        // glyphs rasterized, and a card that small holds almost no text.
+        let k = scale_for(1.0, 60.0, 40.0);
+        assert!(k > MAX_SCALE);
+        assert_eq!(k, MIN_DIMENSION / 60.0);
+    }
+
+    #[test]
+    fn the_texture_bound_still_holds() {
+        // MAX_SCALE is a quality choice; the dimension cap is a hard limit —
+        // past it a texture fragments across atlas layers and the node blanks.
+        for (w, h) in [SMALL, LARGE, (2000.0, 1500.0), (4000.0, 400.0)] {
+            let k = scale_for(20.0, w, h);
+            let longest = w.max(h) * k;
+            assert!(
+                longest <= MAX_DIMENSION + 0.5,
+                "{w}x{h} baked a {longest} px texture, over the {MAX_DIMENSION} limit"
+            );
+        }
+    }
+
+    #[test]
+    fn a_tiny_on_screen_node_still_bakes_a_usable_texture() {
+        // Zoomed right out, a proportional scale would bake a ~100 px mush that
+        // falls apart the moment you zoom in, before the re-raster lands.
+        let k = scale_for(0.05, SMALL.0, SMALL.1);
+        assert!(SMALL.0.max(SMALL.1) * k >= MIN_DIMENSION - 0.5);
+    }
+
+    #[test]
+    fn scale_rises_with_zoom_until_it_is_capped() {
+        let k = |zoom| scale_for(zoom, SMALL.0, SMALL.1);
+        assert!(k(0.5) < k(1.0), "below the cap, resolution follows zoom");
+        assert_eq!(k(2.0), MAX_SCALE, "and levels off at the ceiling");
+        assert_eq!(k(6.0), MAX_SCALE);
+    }
+
+    #[test]
+    fn resolution_no_longer_inverts_with_card_size() {
+        // The bug this cap fixes: a small card used to get 8.19x while a large
+        // one — holding more text — got 2.56x at the same zoom. A large card is
+        // still texture-bound below a small one, but never above the ceiling,
+        // so the gap is the hard limit rather than an accident of sizing.
+        let small = scale_for(4.0, SMALL.0, SMALL.1);
+        let large = scale_for(4.0, LARGE.0, LARGE.1);
+        assert_eq!(small, MAX_SCALE);
+        assert!(large < small, "a big card is still bound by the texture limit");
+        assert_eq!(large, MAX_DIMENSION / LARGE.0.max(LARGE.1));
+    }
 }
 
 #[cfg(test)]

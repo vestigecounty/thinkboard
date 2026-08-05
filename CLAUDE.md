@@ -153,10 +153,13 @@ wgpu renderer. Everything feeding it is, and that's where the time goes.
 Standing results worth knowing (Apple silicon, release):
 
 - Rasterizing one card is the most expensive thing on the board, and scales
-  with *glyph* size, not bitmap area. A small 250×120 card at 2× zoom costs
-  ~1.3 ms — about 6× a 800×600 card — because `scale_for`'s `MAX_DIMENSION`
-  cap only binds on the longest side, so a small card renders glyphs at the
-  full `zoom * RASTER_DENSITY` (8×).
+  with *glyph* size, not bitmap area — a 400×300 card at 2× zoom has more
+  pixels than at 1× yet costs less, because the texture cap pulled its scale
+  down. `MAX_SCALE` in `text_raster` is therefore the cost/quality knob;
+  `MAX_DIMENSION` is a hard atlas bound, not a policy. Capping the scale at 6
+  cut the worst case (a small card at high zoom) by ~41% and left every other
+  size untouched, since they were already texture-bound below it. Dropping it
+  to 4 cuts the same case by ~71% but softens cards above zoom 2.
 - A cold recluster is dominated by font fitting, not by grouping: ~76 µs per
   node, because `fit_font_size` binary-searches ~22 sizes per cluster and each
   is a distinct cache key. The grouping it wraps costs ~1 µs per node.

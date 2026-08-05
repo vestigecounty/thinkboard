@@ -112,20 +112,37 @@ fn measure(c: &mut Criterion) {
 /// text node pays this again whenever a settled zoom leaves its quality band.
 /// Measured across zoom levels because the bitmap is sized in device pixels, so
 /// cost grows with the square of the scale.
+/// Card sizes to sweep. Cost turns on the raster scale, which is derived from
+/// the node's own dimensions — so a size sweep is the point, not a detail: the
+/// same zoom can land these on very different scales.
+const CARD_SIZES: [(&str, f32, f32); 3] = [
+    ("small", 250.0, 120.0),
+    ("medium", 400.0, 300.0),
+    ("large", 800.0, 600.0),
+];
+
+/// Zooms to sweep, spanning the configured range (`min_zoom` 0.1 …
+/// `max_zoom` 6.0) rather than just the comfortable middle.
+const ZOOMS: [f32; 4] = [0.5, 1.0, 2.0, 4.0];
+
 fn rasterize(c: &mut Criterion) {
     let theme = Theme::default();
-    let wrap = card_text_wrap(NODE_WIDTH);
 
     let mut group = c.benchmark_group("rasterize");
-    for zoom in [0.5_f32, 1.0, 2.0] {
-        for (name, text) in [("plain", PLAIN), ("rich", RICH)] {
-            let id = BenchmarkId::new(name, format!("{zoom}x"));
+    for (size_name, width, height) in CARD_SIZES {
+        let wrap = card_text_wrap(width);
+        for zoom in ZOOMS {
+            // The id must stay stable across a change to the scale policy —
+            // putting the resolution in it would break baseline comparison at
+            // exactly the moment the resolution is what changed. The scale each
+            // case resolves to is printed by the `raster_scale` group instead.
+            let id = BenchmarkId::new(size_name, format!("{zoom}x"));
             group.bench_function(id, |b| {
                 b.iter(|| {
                     text_raster::snapshot_markdown(
-                        black_box(text),
-                        NODE_WIDTH,
-                        NODE_HEIGHT,
+                        black_box(RICH),
+                        width,
+                        height,
                         wrap,
                         FONT_SIZE,
                         theme,
@@ -136,21 +153,22 @@ fn rasterize(c: &mut Criterion) {
             });
         }
     }
-    // A large card at retina scale: the worst case a single node can present.
-    group.bench_function("large_card_2x", |b| {
-        b.iter(|| {
-            text_raster::snapshot_markdown(
-                black_box(RICH),
-                800.0,
-                600.0,
-                card_text_wrap(800.0),
-                FONT_SIZE,
-                theme,
-                false,
-                2.0,
-            )
-        })
-    });
+    group.finish();
+}
+
+/// The raster scale itself, independent of any rasterization: what resolution
+/// each card size gets at each zoom. Not a timing so much as a table — the
+/// assertions live in `text_raster`'s own tests; this makes the numbers visible
+/// alongside the cost they produce.
+fn raster_scale(c: &mut Criterion) {
+    let mut group = c.benchmark_group("raster_scale");
+    for (size_name, width, height) in CARD_SIZES {
+        group.bench_function(BenchmarkId::from_parameter(size_name), |b| {
+            b.iter(|| {
+                ZOOMS.map(|zoom| text_raster::scale_for(black_box(zoom), width, height))
+            })
+        });
+    }
     group.finish();
 }
 
@@ -267,5 +285,5 @@ fn link_hover(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, measure, rasterize, live_layout, recluster, link_hover);
+criterion_group!(benches, measure, rasterize, raster_scale, live_layout, recluster, link_hover);
 criterion_main!(benches);
