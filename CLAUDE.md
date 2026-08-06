@@ -106,6 +106,15 @@ grow until it visibly blurs, growth stops and the overflow scrolls;
 `Board::scrollable` forces the scrollbar on for such a card whatever
 `node_scrollbars` says, or the rest of the note would be unreachable.
 
+The editing overlay is bounded to its card for the same reason: sized to its
+content it spilled over the board above and below. Bounded, iced scrolls it
+internally and keeps the caret in the visible line range. What is still missing
+is the *thumb* while editing — `Board::draw_nodes` skips the text-and-scrollbar
+block for the node being edited, and iced's `Content` exposes `cursor()` and
+`line_count()` but not the scroll offset, so drawing one needs a getter over
+`buffer.scroll()` in the vendored `iced_graphics` editor. There is an `#[ignore]`d
+test stating that behaviour.
+
 ## Obsidian compatibility
 
 `.canvas` files are Obsidian's, and round-tripping must not damage them:

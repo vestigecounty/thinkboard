@@ -558,7 +558,17 @@ impl App {
         let (text_width, text_height) =
             text_raster::measure_source(&text, text_wrap, FONT_SIZE, zoom, &self.theme);
         let caret_slack = 4.0;
-        let height = text_height + 2.0;
+        // Bound the box to the card, so a note longer than its card scrolls
+        // *within* it instead of spilling over the board above and below.
+        //
+        // The scrolling is iced's: given a fixed height smaller than the
+        // content it keeps the caret inside the visible line range, which is
+        // exactly what following the caret by keyboard needs. Sized to the
+        // content — as this was — there is nothing to scroll and the overflow
+        // simply draws outside the card.
+        let inner = (rect.height - text_raster::NODE_PAD_Y * zoom)
+            .max(FONT_SIZE * zoom * text_raster::LINE_HEIGHT);
+        let height = (text_height + 2.0).min(inner);
         // Match read mode's alignment while editing: a centered block that hugs
         // the text for simple content, or the full (left-aligned) wrap column
         // when the read view left-aligns it.

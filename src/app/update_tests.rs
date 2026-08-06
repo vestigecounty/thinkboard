@@ -965,3 +965,84 @@ fn height_still_settles_back_when_text_is_removed() {
 
     assert!(app.nodes[0].height < tall, "height should settle back");
 }
+
+// --- Editing overlay bounds ---
+
+/// The card's on-screen rectangle, which the editing overlay has to stay within.
+fn card_screen_rect(app: &App, index: usize) -> iced::Rectangle {
+    app.camera
+        .rect_to_screen(arrange::node_world_rect(&app.nodes[index]))
+}
+
+#[test]
+fn the_editor_never_extends_past_the_card_it_edits() {
+    // A note with far more text than its card can show. The editor used to be
+    // sized to the whole text, so it spilled out of the card — over the board
+    // above and below it — instead of scrolling within it.
+    let mut app = app_with(vec![text_node("a", &"a line of the note\n".repeat(200))], Vec::new());
+    send(&mut app, Message::StartEditing { index: 0, at: None });
+
+    let card = card_screen_rect(&app, 0);
+    let editor = app.editor_box(0).expect("an open editor");
+    assert!(
+        editor.height <= card.height + 0.5,
+        "editor is {} tall for a {} card",
+        editor.height,
+        card.height
+    );
+    assert!(
+        editor.origin.y >= card.y - 0.5,
+        "editor starts at {}, above the card at {}",
+        editor.origin.y,
+        card.y
+    );
+    assert!(
+        editor.origin.y + editor.height <= card.y + card.height + 0.5,
+        "editor ends at {}, below the card at {}",
+        editor.origin.y + editor.height,
+        card.y + card.height
+    );
+}
+
+#[test]
+fn a_short_note_still_gets_an_editor_that_hugs_its_text() {
+    // The clamp must not become "always fill the card": a short note's editor
+    // is sized to its text and centred, which is what matches read mode.
+    let mut app = app_with(vec![text_node("a", "one line")], Vec::new());
+    send(&mut app, Message::StartEditing { index: 0, at: None });
+
+    let card = card_screen_rect(&app, 0);
+    let editor = app.editor_box(0).expect("an open editor");
+    assert!(editor.height < card.height, "should hug: {}", editor.height);
+    assert!(editor.origin.y > card.y, "and be centred, not flush to the top");
+}
+
+#[test]
+#[ignore = "not implemented — see the comment inside"]
+fn the_cards_scrollbar_follows_the_caret_while_editing() {
+    // The second half of the spilling-editor report. With the editor now bounded
+    // to its card, a long note scrolls inside it and iced keeps the caret in
+    // view — but the card's own scrollbar is not drawn while editing, and
+    // nothing tracks where in the note you are. Arrowing down past the bottom
+    // moves the text with no thumb to show it.
+    //
+    // Implementing it needs the editor's scroll offset, which iced does not
+    // expose: `Content` offers `cursor()` and `line_count()` and nothing about
+    // the visible range. The vendored `iced_graphics` editor *does* have it
+    // (`buffer.scroll()`), so the fix is a getter there — the same shape as the
+    // existing `set_editor_centered` patch — plus drawing the thumb from it in
+    // `Board::draw_nodes`, which currently skips the whole text-and-scrollbar
+    // block for the node being edited.
+    let mut app = app_with(vec![text_node("a", &"a line of the note\n".repeat(200))], Vec::new());
+    let id = app.nodes[0].id.clone();
+    send(&mut app, Message::StartEditing { index: 0, at: None });
+
+    // Jump to the end of the note; the view has to have scrolled to follow.
+    send(
+        &mut app,
+        Message::EditorAction(text_editor::Action::Move(text_editor::Motion::DocumentEnd)),
+    );
+
+    let offset = app.node_scroll.get(&id).copied().unwrap_or(0.0);
+    assert!(offset > 0.0, "nothing tracks the scroll position while editing");
+}
