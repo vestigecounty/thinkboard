@@ -127,6 +127,10 @@ pub struct Board<'a> {
     pub top_safe_inset: f32,
     pub cache: &'a canvas::Cache,
     pub editing: Option<usize>,
+    /// How far the open editor is scrolled through its content, `0..=1`. Drives
+    /// the thumb while editing, where the node's own scroll offset doesn't
+    /// apply — iced scrolls the editor internally.
+    pub editor_scroll: f32,
     pub overlay: bool,
     /// An in-board modal (the settings panel) is up: board keyboard shortcuts
     /// are suppressed so the modal owns input.
@@ -404,6 +408,26 @@ const REFERENCE_TITLE_SIZE: f32 = FONT_SIZE - 3.0;
 /// The scrollbar thumb rect (screen) within a node `rect`, plus the world
 /// overflow, or `None` when the content fits within `node_height`. Sizes/scroll
 /// are world px; `zoom` scales the thumb width. Pure, so it's unit-tested.
+/// The thumb for a card being edited, placed from how far the editor is
+/// scrolled through its content (`fraction`, `0..=1`) rather than from a world
+/// scroll offset.
+///
+/// Goes through [`scrollbar_thumb`] on a scroll derived from the same overflow
+/// the read path uses, so the thumb is the same size and travels the same track
+/// whether or not the card is being edited — entering an edit shouldn't make it
+/// jump.
+fn editing_thumb(
+    rect: Rectangle,
+    node_height: f32,
+    content_height: f32,
+    fraction: f32,
+    zoom: f32,
+) -> Option<Rectangle> {
+    let overflow = (content_height - node_height).max(0.0);
+    let scroll = fraction.clamp(0.0, 1.0) * overflow;
+    scrollbar_thumb(rect, node_height, content_height, scroll, zoom).map(|(thumb, _)| thumb)
+}
+
 fn scrollbar_thumb(
     rect: Rectangle,
     node_height: f32,
@@ -2052,6 +2076,12 @@ impl Board<'_> {
                 continue;
             }
 
+            if self.editing == Some(index) {
+                // The editor draws the text; all that's left is to show where
+                // in the note it is. Its scroll is iced's, not `node_scroll`.
+                self.draw_editing_thumb(frame, node, rect, alpha);
+            }
+
             if self.editing != Some(index) {
                 let text = node.text.as_deref().unwrap_or("(no content)");
                 let wrap = crate::text_raster::card_text_wrap(node.width);
@@ -2329,6 +2359,30 @@ impl Board<'_> {
                     ..border_color
                 })
                 .with_width(border_width),
+        );
+    }
+
+    /// Draws the scrollbar thumb for the card being edited.
+    ///
+    /// The read path derives the thumb from `node_scroll`, which the editor
+    /// doesn't use — it scrolls itself to keep the caret in view. So the
+    /// position comes from the editor instead (`editor_scroll`, a fraction),
+    /// mapped onto the same overflow the read path measures so the thumb is the
+    /// same size and travel in both modes.
+    fn draw_editing_thumb(&self, frame: &mut Frame, node: &CanvasNode, rect: Rectangle, alpha: f32) {
+        if !self.scrollable(node) {
+            return;
+        }
+        let text = node.text.as_deref().unwrap_or("");
+        let content = self.node_content_height(text, node.width);
+        let Some(thumb) =
+            editing_thumb(rect, node.height, content, self.editor_scroll, self.camera.zoom)
+        else {
+            return;
+        };
+        frame.fill(
+            &Path::rounded_rectangle(thumb.position(), thumb.size(), (thumb.width / 2.0).into()),
+            Color { a: 0.55 * alpha, ..self.theme.text_muted },
         );
     }
 
@@ -3362,6 +3416,62 @@ mod snap_tests {
         assert_eq!(rect_distance(rect, Point::new(13.0, 5.0)), 3.0); // 3 past the right edge
         // Diagonally off a corner: (3,4) past the top-left -> 5.
         assert_eq!(rect_distance(rect, Point::new(-3.0, -4.0)), 5.0);
+    }
+}
+
+#[cfg(test)]
+mod editing_thumb_tests {
+    use super::{editing_thumb, scrollbar_thumb};
+    use iced::{Point, Rectangle, Size};
+
+    /// A card 200 wide and 300 tall on screen, holding 900 of content.
+    fn card() -> Rectangle {
+        Rectangle::new(Point::new(100.0, 50.0), Size::new(200.0, 300.0))
+    }
+    const NODE_H: f32 = 300.0;
+    const CONTENT: f32 = 900.0;
+
+    #[test]
+    fn the_thumb_travels_the_track_as_the_editor_scrolls() {
+        let top = editing_thumb(card(), NODE_H, CONTENT, 0.0, 1.0).expect("a thumb");
+        let middle = editing_thumb(card(), NODE_H, CONTENT, 0.5, 1.0).expect("a thumb");
+        let bottom = editing_thumb(card(), NODE_H, CONTENT, 1.0, 1.0).expect("a thumb");
+
+        assert_eq!(top.y, card().y, "unscrolled, it sits at the top");
+        assert!(middle.y > top.y && bottom.y > middle.y, "and moves down");
+        assert!(
+            (bottom.y + bottom.height - (card().y + card().height)).abs() < 0.5,
+            "fully scrolled, it reaches the bottom"
+        );
+    }
+
+    #[test]
+    fn a_fraction_outside_the_range_is_clamped() {
+        let bottom = editing_thumb(card(), NODE_H, CONTENT, 1.0, 1.0).expect("a thumb");
+        let over = editing_thumb(card(), NODE_H, CONTENT, 4.0, 1.0).expect("a thumb");
+        let under = editing_thumb(card(), NODE_H, CONTENT, -2.0, 1.0).expect("a thumb");
+        assert_eq!(over.y, bottom.y);
+        assert_eq!(under.y, card().y);
+    }
+
+    #[test]
+    fn content_that_fits_gets_no_thumb() {
+        assert!(editing_thumb(card(), NODE_H, 200.0, 0.5, 1.0).is_none());
+    }
+
+    #[test]
+    fn editing_does_not_move_the_thumb_from_where_reading_left_it() {
+        // Entering an edit must not make the thumb jump: the same position
+        // through the card's own scroll offset and through the editor's
+        // fraction has to land in the same place.
+        let overflow = CONTENT - NODE_H;
+        for fraction in [0.0, 0.25, 0.5, 1.0] {
+            let reading = scrollbar_thumb(card(), NODE_H, CONTENT, fraction * overflow, 1.0)
+                .expect("a thumb")
+                .0;
+            let editing = editing_thumb(card(), NODE_H, CONTENT, fraction, 1.0).expect("a thumb");
+            assert_eq!(reading, editing, "at {fraction}");
+        }
     }
 }
 

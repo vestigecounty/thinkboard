@@ -36,8 +36,10 @@ real one — use it for any run that might write settings.
   explaining *why*, often referencing a platform bug or a rendering artifact.
   Preserve them verbatim when moving code, and write new ones in the same voice.
 - **`vendor/` holds patched iced crates**, wired up by `[patch.crates-io]`:
-  - `iced_graphics` — center-aligned text editing (`set_editor_centered`), which
-    the editor overlay needs to match read-mode alignment.
+  - `iced_graphics` — center-aligned text editing (`set_editor_centered`), and
+    `editor_scroll_fraction`, which publishes how far the editor has scrolled so
+    the app can draw a scrollbar for it. Both are globals, which is sound only
+    because one node is edited at a time.
   - `iced_wgpu` — honors wgpu backend env vars so
     `WGPU_DX12_PRESENTATION_SYSTEM=visual` can pick the DirectComposition
     swapchain (transparent overlay on Windows).
@@ -108,12 +110,12 @@ grow until it visibly blurs, growth stops and the overflow scrolls;
 
 The editing overlay is bounded to its card for the same reason: sized to its
 content it spilled over the board above and below. Bounded, iced scrolls it
-internally and keeps the caret in the visible line range. What is still missing
-is the *thumb* while editing — `Board::draw_nodes` skips the text-and-scrollbar
-block for the node being edited, and iced's `Content` exposes `cursor()` and
-`line_count()` but not the scroll offset, so drawing one needs a getter over
-`buffer.scroll()` in the vendored `iced_graphics` editor. There is an `#[ignore]`d
-test stating that behaviour.
+internally and keeps the caret in the visible line range. The thumb follows it: iced's
+`Content` exposes `cursor()` and `line_count()` but nothing about the scroll
+offset, so the vendored `iced_graphics` editor publishes it as a fraction
+(`editor_scroll_fraction`, measured in *visual* lines so wrapped paragraphs
+count honestly), and `editing_thumb` maps that onto the same overflow the read
+path uses — so the thumb doesn't jump when an edit starts.
 
 ## Obsidian compatibility
 

@@ -27,6 +27,60 @@ fn editor_centered() -> bool {
     EDITOR_CENTERED.load(Ordering::Relaxed)
 }
 
+/// ThinkBoard patch: how far the editor is scrolled through its content, as a
+/// fraction in `0..=1`, published after each layout.
+///
+/// The editor scrolls internally to keep the caret visible, but iced's public
+/// `Content` exposes only `cursor()` and `line_count()` — nothing about the
+/// visible range — so an app cannot draw a scrollbar for it. Bits, because
+/// `AtomicF32` isn't stable. A single global is enough here: the app edits one
+/// node at a time, the same assumption `EDITOR_CENTERED` already makes.
+static EDITOR_SCROLL: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
+/// ThinkBoard patch: the editor's scroll progress through its content, `0..=1`.
+/// `0` whenever the content fits and there is nothing to scroll.
+pub fn editor_scroll_fraction() -> f32 {
+    f32::from_bits(EDITOR_SCROLL.load(Ordering::Relaxed))
+}
+
+/// Records the scroll progress of `buffer` for [`editor_scroll_fraction`].
+///
+/// Measured in *visual* lines — what wrapping actually produces — rather than
+/// logical ones, so a card of long wrapped paragraphs reports honestly. Called
+/// once per layout, after shaping, so every line's layout is cached.
+fn publish_scroll(buffer: &cosmic_text::Buffer) {
+    let line_height = buffer.metrics().line_height;
+    let visual_len = |line: &cosmic_text::BufferLine| {
+        line.layout_opt().as_ref().map_or(1, |layout| layout.len()) as f32
+    };
+
+    let scroll = buffer.scroll();
+    let total: f32 = buffer.lines.iter().map(visual_len).sum();
+    let before: f32 = buffer.lines[..scroll.line.min(buffer.lines.len())]
+        .iter()
+        .map(visual_len)
+        .sum::<f32>()
+        + if line_height > 0.0 {
+            scroll.vertical / line_height
+        } else {
+            0.0
+        };
+
+    let visible = if line_height > 0.0 {
+        buffer.size().1.unwrap_or(0.0) / line_height
+    } else {
+        0.0
+    };
+    let overflow = total - visible;
+    let fraction = if overflow > 0.0 {
+        (before / overflow).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    EDITOR_SCROLL.store(fraction.to_bits(), Ordering::Relaxed);
+}
+
 /// A multi-line text editor.
 #[derive(Debug, PartialEq)]
 pub struct Editor(Option<Arc<Internal>>);
@@ -673,6 +727,7 @@ impl editor::Editor for Editor {
             }
 
             internal.editor.shape_as_needed(font_system.raw(), false);
+            publish_scroll(buffer_from_editor(&internal.editor));
         });
     }
 

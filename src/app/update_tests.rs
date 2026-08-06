@@ -1016,33 +1016,3 @@ fn a_short_note_still_gets_an_editor_that_hugs_its_text() {
     assert!(editor.height < card.height, "should hug: {}", editor.height);
     assert!(editor.origin.y > card.y, "and be centred, not flush to the top");
 }
-
-#[test]
-#[ignore = "not implemented — see the comment inside"]
-fn the_cards_scrollbar_follows_the_caret_while_editing() {
-    // The second half of the spilling-editor report. With the editor now bounded
-    // to its card, a long note scrolls inside it and iced keeps the caret in
-    // view — but the card's own scrollbar is not drawn while editing, and
-    // nothing tracks where in the note you are. Arrowing down past the bottom
-    // moves the text with no thumb to show it.
-    //
-    // Implementing it needs the editor's scroll offset, which iced does not
-    // expose: `Content` offers `cursor()` and `line_count()` and nothing about
-    // the visible range. The vendored `iced_graphics` editor *does* have it
-    // (`buffer.scroll()`), so the fix is a getter there — the same shape as the
-    // existing `set_editor_centered` patch — plus drawing the thumb from it in
-    // `Board::draw_nodes`, which currently skips the whole text-and-scrollbar
-    // block for the node being edited.
-    let mut app = app_with(vec![text_node("a", &"a line of the note\n".repeat(200))], Vec::new());
-    let id = app.nodes[0].id.clone();
-    send(&mut app, Message::StartEditing { index: 0, at: None });
-
-    // Jump to the end of the note; the view has to have scrolled to follow.
-    send(
-        &mut app,
-        Message::EditorAction(text_editor::Action::Move(text_editor::Motion::DocumentEnd)),
-    );
-
-    let offset = app.node_scroll.get(&id).copied().unwrap_or(0.0);
-    assert!(offset > 0.0, "nothing tracks the scroll position while editing");
-}
