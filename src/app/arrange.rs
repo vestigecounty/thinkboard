@@ -226,14 +226,18 @@ impl App {
             .filter(|(i, n)| *i != index && !n.is_group())
             .map(|(_, n)| node_world_rect(n));
         let cap = horizontal_width_cap(me, others, snapped, NEIGHBOR_GAP);
-        // Only limit growth — never force the card narrower than it already is
-        // (a genuine content shrink is handled by the clamp below). Below the
-        // cap the node hugs the text; at the cap the display wraps to the width.
-        let max_width = self
+        // Only limit growth — never force the card narrower than it already is.
+        // Below the cap the node hugs the text; at the cap the display wraps to
+        // the width.
+        let auto_max = self
             .config
             .max_node_width
             .min(cap.max(me.width))
             .max(self.config.new_node_min_width);
+        // A width the card already has outranks the auto-grow ceiling, because
+        // the user may have dragged it there. `max_node_width` bounds how wide
+        // a card grows *by itself*; it is not a limit on one sized by hand.
+        let max_width = auto_max.max(me.width);
         // Both branches measure at the same card wrap column and inset
         // `MD_PADDING` a side, so the card is the same width whether editing or
         // rendered — `measure_source_card` styles bold/italic/code inline (which
@@ -248,10 +252,19 @@ impl App {
             text_raster::measure_source_card(&text, wrap, FONT_SIZE, &self.theme)
         };
 
+        // Auto-size grows a card, never narrows it. A width is something the
+        // user can set deliberately by dragging, and re-deriving it from the
+        // text on the next keystroke would throw that away — which it did.
         let mut width = (text_width + text_raster::NODE_PAD_X)
-            .clamp(self.config.new_node_min_width, max_width);
-        let mut height =
-            (text_height + text_raster::NODE_PAD_Y).max(self.config.new_node_min_height);
+            .clamp(self.config.new_node_min_width, max_width)
+            .max(me.width);
+        // Height still follows the content, so text neither clips nor leaves a
+        // card standing empty — but it stops at the ceiling, past which the
+        // card scrolls instead of growing (see `text_raster::MAX_AUTO_HEIGHT`).
+        let mut height = (text_height + text_raster::NODE_PAD_Y).clamp(
+            self.config.new_node_min_height,
+            text_raster::MAX_AUTO_HEIGHT.max(self.config.new_node_min_height),
+        );
 
         // Snap-to-grid: round the fitted size *up* to whole cells so the text
         // still fits, and grow from a fixed (grid-aligned) top-left rather than
@@ -292,7 +305,12 @@ impl App {
             FONT_SIZE,
             &self.theme,
         );
-        let min_height = resize_min_height(self.config.node_scrollbars, text_height);
+        // A card taller than the ceiling scrolls whatever the setting says, so
+        // it can also be dragged shorter than its text — otherwise a long note
+        // could never be resized down at all.
+        let scrolls = self.config.node_scrollbars
+            || text_height + text_raster::NODE_PAD_Y > text_raster::MAX_AUTO_HEIGHT;
+        let min_height = resize_min_height(scrolls, text_height);
         let height = drag_h.max(min_height).max(MIN_SCROLLABLE_NODE_HEIGHT);
         (width, height)
     }

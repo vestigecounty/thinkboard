@@ -1828,6 +1828,17 @@ impl Board<'_> {
     /// vertical padding, split top/bottom. So a node at its fitted (autosized)
     /// height has no overflow, and a scrolled one keeps `NODE_TEXT_PAD_Y / 2`
     /// padding at each end rather than butting the text against the card edge.
+    /// Whether a card scrolls its overflow instead of showing all of it.
+    ///
+    /// Either the setting is on, or the card has grown to the auto-size ceiling
+    /// — where it stops growing, so without a scrollbar the rest of the note
+    /// would simply be unreachable.
+    fn scrollable(&self, node: &CanvasNode) -> bool {
+        node.is_text()
+            && (self.config.node_scrollbars
+                || node.height >= crate::text_raster::MAX_AUTO_HEIGHT - 0.5)
+    }
+
     fn node_content_height(&self, text: &str, width: f32) -> f32 {
         let wrap = crate::text_raster::card_text_wrap(width);
         crate::text_raster::measure_markdown(text.trim(), wrap, FONT_SIZE, self.theme).1
@@ -1836,7 +1847,7 @@ impl Board<'_> {
 
     /// The clamped scroll offset (world px) for a node, 0 when it fits.
     fn node_scroll_offset(&self, node: &CanvasNode) -> f32 {
-        if !self.config.node_scrollbars || !node.is_text() {
+        if !self.scrollable(node) {
             return 0.0;
         }
         let content = self.node_content_height(node.text.as_deref().unwrap_or(""), node.width);
@@ -1848,15 +1859,12 @@ impl Board<'_> {
     /// `(index, world overflow, world-scroll per screen-px)` for the drag. Only
     /// the node under the cursor is checked (the thumb sits inside its bounds).
     fn node_thumb_at(&self, position: Point) -> Option<(usize, f32, f32)> {
-        if !self.config.node_scrollbars {
-            return None;
-        }
         let index = self.hit_test(self.camera.to_world(position))?;
         if self.editing == Some(index) {
             return None;
         }
         let node = self.nodes.get(index)?;
-        if !node.is_text() {
+        if !self.scrollable(node) {
             return None;
         }
         let content = self.node_content_height(node.text.as_deref().unwrap_or(""), node.width);
@@ -2052,7 +2060,7 @@ impl Board<'_> {
                 // A scrollable node (scrollbars on, content overflows) draws the
                 // live text scrolled + clipped, with a draggable thumb — the raster
                 // snapshot only holds the visible top, so it can't scroll.
-                let scrollbar = self.config.node_scrollbars.then(|| {
+                let scrollbar = self.scrollable(node).then(|| {
                     let content = self.node_content_height(text, node.width);
                     let scroll = self.node_scroll_offset(node);
                     scrollbar_thumb(rect, node.height, content, scroll, zoom).map(|(t, _)| (t, scroll))

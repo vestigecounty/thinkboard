@@ -876,3 +876,92 @@ fn a_new_node_can_still_be_placed_inside_a_frame() {
     let inside = Point::new(400.0, 300.0);
     assert_eq!(app.find_free_placement(inside, 250.0, 120.0), inside);
 }
+
+// --- Auto-size ---
+
+#[test]
+fn a_manual_resize_survives_editing() {
+    // The reported bug: widen a card by hand, start typing, and it snapped back
+    // to whatever the text measured — throwing the deliberate size away.
+    let mut node = text_node("a", "short");
+    node.width = 900.0;
+    let mut app = app_with(vec![node], Vec::new());
+
+    send(&mut app, Message::StartEditing { index: 0, at: None });
+    type_text(&mut app, " a little more");
+    send(&mut app, Message::StopEditing);
+
+    assert!(
+        app.nodes[0].width >= 900.0,
+        "manual width lost: {}",
+        app.nodes[0].width
+    );
+}
+
+#[test]
+fn a_manual_width_beyond_the_auto_ceiling_is_kept() {
+    // `max_node_width` (420) bounds how wide a card grows by itself. It must
+    // not claw back one dragged wider than that.
+    let mut node = text_node("a", "short");
+    node.width = 1200.0;
+    let mut app = app_with(vec![node], Vec::new());
+
+    send(&mut app, Message::StartEditing { index: 0, at: None });
+    type_text(&mut app, "x");
+    send(&mut app, Message::StopEditing);
+
+    assert!(app.nodes[0].width >= 1200.0, "got {}", app.nodes[0].width);
+}
+
+#[test]
+fn auto_size_still_widens_a_card_that_needs_it() {
+    // Never-shrink must not become never-change.
+    let mut node = text_node("a", "");
+    node.width = 250.0;
+    let mut app = app_with(vec![node], Vec::new());
+
+    send(&mut app, Message::StartEditing { index: 0, at: None });
+    type_text(&mut app, "one long unbroken line of text that has to widen the card");
+    send(&mut app, Message::StopEditing);
+
+    assert!(app.nodes[0].width > 250.0, "got {}", app.nodes[0].width);
+}
+
+#[test]
+fn a_card_stops_growing_at_the_height_ceiling() {
+    // Past it the raster loses resolution in proportion, so the card scrolls
+    // instead of growing.
+    let mut app = app_with(vec![text_node("a", "")], Vec::new());
+
+    send(&mut app, Message::StartEditing { index: 0, at: None });
+    // Far more text than any card could show.
+    type_text(&mut app, &"a line of the note\n".repeat(400));
+    send(&mut app, Message::StopEditing);
+
+    let height = app.nodes[0].height;
+    assert!(
+        height <= crate::text_raster::MAX_AUTO_HEIGHT + 0.5,
+        "grew to {height}, past the ceiling"
+    );
+    assert!(height > 500.0, "but it should still have grown: {height}");
+}
+
+#[test]
+fn height_still_settles_back_when_text_is_removed() {
+    // Height tracks content — otherwise deleting a long note leaves a tall
+    // empty card behind. Only the width is treated as a user decision.
+    let mut app = app_with(vec![text_node("a", "")], Vec::new());
+
+    send(&mut app, Message::StartEditing { index: 0, at: None });
+    type_text(&mut app, &"line\n".repeat(30));
+    send(&mut app, Message::StopEditing);
+    let tall = app.nodes[0].height;
+    assert!(tall > 200.0);
+
+    send(&mut app, Message::StartEditing { index: 0, at: None });
+    send(&mut app, Message::EditorAction(text_editor::Action::SelectAll));
+    type_text(&mut app, "short");
+    send(&mut app, Message::StopEditing);
+
+    assert!(app.nodes[0].height < tall, "height should settle back");
+}

@@ -90,6 +90,22 @@ Related fields are grouped into sub-structs (`Ai`, `Ghosts`, `Rasters`,
 `Clusters`) rather than living loose on `App`. When adding a feature, add its
 module and its `impl App` block there — keep `update` a dispatch table.
 
+## Card sizing
+
+Auto-size **grows a card, never narrows it**. A width is something the user can
+drag to deliberately, and re-deriving it from the text on the next keystroke
+threw that away. `max_node_width` bounds how wide a card grows *by itself*; it
+is not a limit on one sized by hand. Height still tracks content, so text
+neither clips nor leaves a card standing empty.
+
+Height stops at `text_raster::MAX_AUTO_HEIGHT` (`MAX_DIMENSION / 2`). A card's
+bitmap is capped at 2048 px on its longest side, so a taller card loses
+resolution in proportion — retina at 1024, 1:1 at 2048, and below 1:1 past that,
+where the bitmap holds less detail than the card is. Rather than let a long note
+grow until it visibly blurs, growth stops and the overflow scrolls;
+`Board::scrollable` forces the scrollbar on for such a card whatever
+`node_scrollbars` says, or the rest of the note would be unreachable.
+
 ## Obsidian compatibility
 
 `.canvas` files are Obsidian's, and round-tripping must not damage them:

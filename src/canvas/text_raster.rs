@@ -51,6 +51,17 @@ const MAX_SCALE: f32 = 6.0;
 /// the same scale simply needs more texture on a bigger card.
 const MAX_DIMENSION: f32 = 2048.0;
 
+/// The tallest a text card auto-grows before its content scrolls instead.
+///
+/// A card's bitmap is capped at [`MAX_DIMENSION`] on its longest side, so a
+/// card taller than that loses resolution in proportion: at 1024 the raster is
+/// exactly retina, by 2048 it is 1:1, and past that the bitmap holds *less*
+/// detail than the card is — a long note renders visibly soft. Rather than let
+/// a card grow until it blurs, growth stops here and the overflow scrolls,
+/// which also forces the scrollbar on regardless of the setting (see
+/// `Board::scrollable`) so the rest stays reachable.
+pub const MAX_AUTO_HEIGHT: f32 = MAX_DIMENSION / 2.0;
+
 /// Floor on bitmap dimensions (longest side). Zoomed all the way out, a node's
 /// on-screen size is tiny, so a zoom-proportional scale would bake a ~100 px
 /// texture that's a blurry mess the instant you zoom in (before the re-raster
