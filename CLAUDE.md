@@ -117,6 +117,12 @@ offset, so the vendored `iced_graphics` editor publishes it as a fraction
 count honestly), and `editing_thumb` maps that onto the same overflow the read
 path uses — so the thumb doesn't jump when an edit starts.
 
+That thumb is drawn in the **uncached** overlay, and reads the fraction there
+rather than taking it from `view`. Both matter: a cursor move doesn't invalidate
+the scene cache, and the editor only publishes its scroll while laying out —
+after `view` has built the widget but before it draws. Reading it in `view` is
+always one update stale.
+
 ## Obsidian compatibility
 
 `.canvas` files are Obsidian's, and round-tripping must not damage them:

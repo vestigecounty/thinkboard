@@ -191,7 +191,6 @@ impl App {
             top_safe_inset: self.top_safe_inset,
             cache: &self.cache,
             editing: self.editing.as_ref().map(|editing| editing.index),
-            editor_scroll: iced_graphics::text::editor::editor_scroll_fraction(),
             overlay: self.overlay,
             // The settings modal and the command palette both own input while
             // open, so board shortcuts/scroll don't fire underneath them.

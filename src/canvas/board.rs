@@ -127,10 +127,6 @@ pub struct Board<'a> {
     pub top_safe_inset: f32,
     pub cache: &'a canvas::Cache,
     pub editing: Option<usize>,
-    /// How far the open editor is scrolled through its content, `0..=1`. Drives
-    /// the thumb while editing, where the node's own scroll offset doesn't
-    /// apply — iced scrolls the editor internally.
-    pub editor_scroll: f32,
     pub overlay: bool,
     /// An in-board modal (the settings panel) is up: board keyboard shortcuts
     /// are suppressed so the modal owns input.
@@ -717,6 +713,15 @@ impl canvas::Program<Message> for Board<'_> {
             if let Some(edge) = self.hovered_edge.filter(|e| self.selected_edge != Some(*e)) {
                 self.draw_edge_outline(&mut overlay, edge, EDGE_HOVER_RING, 1.0);
                 self.draw_edge_line(&mut overlay, edge, EDGE_HOVER);
+            }
+
+            // The scrollbar of the card being edited. Uncached for two
+            // reasons: a cursor move doesn't invalidate the scene cache, and
+            // the scroll it reads is only settled once the editor has laid out
+            // — which happens after `view` built this widget, but before it
+            // draws.
+            if let Some(index) = self.editing {
+                self.draw_editing_thumb(&mut overlay, index);
             }
 
             // Ghost suggestions (uncached so they can fade toward dismissal).
@@ -2076,12 +2081,6 @@ impl Board<'_> {
                 continue;
             }
 
-            if self.editing == Some(index) {
-                // The editor draws the text; all that's left is to show where
-                // in the note it is. Its scroll is iced's, not `node_scroll`.
-                self.draw_editing_thumb(frame, node, rect, alpha);
-            }
-
             if self.editing != Some(index) {
                 let text = node.text.as_deref().unwrap_or("(no content)");
                 let wrap = crate::text_raster::card_text_wrap(node.width);
@@ -2369,14 +2368,20 @@ impl Board<'_> {
     /// position comes from the editor instead (`editor_scroll`, a fraction),
     /// mapped onto the same overflow the read path measures so the thumb is the
     /// same size and travel in both modes.
-    fn draw_editing_thumb(&self, frame: &mut Frame, node: &CanvasNode, rect: Rectangle, alpha: f32) {
-        if !self.scrollable(node) {
+    fn draw_editing_thumb(&self, frame: &mut Frame, index: usize) {
+        let Some(node) = self.nodes.get(index).filter(|n| self.scrollable(n)) else {
             return;
-        }
+        };
+        // Read here rather than taking it as a field: the editor publishes its
+        // scroll while laying out, which happens after `view` has built this
+        // widget. A value captured there is always one update stale — the thumb
+        // would sit still on a page-down and only catch up on the next key.
+        let fraction = iced_graphics::text::editor::editor_scroll_fraction();
+        let rect = self.node_screen_rect(index, node);
+        let alpha = self.node_layer_alpha();
         let text = node.text.as_deref().unwrap_or("");
         let content = self.node_content_height(text, node.width);
-        let Some(thumb) =
-            editing_thumb(rect, node.height, content, self.editor_scroll, self.camera.zoom)
+        let Some(thumb) = editing_thumb(rect, node.height, content, fraction, self.camera.zoom)
         else {
             return;
         };
