@@ -390,11 +390,11 @@ const NODE_TEXT_PAD_X: f32 = crate::text_raster::NODE_PAD_X / 2.0 + crate::text_
 
 /// Point size (world px) of a group frame's caption, and its inset from the
 /// frame's top-left corner.
-const GROUP_LABEL_SIZE: f32 = 15.0;
-const GROUP_LABEL_PAD: f32 = 10.0;
+pub(crate) const GROUP_LABEL_SIZE: f32 = 15.0;
+pub(crate) const GROUP_LABEL_PAD: f32 = 10.0;
 /// Height (world px) of a frame's grabbable header band — the caption plus its
 /// padding above and below.
-const GROUP_HEADER_HEIGHT: f32 = GROUP_LABEL_SIZE + GROUP_LABEL_PAD * 2.0;
+pub(crate) const GROUP_HEADER_HEIGHT: f32 = GROUP_LABEL_SIZE + GROUP_LABEL_PAD * 2.0;
 
 /// Point size (world px) of the file-name header on a note/attachment card.
 /// Smaller than the body so it reads as a label naming the file rather than as
@@ -954,7 +954,10 @@ impl Board<'_> {
                 }
 
                 match hit {
-                    Some(index) if is_double_click && self.nodes[index].is_text() => {
+                    Some(index)
+                        if is_double_click
+                            && (self.nodes[index].is_text() || self.nodes[index].is_group()) =>
+                    {
                         state.kind = Kind::Idle;
                         // Pass the click's world position so the caret lands under
                         // the cursor, not at the start of the note.
@@ -1680,20 +1683,27 @@ impl Board<'_> {
     /// The side port under the cursor, if any (with some grab slack).
     fn port_at(&self, position: Point) -> Option<(usize, &'static str)> {
         let grab = self.port_radius() + 10.0;
-        for (index, node) in self.nodes.iter().enumerate().rev() {
-            // No ports on a frame: its border runs behind other nodes, and
-            // hovering anywhere near it would sprout dots over them.
-            if node.is_group() {
-                continue;
-            }
+        let port = |index: usize, node: &CanvasNode| {
             let rect = self.node_screen_rect(index, node);
-            for side in SIDES {
-                if side_anchor(rect, side).distance(position) < grab {
-                    return Some((index, side));
-                }
-            }
-        }
-        None
+            SIDES
+                .into_iter()
+                .find(|side| side_anchor(rect, side).distance(position) < grab)
+                .map(|side| (index, side))
+        };
+        // Cards first, frames second. A frame's border runs *behind* its
+        // members, so a card's port has to win wherever the two overlap —
+        // otherwise dragging a note near the edge of its group would grab the
+        // group instead.
+        self.frame_last(|index, node| port(index, node))
+    }
+
+    /// Runs `f` over every node, cards before frames, returning the first hit.
+    /// Frames sit behind everything they enclose, so they must lose every
+    /// contest for the cursor to whatever is drawn on top of them.
+    fn frame_last<R>(&self, f: impl Fn(usize, &CanvasNode) -> Option<R>) -> Option<R> {
+        let cards = self.nodes.iter().enumerate().rev().filter(|(_, n)| !n.is_group());
+        let frames = self.nodes.iter().enumerate().rev().filter(|(_, n)| n.is_group());
+        cards.chain(frames).find_map(|(index, node)| f(index, node))
     }
 
     /// Where a dragged connection would attach for the given cursor
@@ -1701,8 +1711,13 @@ impl Board<'_> {
     /// (the rect split into four triangles by its diagonals); within the
     /// surrounding [`SNAP_MARGIN`], the nearest side dot.
     fn connect_target(&self, from: usize, cursor: Point) -> Option<(usize, &'static str)> {
-        for (index, node) in self.nodes.iter().enumerate().rev() {
-            if index == from || node.is_group() {
+        let candidates: Vec<(usize, &CanvasNode)> = {
+            let cards = self.nodes.iter().enumerate().rev().filter(|(_, n)| !n.is_group());
+            let frames = self.nodes.iter().enumerate().rev().filter(|(_, n)| n.is_group());
+            cards.chain(frames).collect()
+        };
+        for (index, node) in candidates {
+            if index == from {
                 continue;
             }
             let rect = self.node_screen_rect(index, node);
@@ -1736,10 +1751,13 @@ impl Board<'_> {
     /// Which node side the cursor hovers near: inside the node (or just
     /// outside it), attributed to the nearest edge.
     fn hover_side(&self, position: Point) -> Option<(usize, &'static str)> {
-        for (index, node) in self.nodes.iter().enumerate().rev() {
-            if node.is_group() {
-                continue; // frames have no ports to hover (see `port_at`)
-            }
+        // Cards before frames, for the reason `port_at` gives.
+        let candidates: Vec<(usize, &CanvasNode)> = {
+            let cards = self.nodes.iter().enumerate().rev().filter(|(_, n)| !n.is_group());
+            let frames = self.nodes.iter().enumerate().rev().filter(|(_, n)| n.is_group());
+            cards.chain(frames).collect()
+        };
+        for (index, node) in candidates {
             let rect = self.node_screen_rect(index, node);
             let inflated = Rectangle::new(
                 rect.position() - Vector::new(HOVER_MARGIN, HOVER_MARGIN),
@@ -2128,7 +2146,12 @@ impl Board<'_> {
                     .with_width(if selected { (2.5 * zoom).max(2.0) } else { (1.5 * zoom).max(1.0) }),
             );
 
-            let Some(label) = node.label().filter(|l| !l.trim().is_empty()) else {
+            // While its caption is being edited the editor draws the text.
+            let Some(label) = node
+                .label()
+                .filter(|l| !l.trim().is_empty())
+                .filter(|_| self.editing != Some(index))
+            else {
                 continue;
             };
             // The caption sits inside the top edge rather than above it, so it
@@ -3107,7 +3130,7 @@ fn url_host(url: &str) -> &str {
     if host.is_empty() { url } else { host }
 }
 
-fn group_header(rect: Rectangle, scale: f32) -> Rectangle {
+pub(crate) fn group_header(rect: Rectangle, scale: f32) -> Rectangle {
     Rectangle {
         height: (GROUP_HEADER_HEIGHT * scale).min(rect.height),
         ..rect

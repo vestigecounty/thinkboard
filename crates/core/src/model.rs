@@ -147,6 +147,21 @@ impl CanvasNode {
     pub fn url(&self) -> Option<&str> {
         self.extra.get("url").and_then(Value::as_str)
     }
+
+    /// Sets (or clears) a group's caption.
+    ///
+    /// Blank is stored as *absent* rather than as an empty string: the format
+    /// leaves `label` optional, and a node carrying `"label": ""` would round-
+    /// trip that emptiness back into the vault as though it were meaningful.
+    pub fn set_label(&mut self, label: &str) {
+        let trimmed = label.trim();
+        if trimmed.is_empty() {
+            self.extra.remove("label");
+        } else {
+            self.extra
+                .insert("label".to_owned(), Value::String(trimmed.to_owned()));
+        }
+    }
 }
 
 /// Obsidian stores canvas coordinates as integers; round f32 geometry back
@@ -236,6 +251,33 @@ fn edge_end(value: Option<&Value>, default: EdgeEnd) -> EdgeEnd {
         Some("none") => EdgeEnd::None,
         _ => default,
     }
+}
+
+/// Indices of the nodes a group frame encloses — those whose centre falls
+/// inside it, the frame itself excluded.
+///
+/// Centres rather than full containment, so a node poking over the frame's edge
+/// still belongs to it, which is how it reads on screen. Nested frames come back
+/// as members in their own right; a caller that cares about the nesting
+/// re-derives it (see [`crate::ai::group_prompt`]).
+pub fn enclosed_by(nodes: &[CanvasNode], frame: usize) -> Vec<usize> {
+    let Some(bounds) = nodes.get(frame) else {
+        return Vec::new();
+    };
+    let (left, top) = (bounds.x, bounds.y);
+    let (right, bottom) = (bounds.x + bounds.width, bounds.y + bounds.height);
+    nodes
+        .iter()
+        .enumerate()
+        .filter(|&(i, node)| {
+            if i == frame {
+                return false;
+            }
+            let (cx, cy) = (node.x + node.width / 2.0, node.y + node.height / 2.0);
+            cx >= left && cx <= right && cy >= top && cy <= bottom
+        })
+        .map(|(i, _)| i)
+        .collect()
 }
 
 /// Removes the edge at `index`, returning whether the list changed. An
@@ -753,6 +795,22 @@ mod tests {
 
     fn edge_json(json: serde_json::Value) -> CanvasEdge {
         serde_json::from_value(json).unwrap()
+    }
+
+    #[test]
+    fn a_blank_label_is_stored_as_absent() {
+        use serde_json::json;
+        let mut group = node(json!({"id": "g", "type": "group", "label": "Ideas"}));
+        assert_eq!(group.label(), Some("Ideas"));
+
+        group.set_label("  Planning  ");
+        assert_eq!(group.label(), Some("Planning"), "stored trimmed");
+
+        // Clearing removes the key rather than writing "", so the saved canvas
+        // doesn't carry an empty caption back into the vault.
+        group.set_label("   ");
+        assert_eq!(group.label(), None);
+        assert!(!group.extra.contains_key("label"));
     }
 
     #[test]

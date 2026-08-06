@@ -98,14 +98,169 @@ pub fn upstream_nodes<'a>(
 /// Builds the text prompt for `target`: the text of its ancestor notes joined
 /// by blank lines (see [`upstream_nodes`] for the order). Image (file) notes
 /// contribute no text; see [`upstream_images`].
+///
+/// A *group* among the ancestors contributes its whole contents, flattened by
+/// [`group_prompt`]. A frame holds no text of its own, so without this a link
+/// from a group into a question would look meaningful on the board and feed the
+/// model nothing — which is the point of being able to draw that link at all:
+/// it's how a question gets asked *about* a group.
 pub fn upstream_prompt(nodes: &[CanvasNode], edges: &[CanvasEdge], target_id: &str) -> String {
     upstream_nodes(nodes, edges, target_id)
         .iter()
-        .filter_map(|node| node.text.as_deref())
-        .map(str::trim)
-        .filter(|text| !text.is_empty())
+        .filter_map(|node| {
+            if node.is_group() {
+                let index = nodes.iter().position(|n| n.id == node.id)?;
+                let outline = group_prompt(nodes, edges, index);
+                (!outline.trim().is_empty()).then_some(outline)
+            } else {
+                node.text
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|text| !text.is_empty())
+                    .map(str::to_owned)
+            }
+        })
         .collect::<Vec<_>>()
         .join("\n\n")
+}
+
+/// Flattens everything a group frame encloses into one outline, for asking
+/// about a whole group rather than a chain of notes.
+///
+/// A group has no incoming links to walk — it is a region, not a step in a
+/// chain — so the prompt is built from its contents instead, preserving the two
+/// hierarchies the user actually sees: links between the notes inside it (a
+/// note's targets are nested under it) and frames within frames (a nested
+/// group's contents are nested under its caption). Each note is emitted as a
+/// bullet, its own line breaks indented to stay under it.
+pub fn group_prompt(nodes: &[CanvasNode], edges: &[CanvasEdge], frame: usize) -> String {
+    let members = crate::model::enclosed_by(nodes, frame);
+    if members.is_empty() {
+        return String::new();
+    }
+    let member_set: HashSet<usize> = members.iter().copied().collect();
+
+    let mut out = String::new();
+    if let Some(label) = nodes[frame].label().map(str::trim).filter(|l| !l.is_empty()) {
+        out.push_str(label);
+        out.push('\n');
+    }
+    let mut emitted = HashSet::new();
+    write_container(nodes, edges, frame, &members, &member_set, 0, &mut emitted, &mut out);
+    out.trim_end().to_owned()
+}
+
+/// Emits the members whose innermost enclosing frame (within the set) is
+/// `container`, following links so a note's targets nest under it.
+#[allow(clippy::too_many_arguments)] // one recursive walk; splitting it would only move the args
+fn write_container(
+    nodes: &[CanvasNode],
+    edges: &[CanvasEdge],
+    container: usize,
+    members: &[usize],
+    member_set: &HashSet<usize>,
+    depth: usize,
+    emitted: &mut HashSet<usize>,
+    out: &mut String,
+) {
+    let direct: Vec<usize> = members
+        .iter()
+        .copied()
+        // A node inside a nested frame belongs to that frame, not to this one.
+        .filter(|&m| innermost_frame(nodes, m, member_set).unwrap_or(container) == container)
+        .collect();
+
+    // Roots first: a note with no link from a sibling in the same container
+    // starts a branch. Everything else is reached by following links, and
+    // anything left over (a cycle) is emitted afterwards so nothing is lost.
+    let has_sibling_parent = |m: usize| {
+        edges.iter().any(|e| {
+            e.to_node == nodes[m].id
+                && direct
+                    .iter()
+                    .any(|&o| o != m && nodes[o].id == e.from_node)
+        })
+    };
+    for &m in direct.iter().filter(|&&m| !has_sibling_parent(m)) {
+        write_member(nodes, edges, m, members, member_set, depth, emitted, out);
+    }
+    for &m in &direct {
+        write_member(nodes, edges, m, members, member_set, depth, emitted, out);
+    }
+}
+
+/// Emits one member and, beneath it, whatever it links to or encloses.
+#[allow(clippy::too_many_arguments)] // as above
+fn write_member(
+    nodes: &[CanvasNode],
+    edges: &[CanvasEdge],
+    member: usize,
+    members: &[usize],
+    member_set: &HashSet<usize>,
+    depth: usize,
+    emitted: &mut HashSet<usize>,
+    out: &mut String,
+) {
+    if !emitted.insert(member) {
+        return;
+    }
+    let node = &nodes[member];
+    let indent = "  ".repeat(depth);
+
+    if node.is_group() {
+        let label = node.label().map(str::trim).filter(|l| !l.is_empty());
+        out.push_str(&format!("{indent}- {}\n", label.unwrap_or("(unnamed group)")));
+        write_container(nodes, edges, member, members, member_set, depth + 1, emitted, out);
+        return;
+    }
+
+    let text = node.text.as_deref().unwrap_or("").trim();
+    if !text.is_empty() {
+        // Keep a multi-line note under its own bullet rather than letting later
+        // lines read as separate items.
+        let mut lines = text.lines();
+        if let Some(first) = lines.next() {
+            out.push_str(&format!("{indent}- {first}\n"));
+        }
+        for line in lines {
+            out.push_str(&format!("{indent}  {line}\n"));
+        }
+    }
+
+    // Notes this one links to, nested beneath it.
+    for edge in edges.iter().filter(|e| e.from_node == node.id) {
+        let Some(&target) = members
+            .iter()
+            .find(|&&m| nodes[m].id == edge.to_node && member_set.contains(&m))
+        else {
+            continue;
+        };
+        write_member(nodes, edges, target, members, member_set, depth + 1, emitted, out);
+    }
+}
+
+/// The smallest frame in `set` that encloses `member`, or `None` when it sits
+/// directly in the outer frame. Smallest, so a node inside nested frames is
+/// attributed to the innermost one rather than to every frame around it.
+fn innermost_frame(nodes: &[CanvasNode], member: usize, set: &HashSet<usize>) -> Option<usize> {
+    set.iter()
+        .copied()
+        .filter(|&f| f != member && nodes[f].is_group())
+        .filter(|&f| crate::model::enclosed_by(nodes, f).contains(&member))
+        .min_by(|&a, &b| {
+            let area = |i: usize| nodes[i].width * nodes[i].height;
+            area(a).total_cmp(&area(b))
+        })
+}
+
+/// The `file` paths of the image notes a group frame encloses, to attach as
+/// vision inputs alongside [`group_prompt`].
+pub fn group_images(nodes: &[CanvasNode], frame: usize) -> Vec<String> {
+    crate::model::enclosed_by(nodes, frame)
+        .into_iter()
+        .filter(|&i| nodes[i].node_kind() == NodeKind::Image)
+        .filter_map(|i| nodes[i].file.clone())
+        .collect()
 }
 
 /// The `file` paths of image (file) notes among `target`'s ancestors, in the
@@ -113,10 +268,20 @@ pub fn upstream_prompt(nodes: &[CanvasNode], edges: &[CanvasEdge], target_id: &s
 pub fn upstream_images(nodes: &[CanvasNode], edges: &[CanvasEdge], target_id: &str) -> Vec<String> {
     upstream_nodes(nodes, edges, target_id)
         .iter()
-        // Images only: a `file` node can also embed a Markdown note or a PDF,
-        // neither of which a vision encoder can take.
-        .filter(|node| node.node_kind() == NodeKind::Image)
-        .filter_map(|node| node.file.clone())
+        .flat_map(|node| {
+            // A group ancestor brings the images it encloses, matching how
+            // `upstream_prompt` brings its text.
+            if node.is_group() {
+                let index = nodes.iter().position(|n| n.id == node.id);
+                return index.map(|i| group_images(nodes, i)).unwrap_or_default();
+            }
+            // Images only: a `file` node can also embed a Markdown note or a
+            // PDF, neither of which a vision encoder can take.
+            match node.node_kind() {
+                NodeKind::Image => node.file.clone().into_iter().collect(),
+                _ => Vec::new(),
+            }
+        })
         .collect()
 }
 
@@ -499,6 +664,159 @@ fn parse_delta(data: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A node of `kind` at `(x, y)` sized `w`x`h`, with `text` (or a label, for
+    /// a group).
+    fn gnode(id: &str, kind: &str, x: f32, y: f32, w: f32, h: f32, text: &str) -> CanvasNode {
+        let mut node: CanvasNode = serde_json::from_value(serde_json::json!({
+            "id": id, "type": kind, "x": x, "y": y, "width": w, "height": h,
+        }))
+        .unwrap();
+        if kind == "group" {
+            node.set_label(text);
+        } else {
+            node.text = Some(text.to_owned());
+        }
+        node
+    }
+
+    fn glink(from: &str, to: &str) -> CanvasEdge {
+        serde_json::from_value(serde_json::json!({
+            "id": format!("{from}-{to}"), "fromNode": from, "toNode": to,
+        }))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_group_prompt_follows_the_links_inside_it() {
+        // frame encloses a -> b -> c and a stray d.
+        let nodes = vec![
+            gnode("frame", "group", 0.0, 0.0, 1000.0, 1000.0, "Planning"),
+            gnode("a", "text", 50.0, 50.0, 100.0, 50.0, "root note"),
+            gnode("b", "text", 50.0, 200.0, 100.0, 50.0, "child note"),
+            gnode("c", "text", 50.0, 350.0, 100.0, 50.0, "grandchild"),
+            gnode("d", "text", 500.0, 50.0, 100.0, 50.0, "unlinked"),
+        ];
+        let edges = vec![glink("a", "b"), glink("b", "c")];
+
+        assert_eq!(
+            group_prompt(&nodes, &edges, 0),
+            "Planning\n- root note\n  - child note\n    - grandchild\n- unlinked"
+        );
+    }
+
+    #[test]
+    fn a_nested_frame_nests_its_contents_once() {
+        // outer encloses inner, which encloses x. x's centre is inside *both*,
+        // so the naive walk would list it twice.
+        let nodes = vec![
+            gnode("outer", "group", 0.0, 0.0, 1000.0, 1000.0, "Outer"),
+            gnode("top", "text", 10.0, 10.0, 100.0, 50.0, "top level"),
+            gnode("inner", "group", 200.0, 200.0, 400.0, 400.0, "Inner"),
+            gnode("x", "text", 250.0, 250.0, 100.0, 50.0, "inside inner"),
+        ];
+        let out = group_prompt(&nodes, &[], 0);
+
+        assert_eq!(out, "Outer\n- top level\n- Inner\n  - inside inner");
+        assert_eq!(out.matches("inside inner").count(), 1, "listed once");
+    }
+
+    #[test]
+    fn a_multi_line_note_stays_under_its_own_bullet() {
+        let nodes = vec![
+            gnode("frame", "group", 0.0, 0.0, 500.0, 500.0, ""),
+            gnode("a", "text", 50.0, 50.0, 100.0, 50.0, "# Heading\n\nbody line"),
+        ];
+        // No label on the frame, so the outline starts straight at the bullet.
+        assert_eq!(
+            group_prompt(&nodes, &[], 0),
+            "- # Heading\n  \n  body line"
+        );
+    }
+
+    #[test]
+    fn a_question_linked_from_a_frame_gets_the_frames_contents() {
+        // The point of being able to draw that link: drag a port off a group,
+        // type a question into the note it makes, and ask.
+        let nodes = vec![
+            gnode("frame", "group", 0.0, 0.0, 800.0, 600.0, "Planning"),
+            gnode("a", "text", 50.0, 50.0, 100.0, 50.0, "first note"),
+            gnode("b", "text", 50.0, 200.0, 100.0, 50.0, "second note"),
+            // The question sits outside the frame, linked from it.
+            gnode("q", "text", 2000.0, 300.0, 100.0, 50.0, "What should we do?"),
+        ];
+        let edges = vec![glink("frame", "q")];
+
+        let prompt = upstream_prompt(&nodes, &edges, "q");
+        assert!(prompt.contains("first note"), "{prompt:?}");
+        assert!(prompt.contains("second note"), "{prompt:?}");
+        assert!(prompt.contains("Planning"), "the caption leads it: {prompt:?}");
+        // The group's contents come first, the question last.
+        assert!(
+            prompt.find("first note").unwrap() < prompt.find("What should we do?").unwrap(),
+            "{prompt:?}"
+        );
+    }
+
+    #[test]
+    fn a_frame_with_no_contents_adds_nothing_to_a_chain() {
+        let nodes = vec![
+            gnode("frame", "group", 0.0, 0.0, 800.0, 600.0, "Empty"),
+            gnode("q", "text", 2000.0, 300.0, 100.0, 50.0, "a question"),
+        ];
+        let edges = vec![glink("frame", "q")];
+        assert_eq!(upstream_prompt(&nodes, &edges, "q"), "a question");
+    }
+
+    #[test]
+    fn images_inside_a_linked_frame_ride_along() {
+        let mut img = gnode("img", "file", 50.0, 50.0, 100.0, 50.0, "");
+        img.file = Some("pics/a.png".to_owned());
+        let nodes = vec![
+            gnode("frame", "group", 0.0, 0.0, 800.0, 600.0, "With a picture"),
+            img,
+            gnode("q", "text", 2000.0, 300.0, 100.0, 50.0, "what is this?"),
+        ];
+        let edges = vec![glink("frame", "q")];
+        assert_eq!(upstream_images(&nodes, &edges, "q"), vec!["pics/a.png".to_owned()]);
+    }
+
+    #[test]
+    fn an_empty_frame_makes_no_prompt() {
+        let nodes = vec![gnode("frame", "group", 0.0, 0.0, 500.0, 500.0, "Empty")];
+        assert!(group_prompt(&nodes, &[], 0).is_empty());
+    }
+
+    #[test]
+    fn a_cycle_inside_a_frame_still_terminates() {
+        let nodes = vec![
+            gnode("frame", "group", 0.0, 0.0, 900.0, 900.0, "Loop"),
+            gnode("a", "text", 50.0, 50.0, 100.0, 50.0, "first"),
+            gnode("b", "text", 50.0, 200.0, 100.0, 50.0, "second"),
+        ];
+        let edges = vec![glink("a", "b"), glink("b", "a")];
+        let out = group_prompt(&nodes, &edges, 0);
+        // Both appear exactly once despite neither being a root.
+        assert_eq!(out.matches("first").count(), 1);
+        assert_eq!(out.matches("second").count(), 1);
+    }
+
+    #[test]
+    fn group_images_picks_up_only_the_images_inside() {
+        let mut img = gnode("img", "file", 50.0, 50.0, 100.0, 50.0, "");
+        img.file = Some("pics/a.png".to_owned());
+        let mut note = gnode("note", "file", 50.0, 200.0, 100.0, 50.0, "");
+        note.file = Some("Notes/x.md".to_owned());
+        let mut outside = gnode("out", "file", 5000.0, 5000.0, 100.0, 50.0, "");
+        outside.file = Some("pics/b.png".to_owned());
+        let nodes = vec![
+            gnode("frame", "group", 0.0, 0.0, 900.0, 900.0, ""),
+            img,
+            note,
+            outside,
+        ];
+        assert_eq!(group_images(&nodes, 0), vec!["pics/a.png".to_owned()]);
+    }
 
     fn node(id: &str, text: &str) -> CanvasNode {
         CanvasNode {

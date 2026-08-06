@@ -42,6 +42,7 @@ pub(crate) enum CommandId {
     AddNode,
     AskAi,
     Distribute,
+    GroupSelection,
     ToggleAutoLayout,
     ToggleSetting(Field),
 }
@@ -55,6 +56,7 @@ impl CommandId {
             CommandId::Copy | CommandId::DeleteSelected | CommandId::Distribute => {
                 !app.selected.is_empty()
             }
+            CommandId::GroupSelection => app.groupable_selection(),
             _ => true,
         }
     }
@@ -88,6 +90,7 @@ static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
         cmd(AddNode, "Add node", "new note card", ""),
         cmd(AskAi, "Ask AI", "generate llm gpt", ""),
         cmd(Distribute, "Auto-layout selection", "distribute arrange tidy", ""),
+        cmd(GroupSelection, "Group selection", "frame box enclose", ""),
         cmd(FindOnBoard, "Find on board", "search text", "⌘F"),
         cmd(Copy, "Copy", "clipboard", "⌘C"),
         cmd(Paste, "Paste", "clipboard", "⌘V"),

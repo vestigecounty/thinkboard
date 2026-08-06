@@ -12,7 +12,7 @@ use iced::widget::{
 use iced::{Element, Fill, Length, Padding, Point, Rectangle, Size, Theme};
 
 use super::search::Search;
-use super::{App, ContextMenuKind, FONT_SIZE, Message, PICKER_REVEAL, chrome, command, settings, startup};
+use super::{App, ContextMenuKind, Message, PICKER_REVEAL, chrome, command, settings, startup};
 use crate::canvas::board::{self, Board};
 use crate::canvas::hue_picker::HuePicker;
 use crate::canvas::{camera, md_edit, shadows};
@@ -305,22 +305,22 @@ impl App {
     /// reads — so the two never drift apart.
     fn editor_overlay(&self, camera: camera::Camera) -> Option<Element<'_, Message>> {
         let editing = self.editing.as_ref()?;
-        let (origin, width, height, centered) = self.editor_box(editing.index)?;
+        let b = self.editor_box(editing.index)?;
         let zoom = camera.zoom;
 
         // The editor widget has no alignment API; the vendored iced_graphics
         // reads this to align its lines (center vs left) to match read mode.
-        iced_graphics::text::editor::set_editor_centered(centered);
+        iced_graphics::text::editor::set_editor_centered(b.centered);
 
         let editor = text_editor(&editing.content)
             .on_action(Message::EditorAction)
             .key_binding(editor_key_binding)
             .font(md_edit::Palette::from_theme(&self.theme).base_font())
-            .size(FONT_SIZE * zoom)
+            .size(b.font_size * zoom)
             .line_height(iced::advanced::text::LineHeight::Relative(1.2))
             .padding(0)
-            .width(width)
-            .height(Length::Fixed(height))
+            .width(b.width)
+            .height(Length::Fixed(b.height))
             .style(editor_style)
             // Obsidian-style live styling: markers stay visible, content is
             // styled (bold/italic/code/links/headings) as you type.
@@ -334,8 +334,8 @@ impl App {
                 .width(Fill)
                 .height(Fill)
                 .padding(Padding {
-                    top: origin.y,
-                    left: origin.x,
+                    top: b.origin.y,
+                    left: b.origin.x,
                     right: 0.0,
                     bottom: 0.0,
                 })
@@ -565,6 +565,19 @@ impl App {
                 button(text("Ask AI").size(14))
                     .width(Fill)
                     .on_press(Message::AskAi)
+                    .padding([6, 12])
+                    .style(item_style)
+                    .into(),
+            );
+        }
+        // Grouping, like auto-layout below it, only means anything for more
+        // than one node — and a frame can't be wrapped in another frame here.
+        if self.groupable_selection() {
+            items.push(sep().into());
+            items.push(
+                button(text("Group").size(14))
+                    .width(Fill)
+                    .on_press(Message::GroupSelection)
                     .padding([6, 12])
                     .style(item_style)
                     .into(),

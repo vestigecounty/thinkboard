@@ -547,3 +547,332 @@ fn a_nested_frame_and_its_contents_ride_along() {
     assert_eq!((app.nodes[1].x, app.nodes[1].y), (60.0, 60.0), "inner frame");
     assert_eq!((app.nodes[2].x, app.nodes[2].y), (110.0, 110.0), "its card");
 }
+
+// --- Grouping ---
+
+#[test]
+fn grouping_wraps_the_selection_in_a_frame() {
+    let mut a = text_node("a", "a");
+    a.x = 100.0;
+    a.y = 100.0;
+    let mut b = text_node("b", "b");
+    b.x = 500.0;
+    b.y = 300.0; // 200x100 cards, so the pair spans (100,100)-(700,400)
+    let mut app = app_with(vec![a, b], Vec::new());
+
+    send(&mut app, Message::SelectNodes(vec![0, 1]));
+    send(&mut app, Message::GroupSelection);
+
+    assert_eq!(app.nodes.len(), 3);
+    let frame = &app.nodes[2];
+    assert!(frame.is_group());
+    // It encloses both members, with room to spare.
+    assert!(frame.x < 100.0 && frame.y < 100.0);
+    assert!(frame.x + frame.width > 700.0);
+    assert!(frame.y + frame.height > 400.0);
+    // And is left selected, so it can be dragged straight away.
+    assert_eq!(app.selected, vec![2]);
+}
+
+#[test]
+fn a_new_frame_leaves_room_for_its_caption() {
+    // The caption sits inside the frame's top edge, so the top inset has to
+    // clear it or the label lands on top of the highest node.
+    let mut a = text_node("a", "a");
+    a.y = 200.0;
+    let mut b = text_node("b", "b");
+    b.x = 400.0;
+    b.y = 200.0;
+    let mut app = app_with(vec![a, b], Vec::new());
+
+    send(&mut app, Message::SelectNodes(vec![0, 1]));
+    send(&mut app, Message::GroupSelection);
+
+    let frame = &app.nodes[2];
+    let top_gap = 200.0 - frame.y;
+    let side_gap = 0.0 - frame.x;
+    assert!(
+        top_gap > side_gap,
+        "top inset {top_gap} should exceed the side inset {side_gap}"
+    );
+}
+
+#[test]
+fn grouping_needs_more_than_one_node() {
+    let mut app = app_with(two_nodes(), Vec::new());
+
+    send(&mut app, Message::SelectNode(Some(0)));
+    assert!(!app.groupable_selection());
+    send(&mut app, Message::GroupSelection);
+    assert_eq!(app.nodes.len(), 2, "a lone node makes no frame");
+
+    send(&mut app, Message::SelectNodes(vec![0, 1]));
+    assert!(app.groupable_selection());
+}
+
+#[test]
+fn frames_do_not_count_toward_grouping() {
+    // Selecting a frame plus one node isn't two groupable nodes.
+    let mut app = app_with(vec![node_of("frame", "group"), text_node("a", "a")], Vec::new());
+
+    send(&mut app, Message::SelectNodes(vec![0, 1]));
+    assert!(!app.groupable_selection());
+    send(&mut app, Message::GroupSelection);
+    assert_eq!(app.nodes.len(), 2);
+}
+
+#[test]
+fn grouping_is_undoable() {
+    let mut app = app_with(two_nodes(), Vec::new());
+
+    send(&mut app, Message::SelectNodes(vec![0, 1]));
+    send(&mut app, Message::GroupSelection);
+    assert_eq!(app.nodes.len(), 3);
+
+    send(&mut app, Message::Undo);
+    assert_eq!(app.nodes.len(), 2);
+    assert!(app.nodes.iter().all(|n| !n.is_group()));
+}
+
+#[test]
+fn a_new_frame_immediately_carries_its_members() {
+    // Grouping then dragging is the whole point, so the frame the action
+    // creates has to enclose its members by the same test `drag_riders` uses.
+    let mut a = text_node("a", "a");
+    a.x = 100.0;
+    a.y = 100.0;
+    let mut b = text_node("b", "b");
+    b.x = 400.0;
+    b.y = 100.0;
+    let mut app = app_with(vec![a, b], Vec::new());
+
+    send(&mut app, Message::SelectNodes(vec![0, 1]));
+    send(&mut app, Message::GroupSelection);
+
+    let (ax, ay) = (app.nodes[0].x, app.nodes[0].y);
+    let target = Point::new(app.nodes[2].x + 50.0, app.nodes[2].y + 20.0);
+    send(&mut app, Message::MoveNode { index: 2, position: target });
+    assert_eq!((app.nodes[0].x, app.nodes[0].y), (ax + 50.0, ay + 20.0));
+}
+
+// --- Group labels ---
+
+/// Creates a frame around two nodes and returns its index, leaving the caption
+/// editor open the way the real flow does.
+fn grouped(app: &mut App) -> usize {
+    send(app, Message::SelectNodes(vec![0, 1]));
+    send(app, Message::GroupSelection);
+    // The action queues `StartEditing`; the harness drops tasks, so deliver it.
+    let index = app.nodes.len() - 1;
+    send(app, Message::StartEditing { index, at: None });
+    index
+}
+
+#[test]
+fn creating_a_group_opens_its_caption_for_naming() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    let frame = grouped(&mut app);
+
+    assert!(app.editing.is_some(), "the caption editor should be open");
+    type_text(&mut app, "Planning");
+    send(&mut app, Message::StopEditing);
+
+    assert_eq!(app.nodes[frame].label(), Some("Planning"));
+}
+
+#[test]
+fn a_caption_left_empty_leaves_the_frame_unnamed() {
+    // Unlike a drag-created note, an unnamed frame is not taken back.
+    let mut app = app_with(two_nodes(), Vec::new());
+    let frame = grouped(&mut app);
+
+    send(&mut app, Message::StopEditing);
+
+    assert_eq!(app.nodes.len(), 3, "the frame survives");
+    assert_eq!(app.nodes[frame].label(), None);
+    // And stores nothing rather than an empty caption.
+    assert!(!app.nodes[frame].extra.contains_key("label"));
+}
+
+#[test]
+fn a_caption_of_only_spaces_clears_the_label() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    let frame = grouped(&mut app);
+    type_text(&mut app, "Planning");
+    send(&mut app, Message::StopEditing);
+    assert_eq!(app.nodes[frame].label(), Some("Planning"));
+
+    // Re-open, replace with whitespace.
+    send(&mut app, Message::StartEditing { index: frame, at: None });
+    send(&mut app, Message::EditorAction(text_editor::Action::SelectAll));
+    type_text(&mut app, "   ");
+    send(&mut app, Message::StopEditing);
+
+    assert_eq!(app.nodes[frame].label(), None);
+    assert!(!app.nodes[frame].extra.contains_key("label"));
+}
+
+#[test]
+fn renaming_a_frame_is_one_undo_step() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    let frame = grouped(&mut app);
+    type_text(&mut app, "First");
+    send(&mut app, Message::StopEditing);
+
+    send(&mut app, Message::StartEditing { index: frame, at: None });
+    send(&mut app, Message::EditorAction(text_editor::Action::SelectAll));
+    type_text(&mut app, "Second");
+    send(&mut app, Message::StopEditing);
+    assert_eq!(app.nodes[frame].label(), Some("Second"));
+
+    send(&mut app, Message::Undo);
+    assert_eq!(app.nodes[frame].label(), Some("First"), "one step back");
+}
+
+#[test]
+fn naming_a_new_frame_does_not_add_a_second_undo_step() {
+    // Creating and naming is one action to the user; undo should remove the
+    // frame, not leave a nameless one behind.
+    let mut app = app_with(two_nodes(), Vec::new());
+    grouped(&mut app);
+    type_text(&mut app, "Planning");
+    send(&mut app, Message::StopEditing);
+    assert_eq!(app.nodes.len(), 3);
+
+    send(&mut app, Message::Undo);
+    assert_eq!(app.nodes.len(), 2, "one undo removes the frame it named");
+}
+
+#[test]
+fn a_frames_caption_does_not_resize_it() {
+    // A body edit auto-sizes its card; a caption must leave the frame's
+    // geometry alone, since the user placed it.
+    let mut app = app_with(two_nodes(), Vec::new());
+    let frame = grouped(&mut app);
+    let (w, h) = (app.nodes[frame].width, app.nodes[frame].height);
+
+    type_text(&mut app, "a considerably longer caption than the frame is wide");
+    send(&mut app, Message::StopEditing);
+
+    assert_eq!((app.nodes[frame].width, app.nodes[frame].height), (w, h));
+}
+
+#[test]
+fn editing_a_body_still_writes_the_body() {
+    // The target split must not leak: a text node still edits its text, and
+    // gains no label.
+    let mut app = app_with(vec![text_node("a", "")], Vec::new());
+    send(&mut app, Message::StartEditing { index: 0, at: None });
+    type_text(&mut app, "body text");
+    send(&mut app, Message::StopEditing);
+
+    assert_eq!(text_of(&app, 0), Some("body text"));
+    assert_eq!(app.nodes[0].label(), None);
+}
+
+#[test]
+fn asking_a_group_builds_its_prompt_from_what_it_encloses() {
+    // Ask AI on a frame used to be a no-op: a group has no incoming links, so
+    // the chain-walking prompt came out empty and the request never fired.
+    let mut a = text_node("a", "root note");
+    a.x = 100.0;
+    a.y = 100.0;
+    let mut b = text_node("b", "child note");
+    b.x = 100.0;
+    b.y = 400.0;
+    let mut app = app_with(vec![a, b], vec![edge("a", "b")]);
+
+    send(&mut app, Message::SelectNodes(vec![0, 1]));
+    send(&mut app, Message::GroupSelection);
+    let frame = app.nodes.len() - 1;
+
+    let prompt = thinkboard_core::ai::group_prompt(&app.nodes, &app.edges, frame);
+    assert!(prompt.contains("root note"));
+    assert!(prompt.contains("child note"));
+    // The link inside is preserved as nesting, not flattened away.
+    assert!(
+        prompt.find("root note").unwrap() < prompt.find("child note").unwrap(),
+        "parent should precede its child: {prompt:?}"
+    );
+    assert!(prompt.contains("  - child note"), "child indented: {prompt:?}");
+}
+
+#[test]
+fn a_frames_caption_leads_its_prompt() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    let frame = grouped(&mut app);
+    type_text(&mut app, "Planning");
+    send(&mut app, Message::StopEditing);
+
+    let prompt = thinkboard_core::ai::group_prompt(&app.nodes, &app.edges, frame);
+    assert!(prompt.starts_with("Planning\n"), "{prompt:?}");
+}
+
+/// A frame at the origin, ringed by nodes so every spot around it is taken and
+/// only its interior looks free. The board shape that exposed the bug.
+fn crowded_frame(app: &mut App) -> usize {
+    let mut frame = node_of("frame", "group");
+    frame.width = 800.0;
+    frame.height = 600.0;
+    app.nodes.push(frame);
+    let mut n = 0;
+    for gx in -3..=6 {
+        for gy in -4..=8 {
+            let (x, y) = (gx as f32 * 290.0, gy as f32 * 160.0);
+            if x > -60.0 && x < 800.0 && y > -60.0 && y < 600.0 {
+                continue; // leave the interior clear
+            }
+            let mut blocker = text_node(&format!("b{n}"), "x");
+            n += 1;
+            blocker.x = x;
+            blocker.y = y;
+            blocker.width = 250.0;
+            blocker.height = 120.0;
+            app.nodes.push(blocker);
+        }
+    }
+    0
+}
+
+#[test]
+fn an_answer_about_a_frame_never_lands_inside_it() {
+    // Otherwise it becomes one of the frame's members and is fed back into the
+    // next question asked about that frame.
+    let mut app = app_with(Vec::new(), Vec::new());
+    let frame = crowded_frame(&mut app);
+
+    let placed = app.ai_answer_placement(frame, 250.0, 120.0);
+    let rect = arrange::node_world_rect(&app.nodes[frame]);
+    assert!(
+        !rect.contains(placed),
+        "answer placed at {placed:?}, inside the frame {rect:?}"
+    );
+}
+
+#[test]
+fn an_answer_about_a_note_still_prefers_the_space_beside_it() {
+    // The frame exclusion is scoped to frames: a note's answer keeps landing
+    // just to its right when that space is free.
+    let mut a = text_node("a", "question");
+    a.x = 0.0;
+    a.y = 0.0;
+    let app = app_with(vec![a], Vec::new());
+
+    let placed = app.ai_answer_placement(0, 250.0, 120.0);
+    assert!(placed.x > 200.0, "should sit to the right, got {placed:?}");
+    assert!((placed.y - 50.0).abs() < 1.0, "and level with it, got {placed:?}");
+}
+
+#[test]
+fn a_new_node_can_still_be_placed_inside_a_frame() {
+    // The exclusion must not leak into ordinary placement — dropping a note
+    // into a group is the normal way to add one to it.
+    let mut app = app_with(Vec::new(), Vec::new());
+    let mut frame = node_of("frame", "group");
+    frame.width = 800.0;
+    frame.height = 600.0;
+    app.nodes.push(frame);
+
+    let inside = Point::new(400.0, 300.0);
+    assert_eq!(app.find_free_placement(inside, 250.0, 120.0), inside);
+}

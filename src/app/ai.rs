@@ -157,9 +157,34 @@ impl App {
             return Task::none();
         };
         let source_id = source_node.id.clone();
-        let prompt = ai::upstream_prompt(&self.nodes, &self.edges, &source_id);
-        // Attach any upstream image notes as vision inputs (downscaled).
-        let images: Vec<String> = ai::upstream_images(&self.nodes, &self.edges, &source_id)
+        let is_group = source_node.is_group();
+
+        // A group is a region, not a step in a chain: it has no incoming links
+        // to walk, so its contents become the prompt instead — flattened into an
+        // outline that keeps the link and nesting hierarchy the user sees.
+        let (prompt, image_files, inputs) = if is_group {
+            let prompt = ai::group_prompt(&self.nodes, &self.edges, source);
+            let files = ai::group_images(&self.nodes, source);
+            // The shimmer sweeps what was actually read: everything inside.
+            let inputs: HashSet<String> = self
+                .enclosed_by(source)
+                .into_iter()
+                .map(|i| self.nodes[i].id.clone())
+                .collect();
+            (prompt, files, inputs)
+        } else {
+            let prompt = ai::upstream_prompt(&self.nodes, &self.edges, &source_id);
+            let files = ai::upstream_images(&self.nodes, &self.edges, &source_id);
+            // The ancestor notes, which include the clicked node.
+            let inputs: HashSet<String> = ai::upstream_nodes(&self.nodes, &self.edges, &source_id)
+                .iter()
+                .map(|node| node.id.clone())
+                .collect();
+            (prompt, files, inputs)
+        };
+
+        // Attach any image notes among the inputs as vision inputs (downscaled).
+        let images: Vec<String> = image_files
             .iter()
             .filter_map(|file| encode_image_data_url(&self.base_path.as_path().join(file)))
             .collect();
@@ -167,14 +192,10 @@ impl App {
             return Task::none();
         }
 
-        // The chain feeding the request: the ancestor notes (which include the
-        // clicked node) and the edges among them. The shimmer sweeps this once,
-        // ending on the clicked node — the response edge is deliberately left
-        // out so the sweep settles on the input, not the (dotted) answer node.
-        let ancestors: HashSet<String> = ai::upstream_nodes(&self.nodes, &self.edges, &source_id)
-            .iter()
-            .map(|node| node.id.clone())
-            .collect();
+        // The shimmer sweeps the inputs once, ending on the clicked node — the
+        // response edge is deliberately left out so the sweep settles on the
+        // input, not the (dotted) answer node.
+        let ancestors = inputs;
         let flow: Vec<String> = self
             .edges
             .iter()
@@ -224,14 +245,31 @@ impl App {
     /// Creates a tinted response node branching off `source_id` (an edge from
     /// its right port), spawning-animated, with `initial` text. Returns the new
     /// node's id, or `None` if the source has vanished.
-    fn spawn_ai_node(&mut self, source_id: &str, initial: &str) -> Option<String> {
-        let source_rect = node_world_rect(self.nodes.iter().find(|n| n.id == source_id)?);
-        let (width, height) = (self.config.new_node_min_width, self.config.new_node_min_height);
+    /// Where a fresh answer node goes for the question at `source`: beside it,
+    /// nudged clear of anything already there.
+    ///
+    /// A frame is kept clear too, which no other placement does. Frames are
+    /// deliberately not obstacles — a new node is usually *meant* to be able to
+    /// land inside a group — but an answer about a frame is the one case where
+    /// that is wrong: inside, it becomes one of the frame's members and is fed
+    /// back into the next question asked about it.
+    pub(super) fn ai_answer_placement(&self, source: usize, width: f32, height: f32) -> Point {
+        let Some(node) = self.nodes.get(source) else {
+            return Point::ORIGIN;
+        };
+        let rect = node_world_rect(node);
+        let avoid: Vec<iced::Rectangle> = if node.is_group() { vec![rect] } else { Vec::new() };
         let requested = Point::new(
-            source_rect.x + source_rect.width + width / 2.0 + 60.0,
-            source_rect.center_y(),
+            rect.x + rect.width + width / 2.0 + 60.0,
+            rect.center_y(),
         );
-        let center = self.find_free_placement(requested, width, height);
+        self.find_free_placement_avoiding(requested, width, height, &avoid)
+    }
+
+    fn spawn_ai_node(&mut self, source_id: &str, initial: &str) -> Option<String> {
+        let source = self.nodes.iter().position(|n| n.id == source_id)?;
+        let (width, height) = (self.config.new_node_min_width, self.config.new_node_min_height);
+        let center = self.ai_answer_placement(source, width, height);
         let node_id = model::random_id();
         let mut node = CanvasNode {
             id: node_id.clone(),

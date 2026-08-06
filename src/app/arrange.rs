@@ -5,9 +5,9 @@
 use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
-use iced::{Point, Rectangle, Size};
+use iced::{Point, Rectangle, Size, Task};
 
-use super::{App, FONT_SIZE};
+use super::{App, FONT_SIZE, Message};
 use crate::canvas::text_raster;
 use crate::document::layout;
 use crate::model::{self, CanvasNode};
@@ -20,6 +20,12 @@ const MIN_SCROLLABLE_NODE_HEIGHT: f32 = 40.0;
 /// matching the breathing room [`App::find_free_placement`] leaves when a node
 /// is first placed.
 const NEIGHBOR_GAP: f32 = 20.0;
+
+/// Breathing room (world px) a new group frame leaves around its members, and
+/// the taller inset at the top so the frame's caption band doesn't sit over the
+/// topmost one. Mirrors `board::GROUP_HEADER_HEIGHT` plus a little.
+const GROUP_PAD: f32 = 24.0;
+const GROUP_HEAD_PAD: f32 = 44.0;
 
 /// An auto-layout animation: each node eases from its old to its new position.
 pub(super) struct LayoutAnim {
@@ -380,6 +386,83 @@ impl App {
         index
     }
 
+    /// The selected nodes a frame would actually enclose. Frames are left out:
+    /// a group around one node is a box around a box, and one around another
+    /// frame is best done by selecting its contents.
+    fn groupable_members(&self) -> Vec<usize> {
+        self.selected
+            .iter()
+            .copied()
+            .filter(|&i| self.nodes.get(i).is_some_and(|n| !n.is_group()))
+            .collect()
+    }
+
+    /// Whether the selection is worth grouping — the condition the palette
+    /// entry and the context-menu item both gate on.
+    pub(super) fn groupable_selection(&self) -> bool {
+        self.groupable_members().len() >= 2
+    }
+
+    /// Wraps the selected nodes in a group frame and selects it.
+    ///
+    /// The frame is pushed onto the end of the node list like any other
+    /// creation, which leaves every existing index — and the caches keyed by
+    /// them — untouched. Drawing order doesn't suffer for it: frames are drawn
+    /// in their own pass behind everything (see `Board::draw_groups`), not in
+    /// document order.
+    pub(super) fn group_selection(&mut self) -> Task<Message> {
+        let members = self.groupable_members();
+        if members.len() < 2 {
+            return Task::none();
+        }
+
+        let (mut min_x, mut min_y) = (f32::MAX, f32::MAX);
+        let (mut max_x, mut max_y) = (f32::MIN, f32::MIN);
+        for &i in &members {
+            let node = &self.nodes[i];
+            min_x = min_x.min(node.x);
+            min_y = min_y.min(node.y);
+            max_x = max_x.max(node.x + node.width);
+            max_y = max_y.max(node.y + node.height);
+        }
+
+        self.push_undo();
+        let mut frame = CanvasNode {
+            id: model::random_id(),
+            kind: "group".to_owned(),
+            text: None,
+            file: None,
+            x: min_x - GROUP_PAD,
+            y: min_y - GROUP_HEAD_PAD,
+            width: (max_x - min_x) + GROUP_PAD * 2.0,
+            height: (max_y - min_y) + GROUP_HEAD_PAD + GROUP_PAD,
+            color: None,
+            extra: Default::default(),
+        };
+        // No label: the format leaves it optional, and there's no rename UI yet,
+        // so a default caption would be permanent noise. Obsidian can name it.
+        snap_node_geometry(&mut frame, self.snap_grid());
+        self.nodes.push(frame);
+        // Deliberately not spawn-animated. A frame appears *around* content
+        // that's already on screen, so scaling it up from nothing reads as the
+        // contents having jumped rather than as the frame arriving.
+        let index = self.nodes.len() - 1;
+        self.selected = vec![index];
+        self.selected_edge = None;
+        // Marked fresh so the caption edit that follows doesn't record a second
+        // undo step on top of the creation. Unlike a text node, a frame left
+        // unnamed is *not* taken back — an unnamed group is a fine group.
+        self.fresh_node = Some(index);
+        self.mark_dirty();
+        self.cache.clear();
+        // Drop straight into naming it, the way a drag-created note opens its
+        // editor.
+        Task::batch([
+            self.schedule_recluster(),
+            Task::done(Message::StartEditing { index, at: None }),
+        ])
+    }
+
     /// Lays out `subset` as a Mermaid-style layered graph flowing in `dir`,
     /// re-anchoring touched links and easing nodes to their targets. Streaming
     /// relayouts pass `record_undo = false` so they don't flood the undo stack.
@@ -545,13 +628,19 @@ impl App {
             .map(|(&(x, y), &(w, h))| Rectangle::new(Point::new(x, y), Size::new(w, h)))
             .collect();
         let ignore: HashSet<usize> = std::iter::once(source).chain(ai.iter().copied()).collect();
-        let obstacles: Vec<Rectangle> = self
+        let mut obstacles: Vec<Rectangle> = self
             .nodes
             .iter()
             .enumerate()
             .filter(|(i, node)| !ignore.contains(i) && !node.is_group())
             .map(|(_, node)| node_world_rect(node))
             .collect();
+        // When the question *is* a frame, that frame is an obstacle for its own
+        // answers — settling them inside it would make them its members. See
+        // `App::ai_answer_placement`.
+        if self.nodes[source].is_group() {
+            obstacles.push(node_world_rect(&self.nodes[source]));
+        }
         let (dx, dy) = nearest_free_offset(&block, &obstacles);
         if dx != 0.0 || dy != 0.0 {
             for target in &mut targets {

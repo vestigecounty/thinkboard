@@ -11,15 +11,42 @@ use std::time::{Duration, Instant};
 use iced::widget::text_editor;
 use iced::{Point, Task, Vector};
 
+use iced::Rectangle;
+
 use super::arrange::node_world_rect;
 use super::{App, CameraFocus, FONT_SIZE, Message};
-use crate::canvas::{markdown, text_raster};
+use crate::canvas::{board, markdown, text_raster};
+
+/// Where and how to lay out the editing overlay. See [`App::editor_box`].
+pub(super) struct EditorBox {
+    pub(super) origin: Point,
+    pub(super) width: f32,
+    pub(super) height: f32,
+    /// Whether lines are centred, matching how the read view draws them.
+    pub(super) centered: bool,
+    /// Logical (unzoomed) point size — a body and a caption differ.
+    pub(super) font_size: f32,
+}
 
 /// Edits within this window coalesce into one undo step.
 const EDIT_COALESCE: Duration = Duration::from_millis(600);
 
+/// Which piece of a node the editor is editing.
+///
+/// The two share everything — the widget, the text-level undo, the key
+/// bindings — and differ only in where the text comes from and goes back to,
+/// and in where the box is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum EditTarget {
+    /// A text node's body, laid out over the whole card.
+    Body,
+    /// A group frame's caption, laid out along its header strip.
+    Label,
+}
+
 pub(super) struct Editing {
     pub(super) index: usize,
+    pub(super) target: EditTarget,
     pub(super) content: text_editor::Content,
     /// Text-level undo/redo for this session (iced's editor has none). Whole
     /// snapshots, coalesced by a short pause between edits.
@@ -35,9 +62,10 @@ pub(super) struct Editing {
 }
 
 impl Editing {
-    fn new(index: usize, text: &str) -> Self {
+    fn new(index: usize, target: EditTarget, text: &str) -> Self {
         Editing {
             index,
+            target,
             content: text_editor::Content::with_text(text),
             undo: Vec::new(),
             redo: Vec::new(),
@@ -189,6 +217,15 @@ fn starts_with_marker(s: &str, marker: &str) -> bool {
     s.starts_with(marker) && !s[marker.len()..].starts_with('*')
 }
 
+/// The value an edit session is changing, for the before/after comparison that
+/// decides whether it earns an undo step.
+fn edited_value(node: &crate::model::CanvasNode, target: EditTarget) -> Option<String> {
+    match target {
+        EditTarget::Body => node.text.clone(),
+        EditTarget::Label => node.label().map(str::to_owned),
+    }
+}
+
 /// `s` ends with exactly `marker`, not part of a longer run of `*`.
 fn ends_with_marker(s: &str, marker: &str) -> bool {
     s.ends_with(marker) && !s[..s.len() - marker.len()].ends_with('*')
@@ -200,15 +237,18 @@ impl App {
         let Some(node) = self.nodes.get(index) else {
             return Task::none();
         };
-        if !node.is_text() {
+        let (target, seed) = if node.is_text() {
+            (EditTarget::Body, node.text.as_deref().unwrap_or("").trim().to_owned())
+        } else if node.is_group() {
+            (EditTarget::Label, node.label().unwrap_or("").to_owned())
+        } else {
             return Task::none();
-        }
+        };
         // Capture a pre-edit snapshot to make the edit undoable — but not for
         // a brand-new node (its creation isn't an undoable edit).
         self.edit_undo = (self.fresh_node != Some(index)).then(|| self.snapshot());
         self.rasters.invalidate(index);
-        let text = node.text.as_deref().unwrap_or("").trim().to_owned();
-        let mut editing = Editing::new(index, &text);
+        let mut editing = Editing::new(index, target, &seed);
         // Defer caret placement to the first frame (see `pending_caret`); a
         // `window::frames()` subscription then fires `PlaceEditorCaret`.
         editing.pending_caret = caret_at;
@@ -217,7 +257,7 @@ impl App {
         // With scrollbars on, editing a node re-grows it to fit (its shrink was
         // temporary): drop its scroll and autosize before anything else, so the
         // editor lays out over the full content rather than a scrolled window.
-        if self.config.node_scrollbars {
+        if target == EditTarget::Body && self.config.node_scrollbars {
             if let Some(id) = self.nodes.get(index).map(|n| n.id.clone()) {
                 self.node_scroll.remove(&id);
             }
@@ -235,6 +275,9 @@ impl App {
     /// drag-created node that was left empty. May kick off AI suggestions for a
     /// freshly created note that hangs off a parent.
     pub(super) fn stop_editing(&mut self) -> Task<Message> {
+        let Some(target) = self.editing.as_ref().map(|e| e.target) else {
+            return Task::none();
+        };
         // Id of the node being edited, before any removal below.
         let edited_id = self
             .editing
@@ -243,52 +286,71 @@ impl App {
             .map(|node| node.id.clone());
         // A freshly-added connected node worth asking Copilot about.
         let mut completion_anchor: Option<String> = None;
-        // A drag-created node left without text disappears again.
+
         if let Some(editing) = &self.editing {
             let index = editing.index;
-            let empty = self
-                .nodes
-                .get(index)
-                .is_some_and(|node| node.text.as_deref().unwrap_or("").trim().is_empty());
-            if self.fresh_node == Some(index) && empty {
-                // Fresh nodes are always last, so removal does not shift the
-                // indices keying the snapshot maps.
-                let id = self.nodes.remove(index).id;
-                self.edges
-                    .retain(|edge| edge.from_node != id && edge.to_node != id);
-                self.rasters.invalidate(index);
-                self.spawning.remove(&index);
-            } else {
-                // Editing done: drop the whitespace that only mattered while
-                // typing, and settle the size.
-                if let Some(node) = self.nodes.get_mut(index)
-                    && let Some(text) = &node.text
-                {
-                    let trimmed = text.trim();
-                    if trimmed != text {
-                        node.text = Some(trimmed.to_owned());
+            match target {
+                EditTarget::Body => {
+                    // A drag-created node left without text disappears again.
+                    let empty = self.nodes.get(index).is_some_and(|node| {
+                        node.text.as_deref().unwrap_or("").trim().is_empty()
+                    });
+                    if self.fresh_node == Some(index) && empty {
+                        // Fresh nodes are always last, so removal does not shift
+                        // the indices keying the snapshot maps.
+                        let id = self.nodes.remove(index).id;
+                        self.edges
+                            .retain(|edge| edge.from_node != id && edge.to_node != id);
+                        self.rasters.invalidate(index);
+                        self.spawning.remove(&index);
+                    } else {
+                        // Editing done: drop the whitespace that only mattered
+                        // while typing, and settle the size.
+                        if let Some(node) = self.nodes.get_mut(index)
+                            && let Some(text) = &node.text
+                        {
+                            let trimmed = text.trim();
+                            if trimmed != text {
+                                node.text = Some(trimmed.to_owned());
+                            }
+                        }
+                        self.autosize_node(index, true);
+                        // A fresh node with a parent → ask for sibling ideas.
+                        completion_anchor = self.completion_anchor(index);
                     }
                 }
-                // Editing done: fit the card to the rendered Markdown.
-                self.autosize_node(index, true);
-                // A fresh node with a parent → ask for sibling ideas.
-                completion_anchor = self.completion_anchor(index);
+                EditTarget::Label => {
+                    // A caption left blank clears the label rather than deleting
+                    // the frame — an unnamed group is a perfectly good group.
+                    let caption = editing.content.text();
+                    if let Some(node) = self.nodes.get_mut(index) {
+                        node.set_label(&caption);
+                    }
+                }
             }
         }
+
         // Commit the pre-edit snapshot as an undo point only if the edited
-        // node's text actually changed.
+        // value actually changed.
         if let (Some(snapshot), Some(id)) = (self.edit_undo.take(), edited_id) {
-            let old = snapshot
+            let before = snapshot
                 .nodes
                 .iter()
                 .find(|n| n.id == id)
-                .and_then(|n| n.text.clone());
-            let new = self.nodes.iter().find(|n| n.id == id).and_then(|n| n.text.clone());
-            if old != new {
+                .and_then(|n| edited_value(n, target));
+            let after = self
+                .nodes
+                .iter()
+                .find(|n| n.id == id)
+                .and_then(|n| edited_value(n, target));
+            if before != after {
                 self.history.record(snapshot);
                 // The card resized; re-lay-out its graph if enabled (covered by
-                // the undo snapshot just recorded).
-                if let Some(index) = self.nodes.iter().position(|n| n.id == id) {
+                // the undo snapshot just recorded). A caption changes no
+                // geometry, so it never triggers one.
+                if target == EditTarget::Body
+                    && let Some(index) = self.nodes.iter().position(|n| n.id == id)
+                {
                     self.auto_relayout(index, false);
                 }
             }
@@ -344,15 +406,27 @@ impl App {
         self.commit_editor_text(edited);
     }
 
-    /// Writes the editor's text back onto its node and refits the card.
+    /// Writes the editor's text back onto its node, refitting the card when it
+    /// is the body that changed. A caption doesn't resize its frame — the frame
+    /// is geometry the user placed.
     fn commit_editor_text(&mut self, edited: Option<(usize, String)>) {
         let Some((index, text)) = edited else {
             return;
         };
-        if let Some(node) = self.nodes.get_mut(index) {
-            node.text = Some(text);
+        let target = self.editing.as_ref().map(|e| e.target).unwrap_or(EditTarget::Body);
+        match target {
+            EditTarget::Body => {
+                if let Some(node) = self.nodes.get_mut(index) {
+                    node.text = Some(text);
+                }
+                self.autosize_node(index, false);
+            }
+            EditTarget::Label => {
+                if let Some(node) = self.nodes.get_mut(index) {
+                    node.set_label(&text);
+                }
+            }
         }
-        self.autosize_node(index, false);
         self.mark_dirty();
     }
 
@@ -390,10 +464,10 @@ impl App {
     /// lays out cleanly. Drives fit-on-edit and exit-editing-on-pan-out.
     fn node_fully_visible(&self, index: usize) -> bool {
         const MARGIN: f32 = 12.0;
-        let Some(node) = self.nodes.get(index) else {
+        let Some(world) = self.edit_rect(index) else {
             return false;
         };
-        let rect = self.camera.rect_to_screen(node_world_rect(node));
+        let rect = self.camera.rect_to_screen(world);
         let vp = self.camera.viewport;
         rect.x >= MARGIN
             && rect.y >= MARGIN
@@ -419,15 +493,15 @@ impl App {
         if self.node_fully_visible(index) {
             return;
         }
-        let Some(node) = self.nodes.get(index) else {
+        let Some(world) = self.edit_rect(index) else {
             return;
         };
         let vp = self.camera.viewport;
-        let center = Vector::new(node.x + node.width / 2.0, node.y + node.height / 2.0);
-        // Largest zoom at which the node fits with margin; never zoom in past the
+        let center = Vector::new(world.center_x(), world.center_y());
+        // Largest zoom at which it fits with margin; never zoom in past the
         // current level — only pull back when it's too big to fit.
-        let fit = ((vp.width - 2.0 * MARGIN) / node.width)
-            .min((vp.height - 2.0 * MARGIN) / node.height);
+        let fit = ((vp.width - 2.0 * MARGIN) / world.width)
+            .min((vp.height - 2.0 * MARGIN) / world.height);
         let target_zoom =
             self.camera.zoom.min(fit).clamp(self.config.min_zoom, self.config.max_zoom);
         self.camera_focus = Some(CameraFocus {
@@ -437,14 +511,44 @@ impl App {
         });
     }
 
-    /// The editing overlay's box for `index`: its screen-space top-left, width
-    /// and height. `view` lays the editor out from this, and deferred caret
+    /// The world-space rectangle an edit session is anchored to: the whole card
+    /// for a body, the header strip for a caption. Everything that asks "is the
+    /// thing being edited on screen?" means this, not the node — a frame is
+    /// routinely larger than the viewport, and fitting all of it to edit its
+    /// caption would zoom the board out for no reason.
+    fn edit_rect(&self, index: usize) -> Option<Rectangle> {
+        let node = self.nodes.get(index)?;
+        let rect = node_world_rect(node);
+        match self.editing.as_ref()?.target {
+            EditTarget::Body => Some(rect),
+            EditTarget::Label => Some(board::group_header(rect, 1.0)),
+        }
+    }
+
+    /// The editing overlay's box: where to put it, how big, and how to lay the
+    /// text out inside. `view` builds the editor from this and deferred caret
     /// placement maps a click against its origin — so both stay in sync.
-    pub(super) fn editor_box(&self, index: usize) -> Option<(Point, f32, f32, bool)> {
+    pub(super) fn editor_box(&self, index: usize) -> Option<EditorBox> {
         let node = self.nodes.get(index)?;
         let editing = self.editing.as_ref()?;
         let rect = self.camera.rect_to_screen(node_world_rect(node));
         let zoom = self.camera.zoom;
+
+        if editing.target == EditTarget::Label {
+            // Along the header strip, laid out where `draw_groups` puts the
+            // caption so entering edit mode doesn't shift the text.
+            let pad = board::GROUP_LABEL_PAD * zoom;
+            let font_size = board::GROUP_LABEL_SIZE;
+            let height = font_size * zoom * text_raster::LINE_HEIGHT + 2.0;
+            return Some(EditorBox {
+                origin: Point::new(rect.x + pad, rect.y + pad),
+                width: (rect.width - pad * 2.0).max(24.0 * zoom),
+                height,
+                centered: false,
+                font_size,
+            });
+        }
+
         let wrap = text_raster::card_text_wrap(node.width);
         // Measure/size the text at the editor's inner column (inset a side like
         // read mode), not the full card wrap, or a wrapping note is a line short
@@ -464,15 +568,22 @@ impl App {
         } else {
             (text_wrap * zoom).min(rect.width)
         };
-        let left = (rect.x + (rect.width - width) / 2.0).max(0.0);
-        let top = (rect.y + (rect.height - height) / 2.0).max(0.0);
-        Some((Point::new(left, top), width, height, centered))
+        Some(EditorBox {
+            origin: Point::new(
+                (rect.x + (rect.width - width) / 2.0).max(0.0),
+                (rect.y + (rect.height - height) / 2.0).max(0.0),
+            ),
+            width,
+            height,
+            centered,
+            font_size: FONT_SIZE,
+        })
     }
 
     /// Screen-space top-left of the editing overlay's text for `index` — the
     /// origin a click maps against for deferred caret placement.
     fn editor_text_origin(&self, index: usize) -> Option<Point> {
-        self.editor_box(index).map(|(origin, ..)| origin)
+        self.editor_box(index).map(|b| b.origin)
     }
 }
 

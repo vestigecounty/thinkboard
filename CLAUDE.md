@@ -118,7 +118,42 @@ module and its `impl App` block there — keep `update` a dispatch table.
   other nodes, so counting it as occupied space pins the cards inside it.
   Dragging one carries whatever it encloses (`App::drag_riders`), which is also
   where multi-selection drags are resolved — as a set, so nothing that
-  qualifies twice moves at double speed.
+  qualifies twice moves at double speed. `App::group_selection` creates one
+  around two or more selected non-frame nodes (command palette, or the node
+  context menu); `groupable_selection` is the single predicate all three call
+  sites gate on. A new frame carries no `label`, since there's no rename UI —
+  name it, which drops straight into naming it; double-clicking a frame's
+  header reopens the caption. A blank caption clears the label rather than
+  deleting the frame — unlike a drag-created note, which *is* taken back when
+  left empty.
+- **The editor edits two things.** `EditTarget::Body` is a text node's text over
+  the whole card; `EditTarget::Label` is a frame's caption along its header
+  strip. They share the widget, the text-level undo and the key bindings, and
+  differ in where the text comes from, where it goes back to, and which
+  rectangle counts as "on screen" (`App::edit_rect`) — a frame is routinely
+  bigger than the viewport, so fitting all of it to edit a caption would zoom
+  the board out for nothing.
+- **Ask AI works on a frame**, which has no incoming links to walk. Its contents
+  are flattened into an outline instead (`ai::group_prompt`), preserving both
+  hierarchies the user sees: links nest a note's targets under it, and a nested
+  frame's contents nest under its caption. A node inside nested frames is
+  attributed to the innermost one, so nothing is listed twice.
+- **Group membership is positional, never stored.** The format has no children
+  array and no parent pointer — only geometry — so `enclosed_by` recomputes it
+  from centres whenever it matters. Dragging a node out of a frame is therefore
+  just moving it, with no state to keep in sync, and adding a note to a group
+  is just dropping it inside the bounds. Never invent a membership field: it
+  would be ours alone, and Obsidian would ignore it.
+- **A frame can be linked like any node**, so a port-drag off a group makes a
+  connected note — that's how a question gets asked *about* a group. Its ports
+  lose every hit test to the cards it encloses (`Board::frame_last`), since a
+  frame's border runs behind its members. A group among a chain's ancestors
+  contributes its flattened outline to `upstream_prompt`, and its images to
+  `upstream_images`; without that the link would look meaningful on the board
+  and feed the model nothing.
+- The one place a frame *is* an obstacle is `App::ai_answer_placement`. An
+  answer about a frame must land beside it, because inside it would become one
+  of its members and be fed back into the next question about that frame.
 - **Card alignment follows what the card is.** A note or attachment is a
   document: top-left under a muted file-name header and a hairline rule. A link
   is a single label: host and URL centred in the card. Text nodes centre or

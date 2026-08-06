@@ -248,6 +248,8 @@ pub(crate) enum Message {
     /// Auto-layout the selected nodes (Mermaid-style layered graph) flowing in
     /// the given direction.
     AutoLayout(layout::Direction),
+    /// Wrap the selected nodes in a group frame.
+    GroupSelection,
     /// Toggles the "auto-layout on add" setting (persisted to config).
     ToggleAutoLayout,
     /// Toggles snap-to-grid (persisted to config).
@@ -830,6 +832,10 @@ impl App {
                 return self.paste_at(world);
             }
             Message::SetNodeColor(color) => self.set_node_color(color),
+            Message::GroupSelection => {
+                self.close_context_menu();
+                return self.group_selection();
+            }
             Message::AutoLayout(dir) => {
                 self.close_context_menu();
                 if self.selected.len() > 1 {
@@ -1304,25 +1310,11 @@ impl App {
         riders
     }
 
-    /// Indices of the nodes a group frame encloses — those whose centre falls
-    /// inside it. Centres rather than full containment, so a node poking over
-    /// the frame's edge still belongs to it (which is how it looks on screen).
+    /// Indices of the nodes a group frame encloses. Delegates to
+    /// [`crate::model::enclosed_by`], which the AI prompt builder also uses, so
+    /// "what is inside this frame" means one thing across the app.
     fn enclosed_by(&self, frame: usize) -> Vec<usize> {
-        let Some(bounds) = self.nodes.get(frame).map(arrange::node_world_rect) else {
-            return Vec::new();
-        };
-        self.nodes
-            .iter()
-            .enumerate()
-            .filter(|&(i, node)| {
-                i != frame
-                    && bounds.contains(Point::new(
-                        node.x + node.width / 2.0,
-                        node.y + node.height / 2.0,
-                    ))
-            })
-            .map(|(i, _)| i)
-            .collect()
+        model::enclosed_by(&self.nodes, frame)
     }
 
     fn move_cluster(&mut self, index: usize, delta: Vector) {
@@ -1579,6 +1571,7 @@ impl App {
             CommandId::AddNode => Message::CreateNode { world: center },
             CommandId::AskAi => Message::AskAi,
             CommandId::Distribute => Message::AutoLayout(self.config_layout_dir()),
+            CommandId::GroupSelection => Message::GroupSelection,
             CommandId::ToggleAutoLayout => Message::ToggleAutoLayout,
             CommandId::ToggleSetting(field) => {
                 Message::Settings(settings::Msg::Toggle(field, !self.setting_bool(field)))
