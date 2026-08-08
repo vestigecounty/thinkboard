@@ -36,6 +36,10 @@
 
   "ai_url": "http://localhost:1234/v1",
   "ai_model": "google/gemma-4-26b-a4b-qat",
+  "ai_api_keys": {
+    "https://api.openai.com/v1": "",
+    "https://api.fireworks.ai/inference/v1": ""
+  },
   "max_ai_nodes": 6,
   "ai_trigger_color": "3",
   "ai_node_color": "6",

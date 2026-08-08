@@ -50,10 +50,11 @@ The patched `iced` crates it relies on are vendored in-repo, so there's nothing 
 ## AI setup
 
 AI is **off by default** — nothing leaves your machine until you configure a provider.
-In **Settings → AI**, choose one and (for hosted providers) paste an API key:
+In **Settings → AI**, choose one and (for hosted providers) paste an API key.
+Keys are kept per provider, so switching between them doesn't lose the others:
 
 - **Local:** LM Studio, Ollama
-- **Hosted:** OpenAI, OpenRouter, Groq, Together AI
+- **Hosted:** OpenAI, OpenRouter, Groq, Together AI, Fireworks AI, Mistral, DeepSeek
 
 Then right-click any note and choose **Ask AI**.
 

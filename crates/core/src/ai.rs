@@ -46,6 +46,7 @@ pub const PRESETS: &[Preset] = &[
     Preset { name: "OpenRouter", url: "https://openrouter.ai/api/v1" },
     Preset { name: "Groq", url: "https://api.groq.com/openai/v1" },
     Preset { name: "Together AI", url: "https://api.together.xyz/v1" },
+    Preset { name: "Fireworks AI", url: "https://api.fireworks.ai/inference/v1" },
     Preset { name: "Mistral", url: "https://api.mistral.ai/v1" },
     Preset { name: "DeepSeek", url: "https://api.deepseek.com/v1" },
 ];

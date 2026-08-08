@@ -12,6 +12,7 @@
 //! file is upgraded in place when new keys are added by a later version
 //! (the user's existing values are kept).
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -134,9 +135,20 @@ pub struct Config {
     pub ai_url: String,
     /// Model name sent to the endpoint.
     pub ai_model: String,
-    /// API key sent as an `Authorization: Bearer` header. Required for hosted
-    /// providers (e.g. OpenRouter); left blank for a local endpoint like LM
-    /// Studio. Stored in plaintext in the config file.
+    /// API keys sent as an `Authorization: Bearer` header, one per endpoint —
+    /// switching providers keeps each one's key instead of overwriting a single
+    /// shared field. Required for hosted providers (e.g. OpenRouter); left blank
+    /// for a local endpoint like LM Studio. Stored in plaintext in the config.
+    ///
+    /// Keyed by endpoint rather than by provider name so a custom URL keeps its
+    /// own key, and — the reason it matters — so editing the URL to point
+    /// somewhere else never carries the previous host's key along with it.
+    #[serde(default)]
+    pub ai_api_keys: BTreeMap<String, String>,
+    /// The single key earlier versions stored. Read once at load and folded
+    /// into `ai_api_keys` under whatever endpoint was configured at the time,
+    /// then dropped — see [`Config::migrate_api_key`].
+    #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ai_api_key: String,
     /// Hard cap on notes a single AI answer may split into (the model is asked
     /// to stay under it; extra content appends to the last note).
@@ -203,6 +215,7 @@ impl Default for Config {
             ai_url: String::new(), // "Off" by default — no endpoint, private
 
             ai_model: "google/gemma-4-26b-a4b-qat".to_owned(),
+            ai_api_keys: BTreeMap::new(),
             ai_api_key: String::new(),
             max_ai_nodes: 6,
             ai_trigger_color: "3".to_owned(), // yellow
@@ -213,7 +226,53 @@ impl Default for Config {
     }
 }
 
+/// The map key an endpoint's API key is filed under: the URL with surrounding
+/// whitespace and any trailing slash removed, so `.../v1` and `.../v1/` are the
+/// same endpoint rather than two entries with one key between them.
+fn endpoint_key(url: &str) -> &str {
+    url.trim().trim_end_matches('/')
+}
+
 impl Config {
+    /// The API key for the configured endpoint, or empty when it has none.
+    pub fn ai_key(&self) -> &str {
+        self.ai_api_keys
+            .get(endpoint_key(&self.ai_url))
+            .map(String::as_str)
+            .unwrap_or("")
+    }
+
+    /// Sets the API key for the configured endpoint. An empty key removes the
+    /// entry rather than storing a blank one, so the config doesn't accumulate
+    /// dead endpoints.
+    pub fn set_ai_key(&mut self, key: &str) {
+        let endpoint = endpoint_key(&self.ai_url).to_owned();
+        if endpoint.is_empty() {
+            return; // "Off" has no endpoint to attach a key to
+        }
+        if key.trim().is_empty() {
+            self.ai_api_keys.remove(&endpoint);
+        } else {
+            self.ai_api_keys.insert(endpoint, key.trim().to_owned());
+        }
+    }
+
+    /// Folds a pre-per-endpoint config's single `ai_api_key` into the map,
+    /// under the endpoint it would have been used with. Idempotent: once
+    /// carried over, the old field is cleared and stops being serialized.
+    pub(crate) fn migrate_api_key(&mut self) {
+        let legacy = std::mem::take(&mut self.ai_api_key);
+        let legacy = legacy.trim();
+        if legacy.is_empty() {
+            return;
+        }
+        let endpoint = endpoint_key(&self.ai_url).to_owned();
+        // Don't clobber a key already set for this endpoint.
+        if !endpoint.is_empty() {
+            self.ai_api_keys.entry(endpoint).or_insert_with(|| legacy.to_owned());
+        }
+    }
+
     /// Whether AI is on: an endpoint is configured. Empty `ai_url` is the "Off"
     /// provider — no AI requests are made and the AI actions stay hidden.
     pub fn ai_enabled(&self) -> bool {
@@ -344,6 +403,9 @@ impl Config {
 fn parse_or_default(text: &str, path: &Path) -> Config {
     match serde_json::from_str::<Config>(text) {
         Ok(mut config) => {
+            // Before sanitize, so folding an older config's single key into the
+            // map isn't reported as a clamped value.
+            config.migrate_api_key();
             if config.sanitize() {
                 eprintln!("config: clamped out-of-range values in {}", path.display());
             }
@@ -412,6 +474,89 @@ mod tests {
         // Whitespace-only stays off.
         config.ai_url = "   ".to_owned();
         assert!(!config.ai_enabled());
+    }
+
+    #[test]
+    fn an_api_key_is_kept_per_endpoint() {
+        let mut config = Config::default();
+        config.ai_url = "https://api.openai.com/v1".to_owned();
+        config.set_ai_key("sk-openai");
+        config.ai_url = "https://api.fireworks.ai/inference/v1".to_owned();
+        config.set_ai_key("fw-key");
+
+        // Switching back finds the first key still there — the point of the
+        // change: one field per provider, not one shared field.
+        config.ai_url = "https://api.openai.com/v1".to_owned();
+        assert_eq!(config.ai_key(), "sk-openai");
+        config.ai_url = "https://api.fireworks.ai/inference/v1".to_owned();
+        assert_eq!(config.ai_key(), "fw-key");
+    }
+
+    #[test]
+    fn an_endpoint_with_no_key_reports_none_rather_than_anothers() {
+        let mut config = Config::default();
+        config.ai_url = "https://api.openai.com/v1".to_owned();
+        config.set_ai_key("sk-openai");
+
+        // A URL edited to point elsewhere must not carry the old host's key.
+        config.ai_url = "https://internal.example.com/v1".to_owned();
+        assert_eq!(config.ai_key(), "");
+    }
+
+    #[test]
+    fn a_trailing_slash_is_the_same_endpoint() {
+        let mut config = Config::default();
+        config.ai_url = "https://api.openai.com/v1".to_owned();
+        config.set_ai_key("sk-openai");
+        config.ai_url = "https://api.openai.com/v1/".to_owned();
+        assert_eq!(config.ai_key(), "sk-openai");
+    }
+
+    #[test]
+    fn clearing_a_key_drops_its_entry() {
+        let mut config = Config::default();
+        config.ai_url = "https://api.openai.com/v1".to_owned();
+        config.set_ai_key("sk-openai");
+        config.set_ai_key("   ");
+        assert_eq!(config.ai_key(), "");
+        assert!(config.ai_api_keys.is_empty(), "no blank entry left behind");
+    }
+
+    #[test]
+    fn an_older_configs_single_key_is_carried_over() {
+        // What an existing install looks like on disk.
+        let text = r#"{"ai_url": "https://api.openai.com/v1", "ai_api_key": "sk-legacy"}"#;
+        let mut config: Config = serde_json::from_str(text).unwrap();
+        config.migrate_api_key();
+
+        assert_eq!(config.ai_key(), "sk-legacy", "filed under the endpoint in use");
+        assert!(config.ai_api_key.is_empty(), "and the old field is cleared");
+        // It doesn't come back or overwrite on a second pass.
+        config.set_ai_key("sk-new");
+        config.migrate_api_key();
+        assert_eq!(config.ai_key(), "sk-new");
+    }
+
+    #[test]
+    fn a_migrated_key_is_not_written_back_to_the_old_field() {
+        let text = r#"{"ai_url": "https://api.openai.com/v1", "ai_api_key": "sk-legacy"}"#;
+        let mut config: Config = serde_json::from_str(text).unwrap();
+        config.migrate_api_key();
+        let json = serde_json::to_string(&config).unwrap();
+        assert!(!json.contains("sk-legacy\",\"ai_api_key"), "no duplicate");
+        assert!(json.contains("ai_api_keys"));
+        // The legacy field is skipped entirely once empty.
+        assert!(!json.contains("\"ai_api_key\":"), "{json}");
+    }
+
+    #[test]
+    fn migrating_a_key_is_not_reported_as_a_clamped_value() {
+        // `sanitize` returning true prints a warning about out-of-range values.
+        // Carrying an old key over is neither out of range nor worth a warning.
+        let text = r#"{"ai_url": "https://api.openai.com/v1", "ai_api_key": "sk-legacy"}"#;
+        let mut config: Config = serde_json::from_str(text).unwrap();
+        config.migrate_api_key();
+        assert!(!config.sanitize(), "nothing to clamp in a valid config");
     }
 
     #[test]

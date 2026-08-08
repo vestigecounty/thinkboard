@@ -623,7 +623,7 @@ pub(crate) fn config_text(config: &Config, field: Field) -> String {
         Field::ThemeCss => config.theme_css.clone().unwrap_or_default(),
         Field::AiUrl => config.ai_url.clone(),
         Field::AiModel => config.ai_model.clone(),
-        Field::AiApiKey => config.ai_api_key.clone(),
+        Field::AiApiKey => config.ai_key().to_owned(),
         Field::MinZoom => config.min_zoom.to_string(),
         Field::MaxZoom => config.max_zoom.to_string(),
         Field::ZoomSmoothing => config.zoom_smoothing.to_string(),
@@ -655,7 +655,7 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
         }
         (Field::AiUrl, Value::Text(s)) => config.ai_url = s,
         (Field::AiModel, Value::Text(s)) => config.ai_model = s,
-        (Field::AiApiKey, Value::Text(s)) => config.ai_api_key = s,
+        (Field::AiApiKey, Value::Text(s)) => config.set_ai_key(&s),
         (Field::AutoLayoutDirection, Value::Text(s)) => config.auto_layout_direction = s,
         (Field::AiTriggerColor, Value::Text(s)) => config.ai_trigger_color = s,
         (Field::AiNodeColor, Value::Text(s)) => config.ai_node_color = s,
@@ -789,9 +789,12 @@ impl App {
                 }
                 self.config.sanitize();
                 self.persist_config();
-                // Reflect the change in the URL text field.
+                // Reflect the change in the URL field, and swap the key field
+                // to the one belonging to the provider now selected.
                 self.settings_drafts
                     .insert(Field::AiUrl, self.config.ai_url.clone());
+                self.settings_drafts
+                    .insert(Field::AiApiKey, self.config.ai_key().to_owned());
                 Task::none()
             }
             Msg::ToggleAdvanced => {
@@ -804,6 +807,12 @@ impl App {
     /// Live side effects of a settings change (over and above the config write).
     fn after_setting_change(&mut self, field: Field) -> Task<Message> {
         self.cache.clear();
+        // Keys are per endpoint, so changing the endpoint changes which one the
+        // field is showing.
+        if field == Field::AiUrl {
+            self.settings_drafts
+                .insert(Field::AiApiKey, self.config.ai_key().to_owned());
+        }
         match field {
             // These change how node *and* cluster text is drawn — re-rasterize
             // both. Cluster snapshots aren't produced while rasterize is off, so

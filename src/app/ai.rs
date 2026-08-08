@@ -218,7 +218,7 @@ impl App {
         let (url, model, key, max_nodes) = (
             self.config.ai_url.clone(),
             self.config.ai_model.clone(),
-            self.config.ai_api_key.clone(),
+            self.config.ai_key().to_owned(),
             self.config.max_ai_nodes,
         );
         let thinking = self.config.ai_thinking;
