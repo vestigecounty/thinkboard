@@ -8,6 +8,7 @@
 pub mod ai;
 pub mod cluster;
 pub mod color;
+pub mod fuzzy;
 pub mod history;
 pub mod layout;
 pub mod markdown;
@@ -15,3 +16,4 @@ pub mod model;
 pub mod search;
 pub mod snap;
 pub mod syntax;
+pub mod vault;

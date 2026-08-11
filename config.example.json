@@ -1,5 +1,6 @@
 {
   "canvas": "",
+  "vault": "",
   "dismiss_on_background_click": true,
   "persist_across_spaces": false,
   "overlay_transparent": true,

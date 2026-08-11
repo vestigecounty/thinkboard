@@ -1016,3 +1016,127 @@ fn a_short_note_still_gets_an_editor_that_hugs_its_text() {
     assert!(editor.height < card.height, "should hug: {}", editor.height);
     assert!(editor.origin.y > card.y, "and be centred, not flush to the top");
 }
+
+// --- The vault browser ---
+//
+// These stop short of actually opening a board: `open_canvas` persists the
+// choice, and `persist_config` writes the *real* user config (there's no
+// scratch guard on it, unlike the document saves). So the tests drive the
+// browser up to the point of opening and assert on what it resolved to.
+
+/// An app with a vault configured and `canvases` already found in it, as if a
+/// scan had landed. Relative paths are taken as vault-relative.
+fn app_with_vault(canvases: &[&str]) -> App {
+    let mut app = app_with(Vec::new(), Vec::new());
+    app.config.vault = "/vault".to_owned();
+    app.vault_canvases = canvases
+        .iter()
+        .map(|relative| thinkboard_core::vault::CanvasEntry {
+            path: PathBuf::from("/vault").join(relative),
+            relative: (*relative).to_owned(),
+            modified: None,
+        })
+        .collect();
+    app
+}
+
+#[test]
+fn switching_canvases_needs_a_vault_to_browse() {
+    // Without one, Cmd+O stays on the old flow — the open dialog — rather than
+    // showing an empty panel.
+    let mut app = app_with(Vec::new(), Vec::new());
+    send(&mut app, Message::SwitchCanvas);
+    assert!(app.vault_browser.is_none());
+    assert!(!app.has_vault());
+
+    // With one, the same key opens the browser.
+    let mut app = app_with_vault(&["Inbox.canvas"]);
+    send(&mut app, Message::SwitchCanvas);
+    assert!(app.vault_browser.is_some());
+}
+
+#[test]
+fn the_browser_shows_the_cached_list_before_the_rescan_lands() {
+    // Reopening is instant because the previous scan is still there; the fresh
+    // walk is in the returned task, which the test drops.
+    let mut app = app_with_vault(&["Inbox.canvas", "Projects/Roadmap.canvas"]);
+    send(&mut app, Message::SwitchCanvas);
+    assert_eq!(app.vault_matches("").len(), 2);
+}
+
+#[test]
+fn typing_narrows_the_list_and_enter_resolves_the_highlighted_board() {
+    let mut app = app_with_vault(&["Inbox.canvas", "Projects/Roadmap.canvas", "Ideas.canvas"]);
+    send(&mut app, Message::SwitchCanvas);
+
+    send(&mut app, Message::VaultBrowserInput("road".to_owned()));
+    assert_eq!(app.vault_matches("road").len(), 1);
+    assert_eq!(
+        app.selected_canvas(),
+        Some(PathBuf::from("/vault/Projects/Roadmap.canvas"))
+    );
+
+    // A query matching nothing leaves nothing to open, rather than opening
+    // whatever the highlight last pointed at.
+    send(&mut app, Message::VaultBrowserInput("zzz".to_owned()));
+    assert_eq!(app.selected_canvas(), None);
+}
+
+#[test]
+fn arrowing_moves_the_highlight_through_the_filtered_list() {
+    let mut app = app_with_vault(&["A.canvas", "B.canvas", "C.canvas"]);
+    send(&mut app, Message::SwitchCanvas);
+
+    send(&mut app, Message::VaultBrowserNav(picker::Nav::Step(1)));
+    assert_eq!(app.selected_canvas(), Some(PathBuf::from("/vault/B.canvas")));
+    // Up from the first row wraps to the last, as in the palette.
+    send(&mut app, Message::VaultBrowserNav(picker::Nav::First));
+    send(&mut app, Message::VaultBrowserNav(picker::Nav::Step(-1)));
+    assert_eq!(app.selected_canvas(), Some(PathBuf::from("/vault/C.canvas")));
+}
+
+#[test]
+fn a_finished_scan_replaces_the_list_and_drops_the_stale_highlight() {
+    let mut app = app_with_vault(&["A.canvas", "B.canvas", "C.canvas"]);
+    send(&mut app, Message::SwitchCanvas);
+    send(&mut app, Message::VaultBrowserNav(picker::Nav::Last));
+    assert_eq!(app.selected_canvas(), Some(PathBuf::from("/vault/C.canvas")));
+
+    // The rescan comes back with a shorter list. The highlight indexed the old
+    // one, so it goes back to the top rather than pointing at a different board
+    // (or off the end of the list entirely).
+    let fresh = vec![thinkboard_core::vault::CanvasEntry {
+        path: PathBuf::from("/vault/Only.canvas"),
+        relative: "Only.canvas".to_owned(),
+        modified: None,
+    }];
+    send(&mut app, Message::VaultScanned(fresh, false));
+    assert_eq!(app.selected_canvas(), Some(PathBuf::from("/vault/Only.canvas")));
+    assert!(!app.vault_scanning);
+}
+
+#[test]
+fn only_one_panel_is_open_at_a_time() {
+    let mut app = app_with_vault(&["Inbox.canvas"]);
+    send(&mut app, Message::SwitchCanvas);
+    send(&mut app, Message::OpenCommandPalette);
+    assert!(app.vault_browser.is_none(), "the palette displaces the browser");
+
+    send(&mut app, Message::SwitchCanvas);
+    assert!(app.command_palette.is_none(), "and the browser displaces the palette");
+
+    // The find bar displaces it too — all three share the same screen space.
+    send(&mut app, Message::OpenSearch);
+    assert!(app.vault_browser.is_none());
+}
+
+#[test]
+fn switch_canvas_is_only_offered_once_there_is_a_vault() {
+    let app = app_with(Vec::new(), Vec::new());
+    assert!(!command::CommandId::SwitchCanvas.is_enabled(&app));
+    // "Open vault…" is always available — it's how you get one.
+    assert!(command::CommandId::OpenVault.is_enabled(&app));
+
+    let app = app_with_vault(&["Inbox.canvas"]);
+    assert!(command::CommandId::SwitchCanvas.is_enabled(&app));
+}

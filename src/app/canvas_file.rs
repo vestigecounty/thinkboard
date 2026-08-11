@@ -77,12 +77,27 @@ fn strip_front_matter(text: &str) -> &str {
 /// The vault root that a canvas's image `file` paths resolve against. Obsidian
 /// records those paths relative to the vault root (which may be several levels
 /// above the canvas), so:
+///   0. take `configured` when the canvas is inside it — the user told us where
+///      the vault is, which beats every guess below;
 ///   1. walk up from the canvas to a `.obsidian` marker (authoritative);
 ///   2. else infer it — walk up to the ancestor where an image `file` actually
 ///      resolves (handles a vault copied without its `.obsidian` folder);
 ///   3. else fall back to the canvas's own directory.
-pub(super) fn vault_root(canvas: &FsPath, document: &CanvasDocument) -> PathBuf {
+///
+/// A canvas *outside* the configured vault falls through to the guesses, so
+/// setting a vault never breaks a board opened from somewhere else.
+pub(super) fn vault_root(
+    canvas: &FsPath,
+    document: &CanvasDocument,
+    configured: Option<&FsPath>,
+) -> PathBuf {
     let canvas_dir = canvas.parent().unwrap_or_else(|| FsPath::new("."));
+
+    if let Some(vault) = configured
+        && canvas.starts_with(vault)
+    {
+        return vault.to_path_buf();
+    }
 
     let mut dir = Some(canvas_dir);
     while let Some(current) = dir {
@@ -286,7 +301,11 @@ impl App {
         };
 
         self.canvas_path = path;
-        self.base_path = vault_root(&self.canvas_path, &document);
+        self.base_path = vault_root(
+            &self.canvas_path,
+            &document,
+            self.vault_path().as_deref(),
+        );
         self.file_mtime = file_mtime(&self.canvas_path);
         self.scratch = false;
 
@@ -447,8 +466,30 @@ mod tests {
         };
 
         let canvas = hobbies.join("board.canvas");
-        assert_eq!(vault_root(&canvas, &document), temp);
+        assert_eq!(vault_root(&canvas, &document, None), temp);
         let _ = std::fs::remove_dir_all(&temp);
+    }
+
+    #[test]
+    fn a_configured_vault_beats_the_inferred_base() {
+        // Nothing on disk to walk to, so every guess would land on the canvas's
+        // own folder — the configured vault is what makes the real base known.
+        let canvas = FsPath::new("/vault/Projects/board.canvas");
+        let document = CanvasDocument {
+            nodes: Vec::new(),
+            edges: Vec::new(),
+            extra: Default::default(),
+        };
+        let vault = FsPath::new("/vault");
+        assert_eq!(vault_root(canvas, &document, Some(vault)), vault);
+
+        // A board opened from outside the vault is unaffected by it: the vault
+        // is where we *look* for boards, not a claim about every board there is.
+        let outside = FsPath::new("/elsewhere/board.canvas");
+        assert_eq!(
+            vault_root(outside, &document, Some(vault)),
+            FsPath::new("/elsewhere")
+        );
     }
 
     fn file_node(id: &str, file: &str) -> CanvasNode {

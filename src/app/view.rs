@@ -192,9 +192,11 @@ impl App {
             cache: &self.cache,
             editing: self.editing.as_ref().map(|editing| editing.index),
             overlay: self.overlay,
-            // The settings modal and the command palette both own input while
-            // open, so board shortcuts/scroll don't fire underneath them.
-            modal: self.settings_overlay || self.command_palette.is_some(),
+            // The settings modal and the two pickers all own input while open,
+            // so board shortcuts/scroll don't fire underneath them.
+            modal: self.settings_overlay
+                || self.command_palette.is_some()
+                || self.vault_browser.is_some(),
             show_fps: self.show_fps,
             spawning: &self.spawning,
             text_snapshots: &self.rasters.text,
@@ -230,6 +232,9 @@ impl App {
         }
         if let Some(palette) = &self.command_palette {
             layers = layers.push(command::view(self, palette));
+        }
+        if let Some(browser) = &self.vault_browser {
+            layers = layers.push(self.vault_browser_view(browser));
         }
         if self.settings_overlay {
             layers = layers.push(self.settings_overlay_view());

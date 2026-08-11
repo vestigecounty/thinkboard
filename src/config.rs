@@ -25,6 +25,12 @@ pub struct Config {
     /// if it exists; otherwise the app prompts with a file dialog and remembers
     /// the choice here. A CLI path argument overrides it.
     pub canvas: String,
+    /// The Obsidian vault to browse for boards (a folder), if one has been
+    /// picked. Blank means no vault: the app still opens any canvas by dialog
+    /// or drag-and-drop, it just has no list to switch between. When set it
+    /// also *is* the base that a canvas's `file` paths resolve against, which
+    /// beats inferring one from the canvas's own location.
+    pub vault: String,
     /// Whether clicking empty space on the overlay dismisses the board.
     pub dismiss_on_background_click: bool,
     /// Whether the board stays up when you switch macOS Spaces. When false
@@ -172,6 +178,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             canvas: String::new(),
+            vault: String::new(),
             dismiss_on_background_click: true,
             persist_across_spaces: false,
             overlay_transparent: true,

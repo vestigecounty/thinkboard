@@ -19,6 +19,7 @@ in your vault.
 
 - **Summon over anything** — a translucent, always-on-top overlay that drops onto your current desktop (even over fullscreen apps) with a global hotkey, and toggles away with the same key.
 - **Obsidian-compatible** — opens and saves standard `.canvas` files; pick up your vault's canvases or start fresh ones.
+- **Your whole vault** — point it at your Obsidian vault and **Cmd/Ctrl+O** lists every board in it, newest first, with fuzzy search by name. Boards from anywhere else still open by dialog or drag-and-drop.
 - **Fast to build** — create notes, drag from a note's edge to connect them, double-click to edit Markdown, and auto-layout to tidy the whole board.
 - **Ask AI (optional)** — right-click a note and the chain of notes leading into it becomes the prompt; the reply lands as new, connected notes. Off by default.
 - **Make it yours** — point it at an Obsidian `theme.css` for matching colors and fonts.
@@ -30,6 +31,8 @@ in your vault.
 - **Double-click** a note to edit it; **Esc** or **Cmd/Ctrl+Enter** when you're done.
 - **Drag from a note's edge** (the little dot) onto another note to connect them.
 - **Right-click** a note for actions (Ask AI, color…), or right-click empty space for canvas options like Auto-layout.
+- **Cmd/Ctrl+O** switches boards: pick your vault once (**Settings → Vault**, or "Open vault…" in the command palette) and it lists every canvas in it. Without a vault it's the ordinary open dialog.
+- **Cmd/Ctrl+Shift+P** opens the command palette; **Cmd/Ctrl+F** finds text on the board.
 - Open or create boards — and reach **Settings** — from the tray icon.
 
 ## Install

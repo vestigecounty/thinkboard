@@ -21,6 +21,7 @@ use super::{App, Message};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Field {
     Canvas,
+    Vault,
     SummonHotkey,
     DismissOnBackgroundClick,
     // Only surfaced in the UI on macOS (its Spaces are the only workspaces we
@@ -126,6 +127,11 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         "Canvas",
         path_line(Field::Canvas, app.draft(Field::Canvas)),
         "The board opened on launch. Restart to load a different one.",
+    ));
+    items.push(setting(
+        "Vault",
+        path_line(Field::Vault, app.draft(Field::Vault)),
+        "Your Obsidian vault folder. Cmd/Ctrl+O then lists every canvas in it; leave blank to open boards by dialog only.",
     ));
     items.push(hotkey_row(app, font, muted));
     items.push(setting(
@@ -619,6 +625,7 @@ pub(crate) fn is_number(field: Field) -> bool {
 pub(crate) fn config_text(config: &Config, field: Field) -> String {
     match field {
         Field::Canvas => config.canvas.clone(),
+        Field::Vault => config.vault.clone(),
         Field::SummonHotkey => config.summon_hotkey.clone(),
         Field::ThemeCss => config.theme_css.clone().unwrap_or_default(),
         Field::AiUrl => config.ai_url.clone(),
@@ -649,6 +656,7 @@ pub(crate) fn config_text(config: &Config, field: Field) -> String {
 pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
     match (field, value) {
         (Field::Canvas, Value::Text(s)) => config.canvas = s,
+        (Field::Vault, Value::Text(s)) => config.vault = s,
         (Field::SummonHotkey, Value::Text(s)) => config.summon_hotkey = s,
         (Field::ThemeCss, Value::Text(s)) => {
             config.theme_css = if s.trim().is_empty() { None } else { Some(s) };
@@ -843,19 +851,25 @@ impl App {
     /// dialog on the (main) update thread; Linux runs the async portal dialog on
     /// iced's runtime (its zbus backend needs one — iced is built with tokio).
     fn browse_for(&mut self, field: Field) -> Task<Message> {
+        // The vault is a folder; every other browsable setting names a file.
+        let folder = field == Field::Vault;
         #[cfg(not(target_os = "linux"))]
         {
-            let picked = rfd::FileDialog::new().pick_file();
+            let dialog = rfd::FileDialog::new();
+            let picked = if folder { dialog.pick_folder() } else { dialog.pick_file() };
             Task::done(Message::SettingsBrowsed(field, picked))
         }
         #[cfg(target_os = "linux")]
         {
             Task::perform(
-                async {
-                    rfd::AsyncFileDialog::new()
-                        .pick_file()
-                        .await
-                        .map(|handle| handle.path().to_path_buf())
+                async move {
+                    let dialog = rfd::AsyncFileDialog::new();
+                    let handle = if folder {
+                        dialog.pick_folder().await
+                    } else {
+                        dialog.pick_file().await
+                    };
+                    handle.map(|handle| handle.path().to_path_buf())
                 },
                 move |picked| Message::SettingsBrowsed(field, picked),
             )

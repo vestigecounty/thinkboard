@@ -13,6 +13,8 @@
 //! - [`raster`] — text bitmaps and semantic-zoom clusters
 //! - [`ai`] / [`ghosts`] — streamed answers and Copilot-style suggestions
 //! - [`canvas_file`] — opening, autosaving and reloading the `.canvas` file
+//! - [`vault`] — the Obsidian vault: finding its boards and switching between
+//!   them, over the [`picker`] shell the command palette also uses
 //! - [`search`] — the in-board find
 //! - [`settings`] / [`startup`] — the settings form and the launch/hotkey
 //!   plumbing, each of which also owns its `App` methods
@@ -49,6 +51,7 @@ mod command;
 mod edit;
 mod ghosts;
 mod history;
+mod picker;
 mod raster;
 mod search;
 mod settings;
@@ -58,6 +61,7 @@ mod sync;
 mod tray;
 #[cfg(test)]
 mod update_tests;
+mod vault;
 mod view;
 
 use ai::Ai;
@@ -325,9 +329,32 @@ pub(crate) enum Message {
     OpenCommandPalette,
     CloseCommandPalette,
     CommandPaletteInput(String),
-    CommandPaletteMove(i32),
+    CommandPaletteNav(picker::Nav),
+    /// The list was scrolled by hand; carries the new vertical offset.
+    CommandPaletteScrolled(f32),
     RunCommand(command::CommandId),
     RunSelectedCommand,
+
+    /// Vault browser (Cmd/Ctrl+O when a vault is set): the same panel over the
+    /// vault's canvases.
+    OpenVaultBrowser,
+    CloseVaultBrowser,
+    VaultBrowserInput(String),
+    VaultBrowserNav(picker::Nav),
+    VaultBrowserScrolled(f32),
+    /// A background vault walk finished: its canvases, and whether it stopped
+    /// early at the entry cap.
+    VaultScanned(Vec<thinkboard_core::vault::CanvasEntry>, bool),
+    /// Open a canvas from the browser — clicked, or the highlighted one (Enter).
+    OpenVaultCanvas(PathBuf),
+    OpenSelectedCanvas,
+    /// Cmd/Ctrl+O: the browser when a vault is set, the open dialog when not.
+    SwitchCanvas,
+    /// Pick the vault folder: the request, the dialog once the overlay has
+    /// hidden for it, and its answer.
+    ChooseVault,
+    OpenVaultDialog,
+    VaultChosen(Option<PathBuf>),
     /// Settings as an in-board modal (from the command palette): open / close.
     OpenSettingsOverlay,
     CloseSettingsOverlay,
@@ -481,7 +508,16 @@ struct App {
     search: Option<Search>,
     /// The command palette (Cmd/Ctrl+Shift+P), when open. Mutually exclusive
     /// with the find bar.
-    command_palette: Option<command::CommandPalette>,
+    command_palette: Option<picker::State>,
+    /// The vault browser (Cmd/Ctrl+O), when open. Shares the palette's shell
+    /// and is mutually exclusive with it.
+    vault_browser: Option<picker::State>,
+    /// The canvases the last vault walk found, newest first. Kept while the
+    /// browser is closed so reopening it is instant; a fresh walk replaces it.
+    vault_canvases: Vec<thinkboard_core::vault::CanvasEntry>,
+    /// A vault walk is in flight, so the browser can say so rather than look
+    /// like an empty vault.
+    vault_scanning: bool,
     /// The settings form rendered as an in-board modal (opened from the command
     /// palette), instead of the separate settings window (opened from the tray).
     settings_overlay: bool,
@@ -603,7 +639,9 @@ impl App {
             startup::Boot::Canvas(path) => {
                 let document =
                     CanvasDocument::load(&path).unwrap_or_else(|error| panic!("{error}"));
-                let base_path = canvas_file::vault_root(&path, &document);
+                let vault = (!config.vault.trim().is_empty())
+                    .then(|| PathBuf::from(config.vault.trim()));
+                let base_path = canvas_file::vault_root(&path, &document, vault.as_deref());
                 let file_mtime = sync::file_mtime(&path);
                 (document, path, base_path, file_mtime, false)
             }
@@ -721,6 +759,9 @@ impl App {
             settings_advanced_open: false,
             search: None,
             command_palette: None,
+            vault_browser: None,
+            vault_canvases: Vec::new(),
+            vault_scanning: false,
             settings_overlay: false,
             pending_board_create: None,
             hotkey_recording: false,
@@ -998,22 +1039,18 @@ impl App {
                 }
             }
             Message::BoardChosen { path, create } => {
-                let mut task = Task::none();
-                if let Some(path) = path {
-                    task = self.open_board(path, create);
-                }
-                // Re-summon the overlay we hid for the dialog: shows the newly
-                // opened board, or the scratch board again if cancelled.
-                if self.overlay && matches!(self.phase, Phase::Hidden) {
-                    task = task.chain(Task::done(Message::ToggleOverlay));
-                }
-                return task;
+                let task = match path {
+                    Some(path) => self.open_board(path, create),
+                    None => Task::none(),
+                };
+                return self.resummon_after_dialog(task);
             }
             Message::OpenDropped(path) => return self.open_board(path, false),
 
             // --- Find bar ---
             Message::OpenSearch => {
                 self.command_palette = None; // mutually exclusive
+                self.vault_browser = None;
                 if self.search.is_none() {
                     self.search = Some(Search {
                         query: String::new(),
@@ -1046,7 +1083,8 @@ impl App {
             // --- Command palette ---
             Message::OpenCommandPalette => {
                 self.search = None; // mutually exclusive
-                self.command_palette = Some(command::CommandPalette::default());
+                self.vault_browser = None;
+                self.command_palette = Some(picker::State::default());
                 return iced::advanced::widget::operate(
                     iced::advanced::widget::operation::focusable::focus(
                         command::COMMAND_INPUT.clone(),
@@ -1057,16 +1095,18 @@ impl App {
             Message::CommandPaletteInput(query) => {
                 if let Some(palette) = &mut self.command_palette {
                     palette.query = query;
-                    palette.selected = 0;
+                    palette.reset();
                 }
             }
-            Message::CommandPaletteMove(delta) => {
+            Message::CommandPaletteNav(nav) => {
                 if let Some(palette) = &mut self.command_palette {
                     let len = command::filtered(&palette.query).len();
-                    if len > 0 {
-                        palette.selected =
-                            (palette.selected as i32 + delta).rem_euclid(len as i32) as usize;
-                    }
+                    return picker::navigate(palette, nav, len, &command::COMMAND_LIST);
+                }
+            }
+            Message::CommandPaletteScrolled(offset) => {
+                if let Some(palette) = &mut self.command_palette {
+                    palette.offset = offset;
                 }
             }
             Message::RunCommand(id) => return self.run_command(id),
@@ -1081,6 +1121,42 @@ impl App {
                     return self.run_command(id);
                 }
             }
+
+            // --- Vault browser ---
+            Message::SwitchCanvas => return self.switch_canvas(),
+            Message::OpenVaultBrowser => return self.open_vault_browser(),
+            Message::CloseVaultBrowser => self.vault_browser = None,
+            Message::VaultBrowserInput(query) => {
+                if let Some(browser) = &mut self.vault_browser {
+                    browser.query = query;
+                    browser.reset();
+                }
+            }
+            Message::VaultBrowserNav(nav) => {
+                // Resolved before the browser is borrowed to move within it:
+                // the match count reads the canvas list on the same `self`.
+                let len = match &self.vault_browser {
+                    Some(browser) => self.vault_matches(&browser.query).len(),
+                    None => return Task::none(),
+                };
+                if let Some(browser) = &mut self.vault_browser {
+                    return picker::navigate(browser, nav, len, &vault::VAULT_LIST);
+                }
+            }
+            Message::VaultBrowserScrolled(offset) => {
+                if let Some(browser) = &mut self.vault_browser {
+                    browser.offset = offset;
+                }
+            }
+            Message::VaultScanned(entries, truncated) => self.vault_scanned(entries, truncated),
+            Message::OpenVaultCanvas(path) => {
+                self.vault_browser = None;
+                return self.open_canvas(path);
+            }
+            Message::OpenSelectedCanvas => return self.open_selected_canvas(),
+            Message::ChooseVault => return self.choose_vault(),
+            Message::OpenVaultDialog => return self.vault_dialog(),
+            Message::VaultChosen(path) => return self.vault_chosen(path),
 
             // --- Settings ---
             Message::OpenSettingsOverlay => {
@@ -1547,6 +1623,16 @@ impl App {
         self.choose_board(create)
     }
 
+    /// Brings the overlay back after a native dialog we hid it for, chaining
+    /// onto whatever that dialog's answer set in motion. Shows the newly opened
+    /// board — or the one that was already there, if it was cancelled.
+    fn resummon_after_dialog(&mut self, task: Task<Message>) -> Task<Message> {
+        if self.overlay && matches!(self.phase, Phase::Hidden) {
+            return task.chain(Task::done(Message::ToggleOverlay));
+        }
+        task
+    }
+
     /// Runs a command-palette entry: closes the palette, then dispatches the
     /// action as its `Message`. Position-needing commands (paste, add node)
     /// target the viewport center.
@@ -1557,6 +1643,8 @@ impl App {
         let message = match id {
             CommandId::NewBoard => Message::CanvasAction("new_board".to_owned()),
             CommandId::OpenBoard => Message::CanvasAction("open_board".to_owned()),
+            CommandId::OpenVault => Message::ChooseVault,
+            CommandId::SwitchCanvas => Message::SwitchCanvas,
             CommandId::FindOnBoard => Message::OpenSearch,
             // From the palette, settings open in-board (the tray still uses the
             // separate window, which works while the board is hidden).
@@ -1871,6 +1959,10 @@ impl App {
         // While the command palette is open, arrows/Esc drive it.
         if self.command_palette.is_some() {
             subscriptions.push(iced::event::listen_with(command::key_event));
+        }
+        // Same for the vault browser, which shares the palette's shell.
+        if self.vault_browser.is_some() {
+            subscriptions.push(iced::event::listen_with(vault::key_event));
         }
         // Esc closes the in-board settings modal.
         if self.settings_overlay {

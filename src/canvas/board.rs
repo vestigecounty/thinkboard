@@ -606,6 +606,20 @@ impl canvas::Program<Message> for Board<'_> {
             {
                 Some(canvas::Action::publish(Message::OpenCommandPalette).and_capture())
             }
+            // Cmd/Ctrl+O: switch boards — the vault browser where a vault is
+            // configured, the ordinary open dialog where one isn't.
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key,
+                physical_key,
+                modifiers,
+                ..
+            }) if self.editing.is_none()
+                && modifiers.command()
+                && !modifiers.shift()
+                && key.to_latin(*physical_key) == Some('o') =>
+            {
+                Some(canvas::Action::publish(Message::SwitchCanvas).and_capture())
+            }
             Event::Mouse(mouse_event) => {
                 let position = cursor
                     .position()

@@ -86,6 +86,8 @@ rasterizer) stays desktop-side.
 | `raster` | text bitmaps and semantic-zoom clusters (both computed off-thread) |
 | `ai` / `ghosts` | streamed answers; Copilot-style suggestion cards |
 | `canvas_file` | opening, autosaving, reloading the `.canvas` file; vault roots |
+| `picker` | the panel shell shared by the command palette and the vault browser |
+| `vault` | finding the vault's boards and switching between them |
 | `search`, `clipboard`, `command`, `settings`, `startup`, `tray`, `sync` | as named |
 
 Related fields are grouped into sub-structs (`Ai`, `Ghosts`, `Rasters`,
@@ -122,6 +124,38 @@ rather than taking it from `view`. Both matter: a cursor move doesn't invalidate
 the scene cache, and the editor only publishes its scroll while laying out —
 after `view` has built the widget but before it draws. Reading it in `view` is
 always one update stale.
+
+## The vault
+
+A vault is a **scope, not a mode**. `config.vault` says where to look for
+boards; `config.canvas` still names the one that's open. Every pre-existing way
+in — the open dialog, drag-and-drop, the CLI path — works on a canvas anywhere,
+with or without a vault set. Don't turn "has a vault" into a branch that
+disables the rest.
+
+Setting one does change `canvas_file::vault_root`: an explicit vault wins over
+the `.obsidian` walk-up and the image-path inference, but only for canvases
+*inside* it. A board opened from elsewhere still resolves its own root, so
+configuring a vault can't misattribute one that has nothing to do with it.
+
+`thinkboard_core::vault` holds the walk and the ranking (name first, the
+vault-relative path at a penalty — the same title-then-keywords shape the
+command palette uses). The walk skips dot-directories, so `.obsidian` and
+`.trash` never appear as boards, and it doesn't follow a symlinked directory,
+which is what stops a link back to an ancestor looping forever.
+
+**Nothing watches the vault.** `sync` deliberately watches one file and states
+that a large vault isn't touched; re-walking one on a timer would undo that. The
+browser instead shows the last scan immediately and runs a fresh one behind it,
+which is also why reopening it is instant.
+
+`picker` is the shell both it and the command palette draw: input, rows,
+keyboard nav. Rows are a **fixed height applied to the row**, not assumed of it
+— iced reports a scroll position but won't say where a given child landed, so
+keeping the highlight on screen is arithmetic over that constant, and the two
+must not drift. Panels supply their own rows and messages; a subscription
+handler is a bare `fn` and can't capture them, so `picker::nav_key` returns a
+`Nav` that each module maps onto its own message.
 
 ## Obsidian compatibility
 
