@@ -225,7 +225,7 @@ impl Default for Config {
             ai_api_keys: BTreeMap::new(),
             ai_api_key: String::new(),
             max_ai_nodes: 6,
-            ai_trigger_color: "3".to_owned(), // yellow
+            ai_trigger_color: "0".to_owned(), // uncolored
             ai_node_color: "6".to_owned(),    // purple
             ai_completions: false,
             ai_thinking: false,
@@ -324,7 +324,7 @@ impl Config {
         self.max_ai_nodes = self.max_ai_nodes.clamp(1, 50);
         // AI tint colors: an Obsidian preset "0"–"6" ("0" = none), else default.
         for (code, default) in [
-            (&mut self.ai_trigger_color, "3"),
+            (&mut self.ai_trigger_color, "0"),
             (&mut self.ai_node_color, "6"),
         ] {
             if !matches!(code.as_str(), "0" | "1" | "2" | "3" | "4" | "5" | "6") {

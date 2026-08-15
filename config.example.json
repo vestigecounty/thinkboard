@@ -42,7 +42,7 @@
     "https://api.fireworks.ai/inference/v1": ""
   },
   "max_ai_nodes": 6,
-  "ai_trigger_color": "3",
+  "ai_trigger_color": "0",
   "ai_node_color": "6",
   "ai_completions": false,
   "ai_thinking": false
