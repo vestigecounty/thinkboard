@@ -22,6 +22,7 @@ use iced::{Element, Task};
 
 use super::picker::{self, Row, Shell};
 use super::{App, Message};
+use crate::canvas::text_raster;
 use thinkboard_core::vault;
 
 /// Focus target for the browser's text input.
@@ -191,12 +192,85 @@ impl App {
         // so re-resolve it — the board's images may have been unresolvable
         // until now (a vault copied without its `.obsidian` folder).
         self.rebase_on_vault();
+        let theme = self.adopt_vault_theme();
         // Summon the board back *before* opening the browser: the browser
         // focuses its input, and on Linux the re-summon builds a whole new
         // window (hiding there means closing), so focusing first would aim at
         // one that's on its way out.
-        self.resummon_after_dialog(Task::none())
-            .chain(Task::done(Message::OpenVaultBrowser))
+        Task::batch([
+            theme,
+            self.resummon_after_dialog(Task::none())
+                .chain(Task::done(Message::OpenVaultBrowser)),
+        ])
+    }
+
+    /// Adopts the vault's active Obsidian theme, if it has one and the current
+    /// choice is ours to replace, and applies it without a restart.
+    pub(super) fn adopt_vault_theme(&mut self) -> Task<Message> {
+        if !self.config.adopt_vault_theme() {
+            return Task::none();
+        }
+        self.persist_config();
+        self.settings_drafts.insert(
+            super::settings::Field::ThemeCss,
+            self.config.theme_css.clone().unwrap_or_default(),
+        );
+        self.apply_theme_css()
+    }
+
+    /// Rebuilds the live theme from `config.theme_css` and redraws everything
+    /// that baked the old colours in.
+    ///
+    /// Colours and font *names* take effect immediately. Fonts the theme
+    /// embeds as base64 WOFF2 have to reach two separate font systems: the
+    /// rasterizer's database, which [`text_raster::add_embedded_fonts`] loads
+    /// into directly, and iced's, which takes them as a task. Until both land,
+    /// text falls back to the system face rather than showing nothing.
+    pub(super) fn apply_theme_css(&mut self) -> Task<Message> {
+        let css = self
+            .config
+            .theme_css
+            .as_deref()
+            .and_then(|path| match std::fs::read_to_string(path) {
+                Ok(css) => Some(css),
+                Err(error) => {
+                    eprintln!("theme: could not read {path} ({error})");
+                    None
+                }
+            });
+
+        let (mut theme, fonts) = match &css {
+            Some(css) => {
+                let theme = crate::theme::Theme::from_css(css);
+                let mut fonts = crate::theme::embedded_fonts(css);
+                fonts.extend(crate::theme::synth_weight_faces(
+                    &fonts,
+                    &[theme.weight_normal, theme.weight_bold],
+                ));
+                (theme, fonts)
+            }
+            // No theme (or an unreadable one): back to the built-in palette.
+            None => (crate::theme::Theme::default(), Vec::new()),
+        };
+        crate::theme::resolve_embedded_names(&mut theme, &fonts);
+
+        let loads: Vec<Task<Message>> = fonts
+            .iter()
+            .map(|data| iced::font::load(data.clone()).discard())
+            .collect();
+        text_raster::add_embedded_fonts(fonts);
+
+        self.theme = theme;
+        // Every bitmap on the board has the old colours baked into it, and the
+        // cluster labels with them.
+        self.rasters.clear();
+        self.clusters.snapshots.clear();
+        self.cache.clear();
+        Task::batch(
+            loads
+                .into_iter()
+                .chain([self.refresh_snapshots(), self.schedule_recluster()]),
+        )
     }
 
     /// Re-resolves the open board's base path now that the vault changed, and

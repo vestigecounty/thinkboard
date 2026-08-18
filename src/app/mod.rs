@@ -611,7 +611,16 @@ struct Init {
 
 impl App {
     fn new(boot: startup::Boot) -> (Self, Task<Message>) {
-        let config = config::Config::load(config_path_arg().as_deref());
+        let mut config = config::Config::load(config_path_arg().as_deref());
+        // Follow the vault's Obsidian theme, and remember it — so a theme
+        // switched in Obsidian is picked up here on the next launch rather than
+        // leaving `theme_css` pointing at the one that was set when the vault
+        // was chosen. `startup::run` resolves this identically before
+        // registering the theme's fonts with the builder; the write is here
+        // because that pass must not touch the user's config file.
+        if config.adopt_vault_theme() {
+            config.save(config_path_arg().as_deref());
+        }
         let windowed = is_windowed(&config);
         // Register the global summon hotkey, keeping the manager so it can be
         // re-registered when the setting changes (rather than on restart). Skipped

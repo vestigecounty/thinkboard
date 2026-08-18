@@ -131,7 +131,7 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     items.push(setting(
         "Vault",
         path_line(Field::Vault, app.draft(Field::Vault)),
-        "Your Obsidian vault folder. Cmd/Ctrl+O then lists every canvas in it; leave blank to open boards by dialog only.",
+        "Your Obsidian vault folder. Cmd/Ctrl+O then lists every canvas in it, and the board follows the vault's Obsidian theme. Leave blank to open boards by dialog only.",
     ));
     items.push(hotkey_row(app, font, muted));
     items.push(setting(
@@ -165,7 +165,7 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     items.push(setting(
         "Theme CSS",
         path_line(Field::ThemeCss, app.draft(Field::ThemeCss)),
-        "An Obsidian theme.css to read node colors and fonts from. Restart to apply.",
+        "An Obsidian theme.css to read node colors and fonts from. Set a vault above and this follows whichever theme Obsidian is using; pick a file here to override that.",
     ));
     items.push(setting(
         "Center node text",
@@ -828,6 +828,10 @@ impl App {
             Field::RasterizeText | Field::CenterNodeText => {
                 Task::batch([self.refresh_snapshots(), self.schedule_recluster()])
             }
+            // A theme now swaps in place rather than waiting for a restart.
+            Field::ThemeCss => self.apply_theme_css(),
+            // Pointing at a different vault means a different Obsidian theme.
+            Field::Vault => self.adopt_vault_theme(),
             // Arm or disarm the trackpad tap immediately (we're on the main
             // thread here). The subscription registers the handler separately.
             Field::SummonGesture => {

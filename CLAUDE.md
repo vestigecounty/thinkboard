@@ -149,6 +149,32 @@ that a large vault isn't touched; re-walking one on a timer would undo that. The
 browser instead shows the last scan immediately and runs a fresh one behind it,
 which is also why reopening it is instant.
 
+**The vault also carries the theme.** Obsidian names its active theme in
+`.obsidian/appearance.json` (`cssTheme`) and keeps it at
+`.obsidian/themes/<name>/theme.css` — a path we can derive rather than ask the
+user to hunt for. `Config::adopt_vault_theme` resolves it at startup and
+whenever the vault changes, writing the result into `theme_css`.
+
+Two rules make that safe to run unattended. A `theme_css` the user picked *by
+hand* is never overwritten — only one that's empty or that we resolved from
+this vault ourselves (`vault::is_vault_theme`) is adoptable. And an empty
+`cssTheme` is Obsidian's own default, which we have no CSS for, so it clears
+`theme_css` back to the built-in palette rather than keeping a stale theme.
+
+It resolves in **two places that must agree**: `startup::run`, before the iced
+builder registers the theme's embedded fonts, and `App::new`, which is where
+the result is persisted (the startup pass must not write the user's config).
+Both call the same function on a freshly loaded config, so they can't diverge.
+
+Applying a theme is live (`App::apply_theme_css`) — colours and font names take
+effect at once, and every bitmap is dropped because the old colours are baked
+into it. Embedded WOFF2 faces have to reach *two* font systems: the
+rasterizer's database via `text_raster::add_embedded_fonts`, and iced's via
+`font::load`. `set_embedded_fonts` only works before the database is built, so
+a runtime swap must use the other entry point — which also clears the layout
+and measurement caches, since their keys carry text and size but not the face
+those were shaped with.
+
 `picker` is the shell both it and the command palette draw: input, rows,
 keyboard nav. Rows are a **fixed height applied to the row**, not assumed of it
 — iced reports a scroll position but won't say where a given child landed, so

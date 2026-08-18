@@ -135,7 +135,10 @@ pub(crate) fn run() -> iced::Result {
     crate::platform::kill_previous_instances();
 
     // Loaded again in App::new; read here for the hotkey and window flags.
-    let config = crate::config::Config::load(config_path_arg().as_deref());
+    let mut config = crate::config::Config::load(config_path_arg().as_deref());
+    // Resolve the vault's theme *before* the builder below registers its fonts,
+    // and identically to App::new's own resolution, so both agree on the file.
+    config.adopt_vault_theme();
 
     // What to open: CLI arg > configured file > the embedded scratch board.
     // First-run (no configured canvas) lands on the scratch board, whose

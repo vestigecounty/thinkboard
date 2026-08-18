@@ -131,6 +131,29 @@ pub fn set_embedded_fonts(fonts: Vec<Vec<u8>>) {
     *EMBEDDED_FONTS.lock().unwrap() = Some(fonts);
 }
 
+/// Adds theme fonts to the font database *after* it has been built — a theme
+/// swapped while the app is running, rather than one read at startup.
+///
+/// [`set_embedded_fonts`] only works before the first [`with_raster`], since
+/// that's when the database is assembled. This takes the other path and loads
+/// straight into the live database, then drops the layout and measurement
+/// caches: both are keyed by text and size but shaped with whatever faces were
+/// resolvable at the time, so entries from before the swap would keep the old
+/// typeface on screen.
+pub fn add_embedded_fonts(fonts: Vec<Vec<u8>>) {
+    if fonts.is_empty() {
+        clear_caches(); // the family *names* may still have changed
+        return;
+    }
+    with_raster(|raster| {
+        let db = raster.font_system.db_mut();
+        for data in fonts {
+            db.load_font_data(data);
+        }
+    });
+    clear_caches();
+}
+
 fn with_raster<R>(f: impl FnOnce(&mut Raster) -> R) -> R {
     let mut guard = RASTER.lock().unwrap();
     let raster = guard.get_or_insert_with(|| {
@@ -521,12 +544,16 @@ static MEASURE_CACHE: Mutex<Option<MeasureCache>> = Mutex::new(None);
 
 /// Empties the layout and measurement caches.
 ///
-/// Nothing in the app calls this — both caches are self-capping. It exists so
-/// benchmarks can measure the *cold* cost of a text path, which is what a board
-/// pays the first time it lays out and what dominates a recluster (font fitting
-/// binary-searches ~22 distinct sizes per cluster, none of which can hit a
-/// cache entry left by another). Measuring only the warm path would report the
-/// cost of a hash lookup and call it text layout.
+/// Both are self-capping, so the app only calls this when the *fonts* change
+/// under them ([`add_embedded_fonts`]): the keys carry text and size but not
+/// the typeface those were shaped with, so a swapped theme has to invalidate
+/// them wholesale or old entries keep drawing the old face.
+///
+/// It also exists for benchmarks, which measure the *cold* cost of a text path
+/// — what a board pays the first time it lays out, and what dominates a
+/// recluster (font fitting binary-searches ~22 distinct sizes per cluster, none
+/// of which can hit a cache entry left by another). Measuring only the warm
+/// path would report the cost of a hash lookup and call it text layout.
 pub fn clear_caches() {
     *LAYOUT_CACHE.lock().unwrap() = None;
     *MEASURE_CACHE.lock().unwrap() = None;

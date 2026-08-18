@@ -22,7 +22,7 @@ in your vault.
 - **Your whole vault** — point it at your Obsidian vault and **Cmd/Ctrl+O** lists every board in it, newest first, with fuzzy search by name. Boards from anywhere else still open by dialog or drag-and-drop.
 - **Fast to build** — create notes, drag from a note's edge to connect them, double-click to edit Markdown, and auto-layout to tidy the whole board.
 - **Ask AI (optional)** — right-click a note and the chain of notes leading into it becomes the prompt; the reply lands as new, connected notes. Off by default.
-- **Make it yours** — point it at an Obsidian `theme.css` for matching colors and fonts.
+- **Make it yours** — set your vault and the board takes on whichever theme Obsidian is using, colors and fonts included, switching live when you switch it there. Or point at a `theme.css` directly.
 - **macOS niceties** — pinch-to-zoom, plus an optional four-finger-swipe-down summon gesture.
 
 ## Quick start

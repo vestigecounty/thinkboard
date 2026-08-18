@@ -1140,3 +1140,130 @@ fn switch_canvas_is_only_offered_once_there_is_a_vault() {
     let app = app_with_vault(&["Inbox.canvas"]);
     assert!(command::CommandId::SwitchCanvas.is_enabled(&app));
 }
+
+// --- Following the vault's Obsidian theme ---
+
+/// A throwaway vault whose `.obsidian` config names `theme` as the active one.
+struct ThemedVault(PathBuf);
+
+impl ThemedVault {
+    fn new(tag: &str, css_theme: &str, install: bool) -> Self {
+        let root = std::env::temp_dir().join(format!("tb-theme-{}-{tag}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(root.join(".obsidian")).unwrap();
+        std::fs::write(
+            root.join(".obsidian/appearance.json"),
+            format!(r#"{{"theme":"obsidian","cssTheme":"{css_theme}"}}"#),
+        )
+        .unwrap();
+        if install {
+            let dir = root.join(".obsidian/themes").join(css_theme);
+            std::fs::create_dir_all(&dir).unwrap();
+            // A theme narrow enough to check it was actually read.
+            std::fs::write(dir.join("theme.css"), ".theme-dark { --text-normal: #ff0000; }").unwrap();
+        }
+        ThemedVault(root)
+    }
+
+    fn theme_path(&self, name: &str) -> String {
+        self.0
+            .join(".obsidian/themes")
+            .join(name)
+            .join("theme.css")
+            .to_string_lossy()
+            .into_owned()
+    }
+}
+
+impl Drop for ThemedVault {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+/// A default config pointed at `vault`, with `theme_css` as given.
+fn config_for(vault: &ThemedVault, theme_css: Option<&str>) -> config::Config {
+    config::Config {
+        vault: vault.0.to_string_lossy().into_owned(),
+        theme_css: theme_css.map(str::to_owned),
+        ..config::Config::default()
+    }
+}
+
+#[test]
+fn setting_a_vault_adopts_the_theme_obsidian_is_using() {
+    let vault = ThemedVault::new("adopt", "Things", true);
+    let mut config = config_for(&vault, None);
+
+    assert!(config.adopt_vault_theme(), "should have found a theme");
+    assert_eq!(config.theme_css, Some(vault.theme_path("Things")));
+    // Idempotent: nothing changed the second time, so nothing to persist.
+    assert!(!config.adopt_vault_theme());
+}
+
+#[test]
+fn a_hand_picked_theme_survives_the_vault() {
+    let vault = ThemedVault::new("manual", "Things", true);
+    // Someone deliberately pointed at a CSS file of their own. The vault's
+    // theme must not quietly replace it.
+    let mut config = config_for(&vault, Some("/elsewhere/mine.css"));
+
+    assert!(!config.adopt_vault_theme());
+    assert_eq!(config.theme_css.as_deref(), Some("/elsewhere/mine.css"));
+}
+
+#[test]
+fn a_theme_cleared_in_obsidian_is_cleared_here_too() {
+    // Obsidian records its own default theme as an empty `cssTheme`. We have no
+    // CSS for it, so the app goes back to its built-in palette rather than
+    // keeping the theme that was set before.
+    let vault = ThemedVault::new("cleared", "", false);
+    let previous = vault.theme_path("Things");
+    let mut config = config_for(&vault, Some(&previous));
+
+    assert!(config.adopt_vault_theme());
+    assert_eq!(config.theme_css, None);
+}
+
+#[test]
+fn a_theme_named_but_not_installed_is_not_adopted() {
+    let vault = ThemedVault::new("missing", "Nonexistent", false);
+    let mut config = config_for(&vault, None);
+
+    assert!(!config.adopt_vault_theme());
+    assert_eq!(config.theme_css, None);
+}
+
+#[test]
+fn no_vault_means_no_opinion_about_the_theme() {
+    let mut config = config::Config {
+        theme_css: Some("/somewhere/theme.css".to_owned()),
+        ..config::Config::default()
+    };
+    assert!(!config.adopt_vault_theme());
+    assert_eq!(config.theme_css.as_deref(), Some("/somewhere/theme.css"));
+}
+
+#[test]
+fn applying_a_theme_recolours_the_board_without_a_restart() {
+    let vault = ThemedVault::new("live", "Things", true);
+    let mut app = app_with(vec![text_node("a", "hello")], Vec::new());
+    // Stand in a bitmap, as a settled board would have for every card.
+    app.rasters.text.insert(
+        0,
+        text_raster::snapshot_markdown(
+            "hello", 200.0, 100.0, 180.0, 17.0, app.theme, false, 1.0,
+        )
+        .expect("a bitmap for the card"),
+    );
+    let before = app.theme.text;
+
+    app.config.vault = vault.0.to_string_lossy().into_owned();
+    let _ = app.adopt_vault_theme();
+
+    assert_eq!(app.config.theme_css, Some(vault.theme_path("Things")));
+    assert_ne!(app.theme.text, before, "the theme's --text-normal should be live");
+    assert_eq!(app.theme.text, iced::Color::from_rgb8(0xff, 0x00, 0x00));
+    // The bitmaps held the old colours, so they can't survive the swap.
+    assert!(app.rasters.text.is_empty());
+}

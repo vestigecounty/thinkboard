@@ -129,6 +129,42 @@ pub fn scan(root: &Path) -> Scan {
     Scan { entries, truncated }
 }
 
+/// The `theme.css` of the theme Obsidian is currently set to in this vault.
+///
+/// Obsidian records the choice in `.obsidian/appearance.json` as `cssTheme`,
+/// and keeps each installed theme in `.obsidian/themes/<name>/theme.css`. So
+/// the file the app already knows how to read is sitting at a path we can
+/// derive, rather than one the user has to go and find.
+///
+/// `None` when there's no vault config, when `cssTheme` is absent or empty
+/// (Obsidian's own default theme, which we have no CSS for and shouldn't
+/// invent one for), or when the named theme isn't installed.
+pub fn active_theme(root: &Path) -> Option<PathBuf> {
+    let config = root.join(".obsidian");
+    let appearance = std::fs::read_to_string(config.join("appearance.json")).ok()?;
+    let name = serde_json::from_str::<serde_json::Value>(&appearance)
+        .ok()?
+        .get("cssTheme")?
+        .as_str()?
+        .trim()
+        .to_owned();
+    if name.is_empty() {
+        return None;
+    }
+    let css = config.join("themes").join(name).join("theme.css");
+    css.is_file().then_some(css)
+}
+
+/// Whether `path` is a theme we resolved from `vault` ourselves, rather than
+/// one the user pointed at by hand.
+///
+/// The difference decides whether re-reading the vault may overwrite it: a
+/// theme we adopted should track what Obsidian is set to, and one the user
+/// chose deliberately should not be taken away from them.
+pub fn is_vault_theme(path: &Path, vault: &Path) -> bool {
+    path.starts_with(vault.join(".obsidian").join("themes"))
+}
+
 /// Whether a file name is a canvas we can open (case-insensitive, like the
 /// drag-and-drop filter).
 fn is_canvas(name: &str) -> bool {
@@ -187,6 +223,7 @@ mod tests {
 
     /// A throwaway directory tree, removed when the test ends.
     struct Temp(PathBuf);
+
 
     impl Temp {
         fn new(tag: &str) -> Self {
@@ -251,6 +288,42 @@ mod tests {
             found.entries.iter().map(CanvasEntry::name).collect::<Vec<_>>(),
             ["New", "Old"]
         );
+    }
+
+    #[test]
+    fn the_active_theme_is_resolved_from_obsidians_own_config() {
+        let vault = Temp::new("theme");
+        vault.file(".obsidian/appearance.json");
+        std::fs::write(
+            vault.0.join(".obsidian/appearance.json"),
+            r#"{"accentColor":"","theme":"obsidian","cssTheme":"Things"}"#,
+        )
+        .unwrap();
+        // Named but not installed: nothing to read, so nothing to report.
+        assert_eq!(active_theme(&vault.0), None);
+
+        vault.file(".obsidian/themes/Things/theme.css");
+        let found = active_theme(&vault.0).expect("the installed theme");
+        assert!(found.ends_with(".obsidian/themes/Things/theme.css"), "{found:?}");
+        // And it's recognisable as ours rather than a hand-picked path.
+        assert!(is_vault_theme(&found, &vault.0));
+        assert!(!is_vault_theme(Path::new("/elsewhere/theme.css"), &vault.0));
+    }
+
+    #[test]
+    fn obsidians_default_theme_resolves_to_nothing() {
+        let vault = Temp::new("theme-default");
+        vault.file(".obsidian/appearance.json");
+        // An empty `cssTheme` is how Obsidian records "use my own default" —
+        // there is no CSS for it, so we keep the app's built-in colours rather
+        // than inventing an approximation.
+        std::fs::write(vault.0.join(".obsidian/appearance.json"), r#"{"cssTheme":""}"#).unwrap();
+        assert_eq!(active_theme(&vault.0), None);
+
+        // A vault Obsidian has never opened has no config at all.
+        let bare = Temp::new("theme-bare");
+        bare.file("Inbox.canvas");
+        assert_eq!(active_theme(&bare.0), None);
     }
 
     #[test]

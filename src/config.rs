@@ -347,6 +347,40 @@ enum Location {
 impl Config {
     /// Loads config from `explicit` (a `--config` argument) or the default
     /// location, creating the default file on first run.
+    /// Points `theme_css` at whatever theme Obsidian is currently set to in the
+    /// configured vault, returning whether that changed anything.
+    ///
+    /// This is the whole reason the vault setting helps here: the theme file
+    /// lives at a path derived from `.obsidian/appearance.json`, so it can be
+    /// found rather than hunted for, and re-found when it changes.
+    ///
+    /// **A hand-picked theme is never overwritten.** Only a `theme_css` that is
+    /// empty, or that we resolved from this vault ourselves, is adoptable — so
+    /// someone who deliberately pointed at a CSS file outside the vault keeps
+    /// it, and someone who never chose one gets their vault's automatically.
+    /// Clearing the theme in Obsidian clears ours too, by the same rule.
+    pub fn adopt_vault_theme(&mut self) -> bool {
+        let vault = self.vault.trim();
+        if vault.is_empty() {
+            return false;
+        }
+        let vault = Path::new(vault);
+        let adoptable = match self.theme_css.as_deref() {
+            None => true,
+            Some(current) => thinkboard_core::vault::is_vault_theme(Path::new(current), vault),
+        };
+        if !adoptable {
+            return false;
+        }
+        let resolved = thinkboard_core::vault::active_theme(vault)
+            .map(|path| path.to_string_lossy().into_owned());
+        if resolved == self.theme_css {
+            return false;
+        }
+        self.theme_css = resolved;
+        true
+    }
+
     pub fn load(explicit: Option<&str>) -> Self {
         match resolve_location(explicit) {
             Location::Explicit(path) => match std::fs::read_to_string(&path) {
