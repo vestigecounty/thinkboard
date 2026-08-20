@@ -415,7 +415,11 @@ impl Config {
     /// Persists the config back to its resolved location (for UI toggles like
     /// auto-layout). No-op when there's no writable location.
     pub fn save(&self, explicit: Option<&str>) {
-        match resolve_location(explicit) {
+        let location = resolve_location(explicit);
+        if !writable(&location) {
+            return;
+        }
+        match location {
             Location::Explicit(path) | Location::Default(path) => self.write(&path),
             Location::None => {}
         }
@@ -471,6 +475,20 @@ fn missing_keys(text: &str, config: &Config) -> bool {
     full.keys().any(|key| !on_disk.contains_key(key))
 }
 
+/// Whether a resolved location may be written to.
+///
+/// **The default location is off-limits from a test.** `App::persist_config`
+/// sits behind ordinary state transitions — opening a board, picking a vault,
+/// adopting its theme, flipping a setting — so any test that drives one would
+/// otherwise overwrite the developer's own `config.json` with whatever the test
+/// had built, and `cargo test` would silently take their canvas, vault and API
+/// keys with it. (It did. That is why this exists.)
+///
+/// A test that means to exercise saving passes an explicit path and still can.
+fn writable(location: &Location) -> bool {
+    !(cfg!(test) && matches!(location, Location::Default(_)))
+}
+
 fn resolve_location(explicit: Option<&str>) -> Location {
     if let Some(path) = explicit {
         return Location::Explicit(PathBuf::from(path));
@@ -497,6 +515,19 @@ fn config_base() -> Option<PathBuf> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn tests_can_never_write_the_real_config() {
+        use super::{Location, writable};
+        use std::path::PathBuf;
+        // The guard that stops `cargo test` from clobbering the developer's
+        // own settings. Under test the default location must be refused …
+        assert!(!writable(&Location::Default(PathBuf::from("/home/x/.config/thinkboard/config.json"))));
+        // … while an explicit path — which is how a test opts *in* — still works.
+        assert!(writable(&Location::Explicit(PathBuf::from("/tmp/throwaway.json"))));
+        // `None` isn't this function's business — it means there is nowhere to
+        // write at all, which `save` handles by doing nothing.
+    }
+
     use super::*;
 
     #[test]
