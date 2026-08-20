@@ -162,7 +162,14 @@ impl App {
         let editing = self.editing.as_ref().map(|editing| editing.index);
         let now = Instant::now();
         for (index, snapshot) in snapshots {
-            if editing == Some(index) {
+            // A node being edited, or holding a search hit, is drawn live — the
+            // first so the editor owns its text, the second because the
+            // highlight is painted by the live path and a bitmap has none baked
+            // in. `refresh_snapshots` won't *start* either, but a batch already
+            // in flight when the search began would land here and quietly put a
+            // bitmap back, leaving the hit unmarked until something else
+            // invalidated it.
+            if editing == Some(index) || self.is_search_match(index) {
                 continue;
             }
             if self.rasters.text.contains_key(&index) {

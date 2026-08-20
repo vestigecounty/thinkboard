@@ -21,6 +21,7 @@
   "auto_zoom_trigger": 0.5,
   "auto_zoom_level": 0.9,
 
+  "theme": "",
   "theme_css": null,
   "overlay_dim": 0.55,
   "center_node_text": true,

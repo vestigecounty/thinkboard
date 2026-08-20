@@ -22,6 +22,7 @@ use super::{App, Message};
 pub(crate) enum Field {
     Canvas,
     Vault,
+    Theme,
     SummonHotkey,
     DismissOnBackgroundClick,
     // Only surfaced in the UI on macOS (its Spaces are the only workspaces we
@@ -162,6 +163,11 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     ));
 
     items.push(header("Appearance"));
+    items.push(setting(
+        "Theme",
+        line(Field::Theme, app.draft(Field::Theme), "ThinkBoard Dark"),
+        "A built-in scheme, or one of your own in the themes folder beside this config. Cmd/Ctrl+Shift+P → \"Change theme\" shows them with a preview. Blank uses the default.",
+    ));
     items.push(setting(
         "Theme CSS",
         path_line(Field::ThemeCss, app.draft(Field::ThemeCss)),
@@ -626,6 +632,7 @@ pub(crate) fn config_text(config: &Config, field: Field) -> String {
     match field {
         Field::Canvas => config.canvas.clone(),
         Field::Vault => config.vault.clone(),
+        Field::Theme => config.theme.clone(),
         Field::SummonHotkey => config.summon_hotkey.clone(),
         Field::ThemeCss => config.theme_css.clone().unwrap_or_default(),
         Field::AiUrl => config.ai_url.clone(),
@@ -657,6 +664,7 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
     match (field, value) {
         (Field::Canvas, Value::Text(s)) => config.canvas = s,
         (Field::Vault, Value::Text(s)) => config.vault = s,
+        (Field::Theme, Value::Text(s)) => config.theme = s,
         (Field::SummonHotkey, Value::Text(s)) => config.summon_hotkey = s,
         (Field::ThemeCss, Value::Text(s)) => {
             config.theme_css = if s.trim().is_empty() { None } else { Some(s) };

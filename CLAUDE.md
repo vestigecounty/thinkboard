@@ -125,6 +125,21 @@ the scene cache, and the editor only publishes its scroll while laying out —
 after `view` has built the widget but before it draws. Reading it in `view` is
 always one update stale.
 
+## Drawing inside a clip
+
+**A mesh filled inside `frame.with_clip` is painted over by the parent's own
+fills, whatever the call order.** `paste` appends the child's meshes to the
+parent's mesh list, but the parent's fills sit in a buffer stack that isn't
+flushed into that list until `into_geometry` — so the card, drawn long before,
+lands *after* and covers them. Text escapes it: `text` is a separate list, drawn
+above every mesh.
+
+So anything filled for a card is drawn on the parent frame *before* the clip,
+clipped by arithmetic rather than by `with_clip` — which is what the node
+scrollbar thumb and `Board::draw_search_hits` both do. The failure is silent and
+looks like a colour bug: the search highlight's black ink drew on bare card for
+four rounds while its yellow fill went straight under the card.
+
 ## The vault
 
 A vault is a **scope, not a mode**. `config.vault` says where to look for
@@ -182,6 +197,72 @@ keeping the highlight on screen is arithmetic over that constant, and the two
 must not drift. Panels supply their own rows and messages; a subscription
 handler is a bare `fn` and can't capture them, so `picker::nav_key` returns a
 `Nav` that each module maps onto its own message.
+
+## Themes
+
+A theme is **data, not drawing**, so the format lives in `thinkboard_core::theme`
+and the desktop maps its `Rgba` onto `iced::Color` at the boundary — the same
+split as canvas colours. `src/themes/*.json` are compiled in; a file of the same
+name in `<config>/themes/` shadows one.
+
+**A theme is a patch.** Every section is optional and layers over the built-in
+default. That's forced by what produces themes: a base16 scheme is sixteen
+colours and no fonts, an Obsidian stylesheet is roles and no palette, a
+hand-edit is one line. Requiring completeness would make every importer invent
+values it has no opinion about.
+
+**The palette layer is why bundling is cheap.** Solarized, Nord, Dracula and
+several hundred others are published as sixteen-colour base16 schemes, so
+`theme::derive` maps those slots onto roles *once* and adopting a scheme is
+sixteen values. `colors` then overrides whatever the palette derived.
+
+**The mapping is contrast-aware, and has to be** — the conventional slots aren't
+dependable across ports, and the test in `theme_store` caught all three of
+these:
+
+- `base03` is comment-dim by design: 1.4–2.9 against a card. Never use it for
+  muted text.
+- `base04` is the convention instead, but several ports put a *surface* colour
+  there — Catppuccin's lands at 2.6. Where it fails, muted text steps back from
+  the body text until it reads.
+- Inline code is orange (`base09`) by convention, but Solarized's is 2.8. Where
+  it fails, the best of the warm-to-cool accents is used.
+
+Thresholds differ by role: 4.5 for body text, 3.0 for accents and links (what
+WCAG asks of large text and UI components). One threshold for everything would
+reject Solarized, whose low contrast is the point of it.
+
+Author and licence live in each theme file, which is where attribution belongs
+— the picker shows names only, and marks the one in use. The author is still a
+hidden search term, like the command palette's keywords.
+
+**The search highlight is deliberately not themed.** Highlighter yellow, orange
+for the current hit, black text — the convention a browser, an editor and a PDF
+reader all share, which is why it reads at a glance. Deriving it from a palette
+was tried and every theme got its own slightly weaker compromise.
+
+**A hit is only ever painted by the live text path**, so a matched node must
+not hold a bitmap: `refresh_snapshots` won't start one, and `snapshots_ready`
+drops one that was already in flight when the search began — without that second
+half the batch lands after the invalidation and quietly puts the highlight out.
+
+It's opaque, and `draw_markdown_live` splits each run on its hits so the glyphs
+over a fill are inked black rather than left in the card's own colour. That
+matters: a *translucent* wash can't work at all here, because a hit has to read
+against the card and leave the text on it legible, and for light text on a dark
+card those pull apart with no overlap — the wash needs luminance at most 0.12 to
+hold the text at 4.5:1 and at least 0.17 to reach 3:1 against the card. The old
+translucent marker sat in that gap at 2.4:1, with the current hit's text down at
+3.4:1. Black on yellow is 16:1, and the fill 9–13:1 against any card.
+
+**Preview is cheap because it drops bitmaps rather than rebuilding them.** A
+card with no bitmap draws its Markdown live, in whatever colours the theme now
+says — so the picker recolours and invalidates on each keypress and leaves the
+rasterizing until a theme is actually chosen. Clusters fall back the same way.
+
+Precedence is `config.theme` (by name) → `config.theme_css` (a stylesheet, which
+is what a vault's Obsidian theme feeds) → the built-in default, applied
+identically at startup and live so switching and relaunching agree.
 
 ## Obsidian compatibility
 

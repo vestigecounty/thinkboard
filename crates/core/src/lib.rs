@@ -16,4 +16,5 @@ pub mod model;
 pub mod search;
 pub mod snap;
 pub mod syntax;
+pub mod theme;
 pub mod vault;

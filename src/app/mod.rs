@@ -57,6 +57,8 @@ mod search;
 mod settings;
 mod startup;
 mod sync;
+mod theme_picker;
+mod theme_store;
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 mod tray;
 #[cfg(test)]
@@ -350,6 +352,17 @@ pub(crate) enum Message {
     OpenSelectedCanvas,
     /// Cmd/Ctrl+O: the browser when a vault is set, the open dialog when not.
     SwitchCanvas,
+    /// Theme picker (from the palette): the same panel over the themes, with
+    /// the board previewing whichever is highlighted.
+    OpenThemePicker,
+    CloseThemePicker,
+    ThemePickerInput(String),
+    ThemePickerNav(picker::Nav),
+    ThemePickerScrolled(f32),
+    /// Keep the highlighted theme (Enter), or a clicked one.
+    CommitTheme,
+    PickTheme(String),
+
     /// Pick the vault folder: the request, the dialog once the overlay has
     /// hidden for it, and its answer.
     ChooseVault,
@@ -512,6 +525,9 @@ struct App {
     /// The vault browser (Cmd/Ctrl+O), when open. Shares the palette's shell
     /// and is mutually exclusive with it.
     vault_browser: Option<picker::State>,
+    /// The theme picker, when open. Also shares the shell, and previews the
+    /// highlighted theme on the board beneath it.
+    theme_picker: Option<theme_picker::ThemePicker>,
     /// The canvases the last vault walk found, newest first. Kept while the
     /// browser is closed so reopening it is instant; a fresh walk replaces it.
     vault_canvases: Vec<thinkboard_core::vault::CanvasEntry>,
@@ -627,17 +643,21 @@ impl App {
         // entirely in windowed mode.
         let (hotkey_manager, registered_hotkey) =
             startup::register_summon_hotkey(&config.summon_hotkey, windowed);
-        // Read the theme CSS once for both its colors/font names and any fonts
-        // it embeds as base64 WOFF2.
-        let (mut theme, embedded_fonts) = match config.theme_css.as_deref() {
-            Some(path) => match std::fs::read_to_string(path) {
-                Ok(css) => (ColorTheme::from_css(&css), crate::theme::embedded_fonts(&css)),
-                Err(_) => {
-                    eprintln!("theme: could not read {path}");
-                    (ColorTheme::default(), Vec::new())
-                }
+        // A named theme wins. Failing that, the Obsidian stylesheet — read once
+        // for both its colors/font names and any fonts it embeds as base64
+        // WOFF2, which a named theme has no equivalent of.
+        let (mut theme, embedded_fonts) = match theme_store::resolve(&config) {
+            Some(theme) => (theme, Vec::new()),
+            None => match config.theme_css.as_deref() {
+                Some(path) => match std::fs::read_to_string(path) {
+                    Ok(css) => (ColorTheme::from_css(&css), crate::theme::embedded_fonts(&css)),
+                    Err(_) => {
+                        eprintln!("theme: could not read {path}");
+                        (ColorTheme::default(), Vec::new())
+                    }
+                },
+                None => (ColorTheme::default(), Vec::new()),
             },
-            None => (ColorTheme::default(), Vec::new()),
         };
         // Point the theme's font names at the embedded files' real family names.
         crate::theme::resolve_embedded_names(&mut theme, &embedded_fonts);
@@ -769,6 +789,7 @@ impl App {
             search: None,
             command_palette: None,
             vault_browser: None,
+            theme_picker: None,
             vault_canvases: Vec::new(),
             vault_scanning: false,
             settings_overlay: false,
@@ -1060,6 +1081,7 @@ impl App {
             Message::OpenSearch => {
                 self.command_palette = None; // mutually exclusive
                 self.vault_browser = None;
+                self.theme_picker = None;
                 if self.search.is_none() {
                     self.search = Some(Search {
                         query: String::new(),
@@ -1093,6 +1115,7 @@ impl App {
             Message::OpenCommandPalette => {
                 self.search = None; // mutually exclusive
                 self.vault_browser = None;
+                self.theme_picker = None;
                 self.command_palette = Some(picker::State::default());
                 return iced::advanced::widget::operate(
                     iced::advanced::widget::operation::focusable::focus(
@@ -1132,6 +1155,37 @@ impl App {
             }
 
             // --- Vault browser ---
+            // --- Theme picker ---
+            Message::OpenThemePicker => return self.open_theme_picker(),
+            Message::CloseThemePicker => return self.cancel_theme_picker(),
+            Message::ThemePickerInput(query) => {
+                if let Some(picker) = &mut self.theme_picker {
+                    picker.state.query = query;
+                    picker.state.reset();
+                }
+                return self.preview_highlighted();
+            }
+            Message::ThemePickerNav(nav) => {
+                let len = match &self.theme_picker {
+                    Some(picker) => self.theme_matches(&picker.state.query).len(),
+                    None => return Task::none(),
+                };
+                let scroll = match &mut self.theme_picker {
+                    Some(picker) => {
+                        picker::navigate(&mut picker.state, nav, len, &theme_picker::THEME_LIST)
+                    }
+                    None => Task::none(),
+                };
+                return Task::batch([scroll, self.preview_highlighted()]);
+            }
+            Message::ThemePickerScrolled(offset) => {
+                if let Some(picker) = &mut self.theme_picker {
+                    picker.state.offset = offset;
+                }
+            }
+            Message::CommitTheme => return self.commit_theme(),
+            Message::PickTheme(name) => return self.pick_theme(&name),
+
             Message::SwitchCanvas => return self.switch_canvas(),
             Message::OpenVaultBrowser => return self.open_vault_browser(),
             Message::CloseVaultBrowser => self.vault_browser = None,
@@ -1653,6 +1707,7 @@ impl App {
             CommandId::NewBoard => Message::CanvasAction("new_board".to_owned()),
             CommandId::OpenBoard => Message::CanvasAction("open_board".to_owned()),
             CommandId::OpenVault => Message::ChooseVault,
+            CommandId::ChooseTheme => Message::OpenThemePicker,
             CommandId::SwitchCanvas => Message::SwitchCanvas,
             CommandId::FindOnBoard => Message::OpenSearch,
             // From the palette, settings open in-board (the tray still uses the
@@ -1972,6 +2027,9 @@ impl App {
         // Same for the vault browser, which shares the palette's shell.
         if self.vault_browser.is_some() {
             subscriptions.push(iced::event::listen_with(vault::key_event));
+        }
+        if self.theme_picker.is_some() {
+            subscriptions.push(iced::event::listen_with(theme_picker::key_event));
         }
         // Esc closes the in-board settings modal.
         if self.settings_overlay {

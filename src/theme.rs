@@ -40,6 +40,14 @@ pub struct Theme {
     /// nearest 100. Themes like Primary render Inter at 450/750, not 400/700.
     pub weight_normal: u16,
     pub weight_bold: u16,
+
+    // --- Shape, rather than colour. World units; scaled by zoom at each use.
+    /// Corner radius of a card. Every card kind shares it.
+    pub card_radius: f32,
+    /// Corner radius of the shapes that *contain* cards — a group's frame, a
+    /// semantic-zoom cluster — rounded more generously so they read as
+    /// containers rather than as oversized cards.
+    pub frame_radius: f32,
 }
 
 impl Default for Theme {
@@ -64,6 +72,8 @@ impl Default for Theme {
             font_mono: None,
             weight_normal: 400,
             weight_bold: 700,
+            card_radius: 8.0,
+            frame_radius: 12.0,
         }
     }
 }
@@ -98,10 +108,68 @@ impl Theme {
         }
     }
 
+    /// Works out the values that depend on other values. Call after anything
+    /// that changes the theme's colours.
+    ///
+    /// Applies a resolved theme file over this one.
+    ///
+    /// Only what the file actually said: a theme is a patch, so anything it
+    /// left out keeps whatever this theme already had — which for a fresh load
+    /// is the built-in default.
+    pub fn apply_resolved(&mut self, resolved: &thinkboard_core::theme::Resolved) {
+        use crate::document::IntoColor;
+        let set = |slot: &mut Color, value: Option<thinkboard_core::color::Rgba>| {
+            if let Some(value) = value {
+                *slot = value.into_color();
+            }
+        };
+        set(&mut self.background, resolved.background);
+        set(&mut self.card_fill, resolved.card_fill);
+        set(&mut self.text, resolved.text);
+        set(&mut self.text_muted, resolved.text_muted);
+        set(&mut self.border, resolved.border);
+        set(&mut self.accent, resolved.accent);
+        set(&mut self.link, resolved.link);
+        set(&mut self.code, resolved.code);
+        set(&mut self.bold, resolved.bold);
+        set(&mut self.italic, resolved.italic);
+        if let Some(headings) = resolved.headings {
+            for (slot, value) in self.headings.iter_mut().zip(headings) {
+                *slot = value.into_color();
+            }
+        }
+
+        let m = &resolved.metrics;
+        // Clamped, not trusted: a theme is a file anyone can hand-edit, and a
+        // negative or enormous radius would corrupt every path on the board.
+        if let Some(radius) = m.card_radius {
+            self.card_radius = radius.clamp(0.0, 64.0);
+        }
+        if let Some(radius) = m.frame_radius {
+            self.frame_radius = radius.clamp(0.0, 64.0);
+        }
+
+        let f = &resolved.fonts;
+        if let Some(name) = &f.text {
+            self.font_text = Some(Box::leak(name.clone().into_boxed_str()));
+        }
+        if let Some(name) = &f.mono {
+            self.font_mono = Some(Box::leak(name.clone().into_boxed_str()));
+        }
+        if let Some(weight) = f.weight_normal {
+            self.weight_normal = snap_weight(weight);
+        }
+        if let Some(weight) = f.weight_bold {
+            self.weight_bold = snap_weight(weight);
+        }
+    }
+
     /// Reads overrides from an Obsidian `theme.css`, keeping the default for
     /// any color that's missing or not a plain value.
     pub fn from_css(css: &str) -> Self {
         let mut theme = Theme::default();
+        // (`settle` at the end: the search fill is derived from the card and
+        // text colours this is about to replace.)
         theme.apply(&dark_variables(css));
         // Font families are often declared on `body`/`:root`, not inside
         // `.theme-dark`, so scan the whole sheet for them. Themes usually declare
@@ -788,3 +856,4 @@ mod tests {
         assert_eq!(css_number(css, "--missing"), None);
     }
 }
+

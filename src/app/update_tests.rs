@@ -1267,3 +1267,125 @@ fn applying_a_theme_recolours_the_board_without_a_restart() {
     // The bitmaps held the old colours, so they can't survive the swap.
     assert!(app.rasters.text.is_empty());
 }
+
+// --- The theme picker ---
+
+#[test]
+fn the_picker_opens_on_the_theme_in_use() {
+    // So the first arrow press is a step from where you are, not a jump to the
+    // top of a list of twenty.
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.theme = "Nord".to_owned();
+    send(&mut app, Message::OpenThemePicker);
+    assert_eq!(app.highlighted_theme_name().as_deref(), Some("Nord"));
+}
+
+#[test]
+fn scrolling_the_picker_previews_on_the_board() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    // Stand in a bitmap, as a settled board has for every card.
+    app.rasters.text.insert(
+        0,
+        text_raster::snapshot_markdown("node a", 200.0, 100.0, 180.0, 17.0, app.theme, false, 1.0)
+            .expect("a bitmap"),
+    );
+    let before = app.theme.background;
+
+    send(&mut app, Message::OpenThemePicker);
+    send(&mut app, Message::ThemePickerNav(picker::Nav::Step(1)));
+    assert_ne!(app.theme.background, before, "the board should show the highlight");
+    // The bitmaps carried the old colours, so the preview drops them — which is
+    // also what makes it cheap enough to run on every keypress, since the cards
+    // fall back to drawing live.
+    assert!(app.rasters.text.is_empty());
+}
+
+#[test]
+fn dismissing_the_picker_puts_the_old_theme_back() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.theme = "Nord".to_owned();
+    // Bring the live theme in line with the config, as startup does — the two
+    // only disagree in a test that sets one without the other.
+    let _ = app.apply_theme_css();
+    let nord = app.theme.background;
+    send(&mut app, Message::OpenThemePicker);
+
+    send(&mut app, Message::ThemePickerNav(picker::Nav::Step(2)));
+    assert_ne!(app.theme.background, nord);
+
+    send(&mut app, Message::CloseThemePicker);
+    assert!(app.theme_picker.is_none());
+    assert_eq!(app.theme.background, nord, "Esc must undo the preview");
+    assert_eq!(app.config.theme, "Nord", "and not have written the previewed one");
+}
+
+#[test]
+fn choosing_a_theme_keeps_it() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    send(&mut app, Message::OpenThemePicker);
+    send(&mut app, Message::ThemePickerInput("solarized".to_owned()));
+    let previewed = app.theme.background;
+
+    send(&mut app, Message::CommitTheme);
+    assert!(app.theme_picker.is_none());
+    assert_eq!(app.config.theme, "Solarized Dark");
+    assert_eq!(app.theme.background, previewed, "what you saw is what you kept");
+}
+
+#[test]
+fn typing_narrows_the_themes_by_name_and_author() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    send(&mut app, Message::OpenThemePicker);
+    send(&mut app, Message::ThemePickerInput("gruv".to_owned()));
+    assert_eq!(app.highlighted_theme_name().as_deref(), Some("Gruvbox Dark"));
+
+    // Authors are searchable but never shown — hidden terms, like the command
+    // palette's keywords.
+    send(&mut app, Message::ThemePickerInput("schoonover".to_owned()));
+    assert_eq!(app.highlighted_theme_name().as_deref(), Some("Solarized Dark"));
+}
+
+#[test]
+fn only_one_panel_is_open_at_a_time_including_the_theme_picker() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    send(&mut app, Message::OpenThemePicker);
+    send(&mut app, Message::OpenCommandPalette);
+    assert!(app.theme_picker.is_none(), "the palette displaces the picker");
+
+    send(&mut app, Message::OpenThemePicker);
+    send(&mut app, Message::OpenSearch);
+    assert!(app.theme_picker.is_none(), "and so does the find bar");
+}
+
+#[test]
+fn a_raster_in_flight_cannot_un_highlight_a_search_hit() {
+    // Rasterizing runs in the background, so a batch started before the search
+    // lands after it. Installing its bitmap would hide the highlight, since
+    // only the live path paints one — and nothing would invalidate it again,
+    // so the hit would stay unmarked until the card happened to be redrawn for
+    // some other reason.
+    let mut app = app_with(vec![text_node("a", "ThinkBoard")], Vec::new());
+    send(&mut app, Message::OpenSearch);
+    send(&mut app, Message::SearchInput("hinkBo".to_owned()));
+    assert!(app.is_search_match(0), "the node should be a match");
+
+    let stale = text_raster::snapshot_markdown(
+        "ThinkBoard", 200.0, 100.0, 180.0, 17.0, app.theme, false, 1.0,
+    )
+    .expect("a bitmap");
+    send(&mut app, Message::SnapshotsReady(vec![(0, stale)]));
+
+    assert!(
+        !app.rasters.text.contains_key(&0) && !app.rasters.staging.contains_key(&0),
+        "a matched node must keep drawing live so its highlight shows"
+    );
+
+    // Once the search is over it rasterizes again like any other card.
+    send(&mut app, Message::CloseSearch);
+    let fresh = text_raster::snapshot_markdown(
+        "ThinkBoard", 200.0, 100.0, 180.0, 17.0, app.theme, false, 1.0,
+    )
+    .expect("a bitmap");
+    send(&mut app, Message::SnapshotsReady(vec![(0, fresh)]));
+    assert!(app.rasters.text.contains_key(&0));
+}

@@ -196,7 +196,8 @@ impl App {
             // so board shortcuts/scroll don't fire underneath them.
             modal: self.settings_overlay
                 || self.command_palette.is_some()
-                || self.vault_browser.is_some(),
+                || self.vault_browser.is_some()
+                || self.theme_picker.is_some(),
             show_fps: self.show_fps,
             spawning: &self.spawning,
             text_snapshots: &self.rasters.text,
@@ -208,7 +209,15 @@ impl App {
             hovered_edge: self.hovered_edge,
             search: self.search.as_ref().map(|s| board::SearchView {
                 query: &s.query,
-                current_node: s.matches.get(s.current).map(|m| m.node),
+                current_hit: s.matches.get(s.current).map(|current| {
+                    let ordinal = s
+                        .matches
+                        .iter()
+                        .filter(|m| m.node == current.node)
+                        .position(|m| m.start == current.start)
+                        .unwrap_or(0);
+                    (current.node, ordinal)
+                }),
             }),
             ai_flows: &self.ai.flows,
             ghosts: &self.ghosts.cards,
@@ -235,6 +244,9 @@ impl App {
         }
         if let Some(browser) = &self.vault_browser {
             layers = layers.push(self.vault_browser_view(browser));
+        }
+        if let Some(picker) = &self.theme_picker {
+            layers = layers.push(self.theme_picker_view(picker));
         }
         if self.settings_overlay {
             layers = layers.push(self.settings_overlay_view());

@@ -54,6 +54,25 @@ const SHIMMER_PULSES: f32 = 2.0;
 const SHIMMER_BREATHE: f32 = 1.7;
 /// Size (world px) of a ghost card's top-right "×" dismiss zone.
 const GHOST_X: f32 = 24.0;
+
+/// A search hit: highlighter yellow, and black on it. **Deliberately not
+/// themed.** A find highlight is a convention rather than a surface — it means
+/// the same thing in a browser, an editor and a PDF reader, and it reads at a
+/// glance because it's always these colours. Deriving it from a palette makes
+/// every theme's hit a slightly different, usually weaker, compromise.
+/// The hit being stepped through wears it at full strength; the rest are the
+/// same yellow dimmed. One hue at two brightnesses, because two *hues* (yellow
+/// against an orange) read as two kinds of highlight rather than one picked out
+/// of several, and an outline round the current hit lands unevenly on
+/// monospace, where the hit's box and its glyphs rarely line up.
+const SEARCH_HIT_CURRENT: Color = Color::from_rgb(1.0, 0.882, 0.302);
+/// 55% of it — and that is the floor, held by the same two thresholds
+/// `core::theme` uses. Black ink on this is 5.0:1 (body text wants 4.5) and it
+/// stands 3.4:1 off a card (a UI mark wants 3.0). At 50% the ink drops to
+/// 4.3:1 and the fill to 2.9:1, so a dim hit stops reading as a highlight and
+/// starts reading as a smudge on the card.
+const SEARCH_HIT: Color = Color::from_rgb(0.55, 0.485, 0.166);
+const SEARCH_INK: Color = Color::BLACK;
 /// Weight of a suggestion card's dashed outline, in world units.
 const GHOST_STROKE: f32 = 1.5;
 /// Line color for a hovered link — a muted blue.
@@ -70,17 +89,7 @@ const EDGE_HOVER_RING: Color = Color::from_rgb(0.114, 0.2625, 0.42);
 const EDGE_HIGHLIGHT_RING: Color = Color::from_rgb(0.06, 0.32, 0.54);
 const FONT_SIZE: f32 = 17.0;
 
-/// Corner radius of a card, in world units — scaled by zoom at each use.
-///
-/// Every card kind shares it: a note, an image and a group's members are all
-/// the same shape, and the steel shader cuts its silhouette to it too, so this
-/// being one number is what keeps them agreeing.
-const CARD_RADIUS: f32 = 8.0;
 
-/// Corner radius of the larger enclosing shapes — a group's frame and a
-/// semantic-zoom cluster — which are rounded more generously than a card so
-/// they read as containers rather than as oversized cards.
-const FRAME_RADIUS: f32 = 12.0;
 
 /// Outline weight of a *selected* card, and the floor it holds at when zoomed
 /// out. Shared by every card kind so a selection reads the same wherever it
@@ -144,14 +153,25 @@ fn cluster_anchor(
         })
 }
 
-/// A card's rounded-rect path at its screen rect.
-fn card_path(rect: Rectangle, zoom: f32) -> Path {
-    Path::rounded_rectangle(rect.position(), rect.size(), (CARD_RADIUS * zoom).into())
+/// Where a search hit falls inside one laid-out run: its byte range, and the
+/// logical offset and width of the glyphs it covers.
+///
+/// Both passes need it — the fill is drawn from the geometry, and the text is
+/// split on the byte range so the glyphs over the fill can change colour — so
+/// it's measured once and used twice.
+#[derive(Clone, Copy)]
+struct Hit {
+    start: usize,
+    end: usize,
+    x: f32,
+    width: f32,
 }
 
-/// The path of a group frame or cluster box. See [`FRAME_RADIUS`].
-fn frame_path(rect: Rectangle, zoom: f32) -> Path {
-    Path::rounded_rectangle(rect.position(), rect.size(), (FRAME_RADIUS * zoom).into())
+/// A rounded-rect path at a screen rect. The radius comes from the theme —
+/// `Board::card_radius` for a card, `frame_radius` for the shapes that contain
+/// cards — so shape is themeable alongside colour.
+fn rounded_path(rect: Rectangle, radius: f32) -> Path {
+    Path::rounded_rectangle(rect.position(), rect.size(), radius.into())
 }
 
 /// Outline weight for a selected card. See [`SELECTED_BORDER`].
@@ -198,8 +218,14 @@ pub fn cluster_opacity(zoom: f32) -> f32 {
 pub struct SearchView<'a> {
     /// The current query (case-insensitive substring, highlighted in note text).
     pub query: &'a str,
-    /// The node holding the current match, drawn with a stronger highlight.
-    pub current_node: Option<usize>,
+    /// Which hit is the one being stepped through: the node it's in, and how
+    /// many of that node's hits come before it.
+    ///
+    /// An ordinal rather than an offset because the two searches count in
+    /// different text — `find_matches` scans the node's raw Markdown, while the
+    /// highlight scans the laid-out runs, which have the markers stripped. The
+    /// *positions* don't correspond; the reading order does.
+    pub current_hit: Option<(usize, usize)>,
 }
 
 pub struct Board<'a> {
@@ -1610,6 +1636,16 @@ impl Board<'_> {
     }
 
     /// The active snap spacing (world px), or `0.0` when snap-to-grid is off.
+    /// A card's corner radius on screen: the theme's, at the current zoom.
+    fn card_radius(&self) -> f32 {
+        self.theme.card_radius * self.camera.zoom
+    }
+
+    /// The same for a group frame or a cluster box.
+    fn frame_radius(&self) -> f32 {
+        self.theme.frame_radius * self.camera.zoom
+    }
+
     fn snap_grid(&self) -> f32 {
         if self.config.snap_to_grid {
             self.config.snap_grid_size
@@ -2078,7 +2114,7 @@ impl Board<'_> {
 
         for (index, cluster) in self.clusters.iter().enumerate() {
             let rect = self.camera.rect_to_screen(cluster.bounds);
-            let card = frame_path(rect, zoom);
+            let card = rounded_path(rect, self.frame_radius());
 
             let fill = self.theme.card_fill;
             frame.fill(&card, Color { a: fill.a * alpha, ..fill });
@@ -2086,7 +2122,7 @@ impl Board<'_> {
             if let Some(id) = &cluster.image_id {
                 if let Some(handle) = self.images.get(id) {
                     let mut image = canvas::Image::new(handle.clone());
-                    image.border_radius = (FRAME_RADIUS * zoom).into();
+                    image.border_radius = self.frame_radius().into();
                     image.opacity = alpha;
                     frame.with_clip(rect, |clipped| {
                         clipped.draw_image(rect, image);
@@ -2102,7 +2138,11 @@ impl Board<'_> {
                     let mut image = canvas::Image::new(snapshot.handle.clone());
                     image.opacity = alpha;
                     frame.draw_image(rect, image);
-                } else if !self.config.rasterize_text {
+                } else {
+                    // No bitmap — because rasterizing is off, or because one is
+                    // being rebuilt after a theme change. Either way draw the
+                    // text live, as a node does in the same situation; a label
+                    // in the wrong font for a moment beats a blank card.
                     frame.with_clip(rect, |clipped| {
                         self.draw_markdown_live(clipped, rect, &cluster.text, cluster.font_size, wrap, alpha, None);
                     });
@@ -2140,7 +2180,7 @@ impl Board<'_> {
             let alpha = scene_alpha * self.spawn_factors(index).1;
 
             if node.node_kind() == NodeKind::Image {
-                let radius = CARD_RADIUS * zoom;
+                let radius = self.card_radius();
 
                 if let Some(handle) = self.images.get(&node.id) {
                     // The image shader masks corners with a rounded-box SDF
@@ -2149,7 +2189,7 @@ impl Board<'_> {
                     // with_clip(rect) makes clip bounds == image rect, so the
                     // radius actually rounds the visible corners.
                     let mut image = canvas::Image::new(handle.clone());
-                    image.border_radius = (FRAME_RADIUS * zoom).into();
+                    image.border_radius = self.frame_radius().into();
                     image.opacity = alpha;
                     frame.with_clip(rect, |clipped| {
                         clipped.draw_image(rect, image);
@@ -2186,7 +2226,7 @@ impl Board<'_> {
                 continue;
             }
 
-            let card = card_path(rect, zoom);
+            let card = rounded_path(rect, self.card_radius());
             let accent = node.palette_color().map(IntoColor::into_color);
 
             let fill = match accent {
@@ -2207,7 +2247,12 @@ impl Board<'_> {
             if self.editing != Some(index) {
                 let text = node.text.as_deref().unwrap_or("(no content)");
                 let wrap = crate::text_raster::card_text_wrap(node.width);
-                let highlight = self.search.as_ref().map(|s| (s.query, s.current_node == Some(index)));
+                let highlight = self.search.as_ref().map(|s| {
+                    let current = s.current_hit.and_then(|(node, ordinal)| {
+                        (node == index).then_some(ordinal)
+                    });
+                    (s.query, current)
+                });
 
                 // A scrollable node (scrollbars on, content overflows) draws the
                 // live text scrolled + clipped, with a draggable thumb — the raster
@@ -2219,6 +2264,17 @@ impl Board<'_> {
                 }).flatten();
 
                 if let Some((thumb, scroll)) = scrollbar {
+                    // Before the clip: a clipped frame's fills end up beneath
+                    // the card's own. See `draw_search_hits`.
+                    let scrolled_rect = Rectangle {
+                        x: rect.x,
+                        y: rect.y + (NODE_TEXT_PAD_Y / 2.0 - scroll) * zoom,
+                        width: rect.width,
+                        height: 0.0,
+                    };
+                    self.draw_search_hits(
+                        frame, scrolled_rect, text, FONT_SIZE, wrap, alpha, highlight,
+                    );
                     frame.with_clip(rect, |clipped| {
                         // Top-align (height 0 zeroes the layout's vertical centering)
                         // and start half the padding below the top; the same padding
@@ -2258,6 +2314,9 @@ impl Board<'_> {
                             warming.opacity = 0.0;
                             frame.draw_image(rect, warming);
                         }
+                        // Before the clip: a clipped frame's fills end up
+                        // beneath the card's own. See `draw_search_hits`.
+                        self.draw_search_hits(frame, rect, text, FONT_SIZE, wrap, alpha, highlight);
                         // Clip to the card so text that overflows a manually-undersized
                         // node doesn't spill past its border (the raster path is already
                         // node-sized, so it clips on its own).
@@ -2293,7 +2352,7 @@ impl Board<'_> {
                 .map(IntoColor::into_color)
                 .unwrap_or(self.theme.text_muted);
 
-            let frame_path = frame_path(rect, zoom);
+            let frame_path = rounded_path(rect, self.frame_radius());
             frame.fill(&frame_path, Color { a: 0.05 * alpha, ..accent });
             frame.stroke(
                 &frame_path,
@@ -2526,9 +2585,9 @@ impl Board<'_> {
         font_size: f32,
         wrap_width: f32,
         alpha: f32,
-        // `Some((query, strong))` highlights search matches; `strong` = the
-        // node holding the current match (brighter).
-        highlight: Option<(&str, bool)>,
+        // `Some((query, current))` highlights search matches; `current` is the
+        // ordinal of the hit being stepped through, when it's in this node.
+        highlight: Option<(&str, Option<usize>)>,
     ) {
         let zoom = self.camera.zoom;
         // The cached layout is in logical (unzoomed) coordinates; scale each run
@@ -2542,18 +2601,16 @@ impl Board<'_> {
             *self.theme,
             self.config.center_node_text,
             |runs| {
-                // Search highlight rects, painted behind the text.
-                if let Some((query, strong)) = highlight.filter(|(q, _)| !q.is_empty()) {
-                    let color = if strong {
-                        Color { r: 1.0, g: 0.62, b: 0.11, a: 0.55 * alpha }
-                    } else {
-                        Color { r: 1.0, g: 0.85, b: 0.30, a: 0.32 * alpha }
-                    };
-                    for run in runs {
-                        self.highlight_matches(frame, rect, run, zoom, query, color);
-                    }
-                }
-                for run in runs {
+                // Where the search hits fall, so the glyphs over one can be
+                // inked to read against it. The fills themselves are painted by
+                // `draw_search_hits`, into the *parent* frame — see there.
+                let query = highlight.map(|(q, _)| q).filter(|q| !q.is_empty());
+                let hits: Vec<Vec<Hit>> = match query {
+                    Some(query) => runs.iter().map(|r| self.match_hits(r, query)).collect(),
+                    None => Vec::new(),
+                };
+
+                for (index, run) in runs.iter().enumerate() {
                     let mut font = crate::UI_FONT;
                     // Match the raster path: body/bold use the theme's declared
                     // weights (a face is synthesized at each in `startup::run`).
@@ -2576,18 +2633,40 @@ impl Board<'_> {
                             .map(iced::font::Family::Name)
                             .unwrap_or(iced::font::Family::Name(crate::platform::UI_FONT_NAME))
                     };
-                    frame.fill_text(canvas::Text {
-                        content: run.text.clone(),
-                        position: Point::new(rect.x + run.x * zoom, rect.y + run.y * zoom),
-                        color: Color { a: run.color.a * alpha, ..run.color },
-                        size: (run.size * zoom).into(),
-                        line_height: LineHeight::Relative(crate::text_raster::LINE_HEIGHT),
-                        font,
-                        align_x: TextAlignment::Left,
-                        align_y: Vertical::Top,
-                        shaping: Shaping::Advanced,
-                        ..canvas::Text::default()
-                    });
+                    let mut piece = |text: &str, x: f32, color: Color| {
+                        if text.is_empty() {
+                            return;
+                        }
+                        frame.fill_text(canvas::Text {
+                            content: text.to_owned(),
+                            position: Point::new(
+                                rect.x + (run.x + x) * zoom,
+                                rect.y + run.y * zoom,
+                            ),
+                            color: fade(color, alpha),
+                            size: (run.size * zoom).into(),
+                            line_height: LineHeight::Relative(crate::text_raster::LINE_HEIGHT),
+                            font,
+                            align_x: TextAlignment::Left,
+                            align_y: Vertical::Top,
+                            shaping: Shaping::Advanced,
+                            ..canvas::Text::default()
+                        });
+                    };
+
+                    // Split the run on its hits, so the glyphs sitting on a
+                    // fill can be inked to read against it. With no query
+                    // that's one piece, which is the whole run.
+                    let ink = SEARCH_INK;
+                    let mut at = 0usize;
+                    let mut x = 0.0;
+                    for hit in hits.get(index).into_iter().flatten() {
+                        piece(&run.text[at..hit.start], x, run.color);
+                        piece(&run.text[hit.start..hit.end], hit.x, ink);
+                        at = hit.end;
+                        x = hit.x + hit.width;
+                    }
+                    piece(&run.text[at..], x, run.color);
                 }
             },
         );
@@ -2596,20 +2675,17 @@ impl Board<'_> {
     /// Paints a highlight rect behind each occurrence of `query` (case-
     /// insensitive) within a single laid-out run. Occurrences that cross a run
     /// (style/line) boundary aren't caught — acceptable for plain notes.
-    fn highlight_matches(
-        &self,
-        frame: &mut Frame,
-        rect: Rectangle,
-        run: &crate::text_raster::TextRun,
-        zoom: f32,
-        query: &str,
-        color: Color,
-    ) {
+    /// Where `query` occurs in one laid-out run, case-insensitively.
+    ///
+    /// Occurrences that straddle a run boundary (a style or line change) aren't
+    /// caught — acceptable for plain notes, and the alternative is matching
+    /// across text that isn't adjacent on screen.
+    fn match_hits(&self, run: &crate::text_raster::TextRun, query: &str) -> Vec<Hit> {
         let fold = |c: char| c.to_lowercase().next().unwrap_or(c);
         let hay: Vec<char> = run.text.chars().map(fold).collect();
         let needle: Vec<char> = query.chars().map(fold).collect();
         if needle.is_empty() || hay.len() < needle.len() {
-            return;
+            return Vec::new();
         }
         // Char index → byte offset, so we can slice the original run text.
         let mut byte: Vec<usize> = run.text.char_indices().map(|(b, _)| b).collect();
@@ -2620,39 +2696,100 @@ impl Board<'_> {
         } else {
             self.theme.font_text
         };
-        let line_h = run.size * crate::text_raster::LINE_HEIGHT * zoom;
+        let width = |text: &str| {
+            crate::text_raster::measure(text, f32::MAX, run.size, 1.0, family).0
+        };
 
+        let mut hits = Vec::new();
         let mut cs = 0;
         while cs + needle.len() <= hay.len() {
             if hay[cs..cs + needle.len()] == needle[..] {
                 let ce = cs + needle.len();
-                // Widths (logical) of the run prefix and of the match itself.
-                let x0 = crate::text_raster::measure(
-                    &run.text[..byte[cs]],
-                    f32::MAX,
-                    run.size,
-                    1.0,
-                    family,
-                )
-                .0;
-                let w = crate::text_raster::measure(
-                    &run.text[byte[cs]..byte[ce]],
-                    f32::MAX,
-                    run.size,
-                    1.0,
-                    family,
-                )
-                .0;
-                frame.fill_rectangle(
-                    Point::new(rect.x + (run.x + x0) * zoom, rect.y + run.y * zoom),
-                    Size::new(w * zoom, line_h),
-                    color,
-                );
+                let (start, end) = (byte[cs], byte[ce]);
+                hits.push(Hit {
+                    start,
+                    end,
+                    x: width(&run.text[..start]),
+                    width: width(&run.text[start..end]),
+                });
                 cs = ce;
             } else {
                 cs += 1;
             }
         }
+        hits
+    }
+
+    /// Paints the search hits behind a card's text.
+    ///
+    /// **Deliberately not part of `draw_markdown_live`,** which runs inside a
+    /// `with_clip`. A clipped frame's meshes are pasted into the parent's mesh
+    /// list at `paste`, but the parent's own fills sit in a buffer stack that
+    /// isn't flushed into that list until `into_geometry` — so *everything* the
+    /// parent filled, the card included, is appended afterwards and paints over
+    /// anything a clipped child drew. Text escapes it by living in a separate
+    /// list drawn above all meshes, which is why the ink showed and the
+    /// highlight didn't. The board's scrollbar thumb is filled outside its clip
+    /// for the same reason.
+    #[allow(clippy::too_many_arguments)] // mirrors `draw_markdown_live`'s
+    fn draw_search_hits(
+        &self,
+        frame: &mut Frame,
+        rect: Rectangle,
+        text: &str,
+        font_size: f32,
+        wrap_width: f32,
+        alpha: f32,
+        highlight: Option<(&str, Option<usize>)>,
+    ) {
+        let Some((query, current)) = highlight.filter(|(q, _)| !q.is_empty()) else {
+            return;
+        };
+        let zoom = self.camera.zoom;
+        crate::text_raster::with_markdown_layout(
+            text,
+            rect.width / zoom,
+            rect.height / zoom,
+            wrap_width,
+            font_size,
+            *self.theme,
+            self.config.center_node_text,
+            |runs| {
+                // Counted across the node's runs, in reading order, so the
+                // ordinal means the same thing on both sides.
+                let mut ordinal = 0;
+                for run in runs {
+                    for hit in self.match_hits(run, query) {
+                        self.fill_hit(frame, rect, run, &hit, current == Some(ordinal), alpha);
+                        ordinal += 1;
+                    }
+                }
+            },
+        );
+    }
+
+    /// Paints one hit's background. Opaque, with [`SEARCH_INK`] drawn over it —
+    /// which is what lets the fill be as strong as it likes instead of having
+    /// to leave the card's own text readable through it.
+    fn fill_hit(
+        &self,
+        frame: &mut Frame,
+        rect: Rectangle,
+        run: &crate::text_raster::TextRun,
+        hit: &Hit,
+        current: bool,
+        alpha: f32,
+    ) {
+        let zoom = self.camera.zoom;
+        let fill = if current { SEARCH_HIT_CURRENT } else { SEARCH_HIT };
+        frame.fill_rectangle(
+            Point::new(rect.x + (run.x + hit.x) * zoom, rect.y + run.y * zoom),
+            Size::new(
+                hit.width * zoom,
+                run.size * crate::text_raster::LINE_HEIGHT * zoom,
+            ),
+            fade(fill, alpha),
+        );
     }
 
     /// Screen-space bezier geometry of an edge, or `None` if an endpoint
@@ -2906,7 +3043,7 @@ impl Board<'_> {
                 frame.stroke(&bezier_path(&g), dashed(0.4));
             }
             let rect = self.camera.rect_to_screen(ghost.rect);
-            let card = card_path(rect, zoom);
+            let card = rounded_path(rect, self.card_radius());
             frame.fill(&card, accent(0.05));
             frame.stroke(&card, dashed(0.55));
             let wrap = crate::text_raster::card_text_wrap(ghost.rect.width);
@@ -2951,7 +3088,7 @@ impl Board<'_> {
             if let Some(i) = self.node_index.get(flow.target.as_str()) {
                 let r = self.node_screen_rect(*i, &self.nodes[*i]);
                 frame.fill(
-                    &card_path(r, zoom),
+                    &rounded_path(r, self.card_radius()),
                     Color { a: alpha, ..SHIMMER },
                 );
             }
@@ -3014,7 +3151,7 @@ impl Board<'_> {
         let card_wash = band(0.3);
         for r in cards {
             frame.fill(
-                &card_path(r, zoom),
+                &rounded_path(r, self.card_radius()),
                 Fill {
                     style: Style::Gradient(card_wash.into()),
                     ..Fill::default()

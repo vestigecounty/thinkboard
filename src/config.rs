@@ -90,6 +90,13 @@ pub struct Config {
     pub auto_zoom_level: f32,
 
     // --- Appearance ---
+    /// The theme to draw with, by name — one of the built-in schemes or a file
+    /// in `<config dir>/themes`. Blank uses the app's own default.
+    ///
+    /// Takes precedence over [`Config::theme_css`], which is the older path: a
+    /// stylesheet read directly, and what the vault's Obsidian theme still
+    /// feeds. Naming a theme is how you opt out of that.
+    pub theme: String,
     /// Absolute path to an Obsidian `theme.css` to read node colors from.
     /// Only plain color values are used; `var()`/`color-mix()`/`hsl()` keep
     /// the built-in defaults.
@@ -201,6 +208,7 @@ impl Default for Config {
             auto_zoom_trigger: 0.5,
             auto_zoom_level: 0.9,
 
+            theme: String::new(),
             theme_css: None,
             overlay_dim: 0.55,
             center_node_text: true,
@@ -489,6 +497,12 @@ fn writable(location: &Location) -> bool {
     !(cfg!(test) && matches!(location, Location::Default(_)))
 }
 
+/// The directory the config lives in, which is also where a user's own themes
+/// go. `None` where there's no home to put them in.
+pub fn config_dir() -> Option<PathBuf> {
+    config_base().map(|base| base.join("thinkboard"))
+}
+
 fn resolve_location(explicit: Option<&str>) -> Location {
     if let Some(path) = explicit {
         return Location::Explicit(PathBuf::from(path));
@@ -497,7 +511,7 @@ fn resolve_location(explicit: Option<&str>) -> Location {
         return Location::Explicit(PathBuf::from(path));
     }
     match config_base() {
-        Some(base) => Location::Default(base.join("thinkboard/config.json")),
+        Some(base) => Location::Default(base.join("thinkboard").join("config.json")),
         None => Location::None,
     }
 }

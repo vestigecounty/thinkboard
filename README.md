@@ -22,7 +22,7 @@ in your vault.
 - **Your whole vault** — point it at your Obsidian vault and **Cmd/Ctrl+O** lists every board in it, newest first, with fuzzy search by name. Boards from anywhere else still open by dialog or drag-and-drop.
 - **Fast to build** — create notes, drag from a note's edge to connect them, double-click to edit Markdown, and auto-layout to tidy the whole board.
 - **Ask AI (optional)** — right-click a note and the chain of notes leading into it becomes the prompt; the reply lands as new, connected notes. Off by default.
-- **Make it yours** — set your vault and the board takes on whichever theme Obsidian is using, colors and fonts included, switching live when you switch it there. Or point at a `theme.css` directly.
+- **Make it yours** — ten built-in schemes (Solarized, Nord, Dracula, Gruvbox, Tokyo Night, Catppuccin, One Dark, Rosé Pine, Monokai), picked from the command palette with the board previewing each as you scroll. Drop your own in the themes folder, or set your vault and take on whichever theme Obsidian is using.
 - **macOS niceties** — pinch-to-zoom, plus an optional four-finger-swipe-down summon gesture.
 
 ## Quick start
@@ -33,6 +33,7 @@ in your vault.
 - **Right-click** a note for actions (Ask AI, color…), or right-click empty space for canvas options like Auto-layout.
 - **Cmd/Ctrl+O** switches boards: pick your vault once (**Settings → Vault**, or "Open vault…" in the command palette) and it lists every canvas in it. Without a vault it's the ordinary open dialog.
 - **Cmd/Ctrl+Shift+P** opens the command palette; **Cmd/Ctrl+F** finds text on the board.
+- **"Change theme"** in the palette lists every theme — arrow through them and the board changes under the panel; Enter keeps one, Esc puts back what you had.
 - Open or create boards — and reach **Settings** — from the tray icon.
 
 ## Install

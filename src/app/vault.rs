@@ -79,6 +79,7 @@ impl App {
         };
         self.search = None; // mutually exclusive with the other panels
         self.command_palette = None;
+        self.theme_picker = None;
         self.vault_browser = Some(picker::State::default());
 
         let focus = iced::advanced::widget::operate(
@@ -227,6 +228,11 @@ impl App {
     /// into directly, and iced's, which takes them as a task. Until both land,
     /// text falls back to the system face rather than showing nothing.
     pub(super) fn apply_theme_css(&mut self) -> Task<Message> {
+        // A named theme wins, exactly as it does at startup — otherwise
+        // switching one live and relaunching would disagree.
+        if let Some(theme) = super::theme_store::resolve(&self.config) {
+            return self.adopt_theme(theme, Vec::new());
+        }
         let css = self
             .config
             .theme_css
@@ -253,7 +259,16 @@ impl App {
             None => (crate::theme::Theme::default(), Vec::new()),
         };
         crate::theme::resolve_embedded_names(&mut theme, &fonts);
+        self.adopt_theme(theme, fonts)
+    }
 
+    /// Installs a theme and redraws everything that baked the old colours in.
+    ///
+    /// `fonts` are faces the theme embeds, which only a stylesheet has; they
+    /// reach two font systems, the rasterizer's directly and iced's as a task.
+    /// Until both land, text falls back to the system face rather than
+    /// showing nothing.
+    fn adopt_theme(&mut self, theme: crate::theme::Theme, fonts: Vec<Vec<u8>>) -> Task<Message> {
         let loads: Vec<Task<Message>> = fonts
             .iter()
             .map(|data| iced::font::load(data.clone()).discard())
