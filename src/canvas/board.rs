@@ -96,6 +96,54 @@ const ARROW_HEAD: f32 = 8.0;
 /// zoomed out is a smudge rather than something you can read the shape of.
 const MIN_TEXT_PX: f32 = 6.0;
 
+/// How far a cluster drag moves this frame: from the anchor's current position
+/// to where the cursor wants it, snapped.
+///
+/// **This is why cluster snapping exists at all.** Every member ends up at
+/// `target + (member - anchor)`, so with `target` on the grid a member stays on
+/// it exactly when its offset from the anchor is a whole number of cells —
+/// automatic if they were all aligned to begin with. Dragging used to apply the
+/// raw cursor delta, which left an aligned cluster sitting at whatever fraction
+/// of a cell the mouse stopped at.
+///
+/// It has to be the *absolute* target that's snapped, not the per-frame step.
+/// A step is a few pixels: rounding it floors to zero, so the cluster never
+/// moves, or jumps a whole cell — and the rounding accumulates into a drift
+/// away from the cursor.
+fn cluster_delta(want: Point, anchor: Point, grid: f32) -> Vector {
+    let (x, y) = crate::snap::point(want.x, want.y, grid);
+    Point::new(x, y) - anchor
+}
+
+/// The member node a cluster drag is measured against.
+///
+/// Snapping has to move the *nodes* onto the grid, not the cluster's box: the
+/// box is derived from its members plus padding and is recomputed the moment
+/// the drag ends, so aligning it would leave the stored geometry at an
+/// arbitrary offset — and would knock nodes that were already on the grid off
+/// it. Measuring against one member keeps every member's alignment.
+///
+/// Topmost then leftmost, so the choice is deterministic and the reference
+/// can't change part-way through a drag.
+fn cluster_anchor(
+    clusters: &[crate::cluster::Cluster],
+    nodes: &[CanvasNode],
+    cluster: usize,
+) -> Option<usize> {
+    clusters
+        .get(cluster)?
+        .members
+        .iter()
+        .copied()
+        .filter(|&i| i < nodes.len())
+        .min_by(|&a, &b| {
+            let (a, b) = (&nodes[a], &nodes[b]);
+            (a.y, a.x)
+                .partial_cmp(&(b.y, b.x))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+}
+
 /// A card's rounded-rect path at its screen rect.
 fn card_path(rect: Rectangle, zoom: f32) -> Path {
     Path::rounded_rectangle(rect.position(), rect.size(), (CARD_RADIUS * zoom).into())
@@ -389,8 +437,11 @@ enum Kind {
     /// Dragging a cluster card (cluster mode); moves all member nodes.
     DraggingCluster {
         cluster: usize,
-        /// Previous cursor position, screen coordinates.
-        last: Point,
+        /// The member the drag is measured against, so it can snap to the grid
+        /// the way a node drag does. See [`cluster_anchor`].
+        anchor: usize,
+        /// Cursor offset from the anchor when the drag began, world units.
+        grab: Vector,
     },
     /// Dragging a node's scrollbar thumb (node scrollbars on, content overflows).
     ScrollingNode {
@@ -939,10 +990,16 @@ impl Board<'_> {
                 // In cluster mode, a press on a cluster card drags it;
                 // otherwise it acts as a background click (dismiss).
                 if self.show_clusters() {
-                    if let Some(cluster) = self.cluster_at(self.camera.to_world(position)) {
+                    let world = self.camera.to_world(position);
+                    if let Some((cluster, anchor)) = self
+                        .cluster_at(world)
+                        .and_then(|c| Some((c, cluster_anchor(self.clusters, self.nodes, c)?)))
+                    {
+                        let at = &self.nodes[anchor];
                         state.kind = Kind::DraggingCluster {
                             cluster,
-                            last: position,
+                            anchor,
+                            grab: world - Point::new(at.x, at.y),
                         };
                         return Some(
                             canvas::Action::publish(Message::CancelInertia).and_capture(),
@@ -1323,15 +1380,24 @@ impl Board<'_> {
                                 .and_capture(),
                         )
                     }
-                    Kind::DraggingCluster { cluster, last } => {
+                    Kind::DraggingCluster { cluster, anchor, grab } => {
+                        // Measured against the anchor's *absolute* position and
+                        // snapped there, exactly as a node drag is — the running
+                        // delta this used to accumulate could never snap, since
+                        // rounding each frame's step either sticks or drifts.
+                        let want = self.camera.to_world(position) - *grab;
+                        let at = self.nodes.get(*anchor)?;
                         let delta =
-                            self.camera.to_world(position) - self.camera.to_world(*last);
-                        *last = position;
-                        Some(canvas::Action::publish(Message::MoveCluster {
-                            index: *cluster,
-                            delta,
+                            cluster_delta(want, Point::new(at.x, at.y), self.snap_grid());
+                        // Within one grid cell the target doesn't move; sending
+                        // a zero delta would mark the document dirty for nothing.
+                        (delta != Vector::ZERO).then(|| {
+                            canvas::Action::publish(Message::MoveCluster {
+                                index: *cluster,
+                                delta,
+                            })
+                            .and_capture()
                         })
-                        .and_capture())
                     }
                     Kind::Connecting { from, cursor, .. } => {
                         let from = *from;
@@ -3573,5 +3639,116 @@ mod scrollbar_tests {
         // Mid-scroll sits strictly between the two ends.
         let (mid, _) = scrollbar_thumb(r, 100.0, 300.0, overflow / 2.0, 1.0).unwrap();
         assert!(mid.y > top.y && mid.y < bottom.y);
+    }
+}
+
+#[cfg(test)]
+mod cluster_drag_tests {
+    use super::cluster_anchor;
+    use crate::cluster::Cluster;
+    use crate::model::CanvasNode;
+    use iced::{Rectangle, Size, Point};
+
+    fn node(x: f32, y: f32) -> CanvasNode {
+        CanvasNode {
+            id: format!("n{x}x{y}"),
+            kind: "text".to_owned(),
+            text: Some("x".to_owned()),
+            file: None,
+            x,
+            y,
+            width: 100.0,
+            height: 60.0,
+            color: None,
+            extra: Default::default(),
+        }
+    }
+
+    fn cluster(members: Vec<usize>) -> Cluster {
+        Cluster {
+            bounds: Rectangle::new(Point::ORIGIN, Size::new(10.0, 10.0)),
+            text: String::new(),
+            font_size: 10.0,
+            image_id: None,
+            members,
+        }
+    }
+
+    #[test]
+    fn the_anchor_is_the_topmost_then_leftmost_member() {
+        // Deliberately not in member order: the reference has to come from the
+        // geometry, or it would change when a recluster reorders the list.
+        let nodes = vec![node(300.0, 40.0), node(120.0, 40.0), node(200.0, 10.0)];
+        let clusters = vec![cluster(vec![0, 1, 2])];
+        assert_eq!(cluster_anchor(&clusters, &nodes, 0), Some(2));
+
+        // Level with each other: the leftmost breaks the tie.
+        let nodes = vec![node(300.0, 40.0), node(120.0, 40.0)];
+        let clusters = vec![cluster(vec![0, 1])];
+        assert_eq!(cluster_anchor(&clusters, &nodes, 0), Some(1));
+    }
+
+    #[test]
+    fn an_anchor_is_only_offered_when_there_is_one_to_drag_by() {
+        let nodes = vec![node(0.0, 0.0)];
+        // A cluster with no members, and a member index left over from a
+        // document that has since shrunk — neither should be dragged by.
+        assert_eq!(cluster_anchor(&[cluster(Vec::new())], &nodes, 0), None);
+        assert_eq!(cluster_anchor(&[cluster(vec![7])], &nodes, 0), None);
+        // And a cluster index that doesn't exist.
+        assert_eq!(cluster_anchor(&[], &nodes, 0), None);
+    }
+}
+
+#[cfg(test)]
+mod cluster_snap_tests {
+    use super::cluster_delta;
+    use iced::{Point, Vector};
+
+    /// Where a member ends up: the anchor's new home plus its own offset.
+    fn member_after(member: Point, delta: Vector) -> Point {
+        Point::new(member.x + delta.x, member.y + delta.y)
+    }
+
+    fn on_grid(p: Point, grid: f32) -> bool {
+        (p.x / grid).fract().abs() < 1e-4 && (p.y / grid).fract().abs() < 1e-4
+    }
+
+    #[test]
+    fn dragging_a_cluster_leaves_its_members_on_the_grid() {
+        // The reason cluster snapping exists: a cluster that was aligned must
+        // still be aligned after being moved, however far the cursor wandered.
+        const GRID: f32 = 20.0;
+        let anchor = Point::new(40.0, 20.0);
+        let members = [anchor, Point::new(260.0, 20.0), Point::new(40.0, 180.0)];
+        assert!(members.iter().all(|&m| on_grid(m, GRID)));
+
+        for (dx, dy) in [(3.0, 1.0), (11.0, -7.0), (-58.0, 132.0), (0.5, 0.5)] {
+            let want = Point::new(anchor.x + dx, anchor.y + dy);
+            let delta = cluster_delta(want, anchor, GRID);
+            for &m in &members {
+                let moved = member_after(m, delta);
+                assert!(on_grid(moved, GRID), "{m:?} + {delta:?} = {moved:?} is off the grid");
+            }
+        }
+    }
+
+    #[test]
+    fn snapping_off_follows_the_cursor_exactly() {
+        // Grid 0 means the feature is off; the cluster must track the cursor
+        // rather than quantising to anything.
+        let anchor = Point::new(37.0, 23.0);
+        let want = Point::new(101.5, 64.25);
+        let delta = cluster_delta(want, anchor, 0.0);
+        assert_eq!(delta, Vector::new(64.5, 41.25));
+    }
+
+    #[test]
+    fn a_drag_inside_one_cell_asks_for_no_move() {
+        // Which is what lets the caller skip publishing, so nudging the cursor
+        // within a cell doesn't mark the document dirty.
+        let anchor = Point::new(40.0, 20.0);
+        let delta = cluster_delta(Point::new(44.0, 26.0), anchor, 20.0);
+        assert_eq!(delta, Vector::ZERO);
     }
 }
