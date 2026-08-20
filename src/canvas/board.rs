@@ -54,6 +54,8 @@ const SHIMMER_PULSES: f32 = 2.0;
 const SHIMMER_BREATHE: f32 = 1.7;
 /// Size (world px) of a ghost card's top-right "×" dismiss zone.
 const GHOST_X: f32 = 24.0;
+/// Weight of a suggestion card's dashed outline, in world units.
+const GHOST_STROKE: f32 = 1.5;
 /// Line color for a hovered link — a muted blue.
 const EDGE_HOVER: Color = Color::from_rgb(0.2625, 0.595, 0.875);
 /// Selected link: an electric, highly saturated blue — noticeably more vivid
@@ -67,6 +69,53 @@ const EDGE_HIGHLIGHT: Color = Color::from_rgb(0.11, 0.66, 1.0);
 const EDGE_HOVER_RING: Color = Color::from_rgb(0.114, 0.2625, 0.42);
 const EDGE_HIGHLIGHT_RING: Color = Color::from_rgb(0.06, 0.32, 0.54);
 const FONT_SIZE: f32 = 17.0;
+
+/// Corner radius of a card, in world units — scaled by zoom at each use.
+///
+/// Every card kind shares it: a note, an image and a group's members are all
+/// the same shape, and the steel shader cuts its silhouette to it too, so this
+/// being one number is what keeps them agreeing.
+const CARD_RADIUS: f32 = 8.0;
+
+/// Corner radius of the larger enclosing shapes — a group's frame and a
+/// semantic-zoom cluster — which are rounded more generously than a card so
+/// they read as containers rather than as oversized cards.
+const FRAME_RADIUS: f32 = 12.0;
+
+/// Outline weight of a *selected* card, and the floor it holds at when zoomed
+/// out. Shared by every card kind so a selection reads the same wherever it
+/// lands; the unselected weights differ by kind and stay where they're used.
+const SELECTED_BORDER: f32 = 3.5;
+const SELECTED_BORDER_MIN: f32 = 3.0;
+
+/// Length of an edge's arrowhead, in world units. Shared by the ordinary and
+/// the highlighted edge — only their line weights differ.
+const ARROW_HEAD: f32 = 8.0;
+
+/// The smallest a drawn glyph is allowed to get. Below this, text on a card
+/// zoomed out is a smudge rather than something you can read the shape of.
+const MIN_TEXT_PX: f32 = 6.0;
+
+/// A card's rounded-rect path at its screen rect.
+fn card_path(rect: Rectangle, zoom: f32) -> Path {
+    Path::rounded_rectangle(rect.position(), rect.size(), (CARD_RADIUS * zoom).into())
+}
+
+/// The path of a group frame or cluster box. See [`FRAME_RADIUS`].
+fn frame_path(rect: Rectangle, zoom: f32) -> Path {
+    Path::rounded_rectangle(rect.position(), rect.size(), (FRAME_RADIUS * zoom).into())
+}
+
+/// Outline weight for a selected card. See [`SELECTED_BORDER`].
+fn selected_border(zoom: f32) -> f32 {
+    (SELECTED_BORDER * zoom).max(SELECTED_BORDER_MIN)
+}
+
+/// `color` at `alpha` of its own opacity — the fade every card layer applies
+/// as it crossfades in, spelled once.
+fn fade(color: Color, alpha: f32) -> Color {
+    Color { a: color.a * alpha, ..color }
+}
 
 const DOUBLE_CLICK_TIME: Duration = Duration::from_millis(400);
 const DOUBLE_CLICK_DISTANCE: f32 = 6.0;
@@ -1963,8 +2012,7 @@ impl Board<'_> {
 
         for (index, cluster) in self.clusters.iter().enumerate() {
             let rect = self.camera.rect_to_screen(cluster.bounds);
-            let radius = 12.0 * zoom;
-            let card = Path::rounded_rectangle(rect.position(), rect.size(), radius.into());
+            let card = frame_path(rect, zoom);
 
             let fill = self.theme.card_fill;
             frame.fill(&card, Color { a: fill.a * alpha, ..fill });
@@ -1972,7 +2020,7 @@ impl Board<'_> {
             if let Some(id) = &cluster.image_id {
                 if let Some(handle) = self.images.get(id) {
                     let mut image = canvas::Image::new(handle.clone());
-                    image.border_radius = radius.into();
+                    image.border_radius = (FRAME_RADIUS * zoom).into();
                     image.opacity = alpha;
                     frame.with_clip(rect, |clipped| {
                         clipped.draw_image(rect, image);
@@ -2026,7 +2074,7 @@ impl Board<'_> {
             let alpha = scene_alpha * self.spawn_factors(index).1;
 
             if node.node_kind() == NodeKind::Image {
-                let radius = 8.0 * zoom;
+                let radius = CARD_RADIUS * zoom;
 
                 if let Some(handle) = self.images.get(&node.id) {
                     // The image shader masks corners with a rounded-box SDF
@@ -2035,7 +2083,7 @@ impl Board<'_> {
                     // with_clip(rect) makes clip bounds == image rect, so the
                     // radius actually rounds the visible corners.
                     let mut image = canvas::Image::new(handle.clone());
-                    image.border_radius = radius.into();
+                    image.border_radius = (FRAME_RADIUS * zoom).into();
                     image.opacity = alpha;
                     frame.with_clip(rect, |clipped| {
                         clipped.draw_image(rect, image);
@@ -2049,8 +2097,8 @@ impl Board<'_> {
                 // only the inner quarter overlaps, the visible ring never
                 // fights the image for subpixels.
                 let (border_color, border_width) = match (selected, node.palette_color().map(IntoColor::into_color)) {
-                    (true, Some(color)) => (color, (3.5 * zoom).max(3.0)),
-                    (true, None) => (self.theme.accent, (3.5 * zoom).max(3.0)),
+                    (true, Some(color)) => (color, selected_border(zoom)),
+                    (true, None) => (self.theme.accent, selected_border(zoom)),
                     (false, Some(color)) => (color, (1.2 * zoom).max(1.0)),
                     (false, None) => (CARD_BORDER, (1.0 * zoom).max(1.0)),
                 };
@@ -2066,18 +2114,13 @@ impl Board<'_> {
                 frame.stroke(
                     &border,
                     Stroke::default()
-                        .with_color(Color {
-                            a: border_color.a * alpha,
-                            ..border_color
-                        })
+                        .with_color(fade(border_color, alpha))
                         .with_width(border_width),
                 );
                 continue;
             }
 
-            let radius = 8.0 * zoom;
-
-            let card = Path::rounded_rectangle(rect.position(), rect.size(), radius.into());
+            let card = card_path(rect, zoom);
             let accent = node.palette_color().map(IntoColor::into_color);
 
             let fill = match accent {
@@ -2184,8 +2227,7 @@ impl Board<'_> {
                 .map(IntoColor::into_color)
                 .unwrap_or(self.theme.text_muted);
 
-            let radius = 12.0 * zoom;
-            let frame_path = Path::rounded_rectangle(rect.position(), rect.size(), radius.into());
+            let frame_path = frame_path(rect, zoom);
             frame.fill(&frame_path, Color { a: 0.05 * alpha, ..accent });
             frame.stroke(
                 &frame_path,
@@ -2251,7 +2293,7 @@ impl Board<'_> {
         // The header is deliberately smaller and muted: it names the file,
         // while the body below is the content. Sized like the title, it read as
         // a stray first line of the note.
-        let title_size = (REFERENCE_TITLE_SIZE * zoom).max(6.0);
+        let title_size = (REFERENCE_TITLE_SIZE * zoom).max(MIN_TEXT_PX);
         let title_y = rect.y + NODE_TEXT_PAD_Y * zoom / 2.0;
 
         frame.fill_text(canvas::Text {
@@ -2298,7 +2340,7 @@ impl Board<'_> {
                     content: reason.to_owned(),
                     position: Point::new(rect.x + pad, body_y),
                     color: Color { a: 0.7 * alpha, ..self.theme.text_muted },
-                    size: ((FONT_SIZE - 2.0) * zoom).max(6.0).into(),
+                    size: ((FONT_SIZE - 2.0) * zoom).max(MIN_TEXT_PX).into(),
                     font: self.theme.ui_font(),
                     ..canvas::Text::default()
                 });
@@ -2314,8 +2356,10 @@ impl Board<'_> {
         let url = node.url().unwrap_or("(no URL)");
         let host = url_host(url);
 
-        let host_size = (FONT_SIZE * zoom).max(6.0);
-        let url_size = ((FONT_SIZE - 4.0) * zoom).max(5.0);
+        let host_size = (FONT_SIZE * zoom).max(MIN_TEXT_PX);
+        // A whole pixel under the floor: the URL is the secondary line and is
+        // allowed to fade out ahead of the host it sits below.
+        let url_size = ((FONT_SIZE - 4.0) * zoom).max(MIN_TEXT_PX - 1.0);
         let line = crate::text_raster::LINE_HEIGHT;
         // Both lines as one block, centred on the card.
         let show_url = url != host;
@@ -2359,18 +2403,15 @@ impl Board<'_> {
         let (border_color, border_width) = match (selected, accent) {
             // A selected colored node keeps its own color (just thicker)
             // rather than turning blue, so the chosen color stays visible.
-            (true, Some(color)) => (color, (3.5 * zoom).max(3.0)),
-            (true, None) => (self.theme.accent, (3.5 * zoom).max(3.0)),
+            (true, Some(color)) => (color, selected_border(zoom)),
+            (true, None) => (self.theme.accent, selected_border(zoom)),
             (false, Some(color)) => (color, 1.5 * zoom),
             (false, None) => (CARD_BORDER, (0.75 * zoom).max(0.5)),
         };
         frame.stroke(
             card,
             Stroke::default()
-                .with_color(Color {
-                    a: border_color.a * alpha,
-                    ..border_color
-                })
+                .with_color(fade(border_color, alpha))
                 .with_width(border_width),
         );
     }
@@ -2685,7 +2726,7 @@ impl Board<'_> {
                 line_cap: stroke::LineCap::Butt,
                 line_join: stroke::LineJoin::Round,
                 ..Stroke::default()
-                    .with_color(Color { a: color.a * g.alpha, ..color })
+                    .with_color(fade(color, g.alpha))
                     .with_width(5.5 * zoom * thickness)
             },
         );
@@ -2694,7 +2735,7 @@ impl Board<'_> {
             g.end,
             &edge.to_side,
             g.alpha,
-            8.0 * zoom,
+            ARROW_HEAD * zoom,
             4.4 * zoom * thickness,
             color,
         );
@@ -2717,14 +2758,14 @@ impl Board<'_> {
                 line_cap: stroke::LineCap::Butt,
                 line_join: stroke::LineJoin::Round,
                 ..Stroke::default()
-                    .with_color(Color { a: color.a * g.alpha, ..color })
+                    .with_color(fade(color, g.alpha))
                     .with_width(2.5 * zoom)
             },
         );
         // Obsidian records an arrow at the target and none at the source
         // unless the document says otherwise — an undirected or bidirectional
         // link is drawn as authored.
-        let (head, width) = (8.0 * zoom, 2.0 * zoom);
+        let (head, width) = (ARROW_HEAD * zoom, 2.0 * zoom);
         if edge.to_end() == EdgeEnd::Arrow {
             self.draw_arrowhead(frame, g.end, &edge.to_side, g.alpha, head, width, color);
         }
@@ -2783,31 +2824,25 @@ impl Board<'_> {
                 continue;
             }
             let accent = |alpha: f32| Color { a: alpha * a, ..self.theme.accent };
+            // The dashed outline a suggestion is drawn with — the same stroke
+            // for its link and for its card, differing only in how strongly it
+            // reads.
+            let dashed = |alpha: f32| Stroke {
+                line_dash: canvas::LineDash {
+                    segments: &dash,
+                    offset: 0,
+                },
+                ..Stroke::default()
+                    .with_color(accent(alpha))
+                    .with_width(GHOST_STROKE * zoom)
+            };
             if let Some(g) = self.ghost_link(ghost) {
-                frame.stroke(
-                    &bezier_path(&g),
-                    Stroke {
-                        line_dash: canvas::LineDash {
-                            segments: &dash,
-                            offset: 0,
-                        },
-                        ..Stroke::default().with_color(accent(0.4)).with_width(1.5 * zoom)
-                    },
-                );
+                frame.stroke(&bezier_path(&g), dashed(0.4));
             }
             let rect = self.camera.rect_to_screen(ghost.rect);
-            let card = Path::rounded_rectangle(rect.position(), rect.size(), (8.0 * zoom).into());
+            let card = card_path(rect, zoom);
             frame.fill(&card, accent(0.05));
-            frame.stroke(
-                &card,
-                Stroke {
-                    line_dash: canvas::LineDash {
-                        segments: &dash,
-                        offset: 0,
-                    },
-                    ..Stroke::default().with_color(accent(0.55)).with_width(1.5 * zoom)
-                },
-            );
+            frame.stroke(&card, dashed(0.55));
             let wrap = crate::text_raster::card_text_wrap(ghost.rect.width);
             self.draw_markdown_live(frame, rect, &ghost.text, FONT_SIZE, wrap, 0.5 * a, None);
 
@@ -2850,7 +2885,7 @@ impl Board<'_> {
             if let Some(i) = self.node_index.get(flow.target.as_str()) {
                 let r = self.node_screen_rect(*i, &self.nodes[*i]);
                 frame.fill(
-                    &Path::rounded_rectangle(r.position(), r.size(), (8.0 * zoom).into()),
+                    &card_path(r, zoom),
                     Color { a: alpha, ..SHIMMER },
                 );
             }
@@ -2913,7 +2948,7 @@ impl Board<'_> {
         let card_wash = band(0.3);
         for r in cards {
             frame.fill(
-                &Path::rounded_rectangle(r.position(), r.size(), (8.0 * zoom).into()),
+                &card_path(r, zoom),
                 Fill {
                     style: Style::Gradient(card_wash.into()),
                     ..Fill::default()

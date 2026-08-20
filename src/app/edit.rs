@@ -31,6 +31,11 @@ pub(super) struct EditorBox {
 /// Edits within this window coalesce into one undo step.
 const EDIT_COALESCE: Duration = Duration::from_millis(600);
 
+/// Narrowest the in-place editor is drawn, in world units. A caret needs
+/// somewhere to sit even on an empty card, so this is the floor both the body
+/// and the group-caption editors clamp to.
+const MIN_EDITOR_WIDTH: f32 = 24.0;
+
 /// Which piece of a node the editor is editing.
 ///
 /// The two share everything — the widget, the text-level undo, the key
@@ -542,7 +547,7 @@ impl App {
             let height = font_size * zoom * text_raster::LINE_HEIGHT + 2.0;
             return Some(EditorBox {
                 origin: Point::new(rect.x + pad, rect.y + pad),
-                width: (rect.width - pad * 2.0).max(24.0 * zoom),
+                width: (rect.width - pad * 2.0).max(MIN_EDITOR_WIDTH * zoom),
                 height,
                 centered: false,
                 font_size,
@@ -574,7 +579,7 @@ impl App {
         // when the read view left-aligns it.
         let centered = self.config.center_node_text && markdown::is_simple(&text);
         let width = if centered {
-            (text_width + caret_slack).clamp(24.0 * zoom, wrap * zoom + caret_slack)
+            (text_width + caret_slack).clamp(MIN_EDITOR_WIDTH * zoom, wrap * zoom + caret_slack)
         } else {
             (text_wrap * zoom).min(rect.width)
         };

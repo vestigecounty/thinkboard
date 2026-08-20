@@ -47,7 +47,7 @@ fn chrome_button_style(
             button::Status::Active => base,
         },
         border: iced::Border {
-            radius: 6.0.into(),
+            radius: chrome::CONTROL_RADIUS.into(),
             ..Default::default()
         },
         ..button::Style::default()
@@ -72,7 +72,7 @@ fn swatch_style(color: iced::Color, status: button::Status) -> button::Style {
     button::Style {
         background: Some(color.into()),
         border: iced::Border {
-            radius: 4.0.into(),
+            radius: chrome::SWATCH_RADIUS.into(),
             width: if hovered { 2.0 } else { 1.0 },
             color: if hovered {
                 iced::Color::WHITE
@@ -95,7 +95,7 @@ fn wheel_style(status: button::Status) -> button::Style {
     button::Style {
         background: Some(iced::Background::Gradient(rainbow.into())),
         border: iced::Border {
-            radius: 4.0.into(),
+            radius: chrome::SWATCH_RADIUS.into(),
             width: if hovered { 2.0 } else { 1.0 },
             color: if hovered {
                 iced::Color::WHITE
@@ -392,7 +392,7 @@ impl App {
                                 iced::Color { a: 0.08, ..muted }.into()
                             }),
                             border: iced::Border {
-                                radius: 4.0.into(),
+                                radius: chrome::SWATCH_RADIUS.into(),
                                 width: 1.0,
                                 color: if on { accent } else { muted },
                             },
@@ -717,7 +717,7 @@ impl App {
             .style(move |_theme, status| iced::widget::text_input::Style {
                 background: iced::Background::Color(input_bg),
                 border: iced::Border {
-                    radius: 6.0.into(),
+                    radius: chrome::CONTROL_RADIUS.into(),
                     width: 1.0,
                     color: if matches!(status, iced::widget::text_input::Status::Focused { .. }) {
                         accent

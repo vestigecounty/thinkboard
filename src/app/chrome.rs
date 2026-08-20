@@ -15,6 +15,10 @@ use crate::theme::Theme as ColorTheme;
 pub(super) const PANEL_RADIUS: f32 = 10.0;
 /// Corner radius of a control inside a panel (rows, inputs, buttons, chips).
 pub(super) const CONTROL_RADIUS: f32 = 6.0;
+/// Corner radius of the small square controls — colour swatches, the hue wheel,
+/// the settings pills. Tighter than a full control so a 24px square still reads
+/// as a square rather than as a lozenge.
+pub(super) const SWATCH_RADIUS: f32 = 4.0;
 /// Destructive-action tint (Delete), consistent across every menu.
 pub(super) const DANGER: Color = Color { r: 1.0, g: 0.44, b: 0.44, a: 1.0 };
 
