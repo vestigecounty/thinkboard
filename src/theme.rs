@@ -8,8 +8,10 @@
 //! the theme *embeds* as base64 WOFF2 data URIs are decoded by
 //! [`embedded_fonts`] so they render without being installed system-wide.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::Mutex;
 
+use cosmic_text::{Feature, FeatureTag};
 use iced::Color;
 
 /// Node/card colors: the built-in palette, optionally overridden by a theme.
@@ -32,14 +34,23 @@ pub struct Theme {
     pub code: Color,
     pub link: Color,
     pub headings: [Color; 6],
-    /// Theme font family names (`None` = built-in SF). Leaked to `'static` so
-    /// `Theme` stays `Copy`; harmless one-off since a theme loads once.
+    /// Theme font family names (`None` = built-in SF). Interned to `'static` so
+    /// `Theme` stays `Copy` — see [`intern`], which is why scrolling the font
+    /// picker doesn't leak a string per family it previews.
     pub font_text: Option<&'static str>,
     pub font_mono: Option<&'static str>,
     /// Body / bold weights (`--font-normal`/`--font-bold`), snapped to the
     /// nearest 100. Themes like Primary render Inter at 450/750, not 400/700.
     pub weight_normal: u16,
     pub weight_bold: u16,
+    /// OpenType features to shape body and monospace text with.
+    ///
+    /// A font's stylistic alternates are substitution lookups that lie dormant
+    /// unless asked for by tag — Inter carries a single-storey `a` as `cv11`
+    /// and never shows it otherwise. Interned to `'static` like the family
+    /// names, and for the same reason: `Theme` is `Copy`.
+    pub font_features: &'static [Feature],
+    pub font_features_mono: &'static [Feature],
 
     // --- Shape, rather than colour. World units; scaled by zoom at each use.
     /// Corner radius of a card. Every card kind shares it.
@@ -72,6 +83,8 @@ impl Default for Theme {
             font_mono: None,
             weight_normal: 400,
             weight_bold: 700,
+            font_features: &[],
+            font_features_mono: &[],
             card_radius: 8.0,
             frame_radius: 12.0,
         }
@@ -108,9 +121,6 @@ impl Theme {
         }
     }
 
-    /// Works out the values that depend on other values. Call after anything
-    /// that changes the theme's colours.
-    ///
     /// Applies a resolved theme file over this one.
     ///
     /// Only what the file actually said: a theme is a patch, so anything it
@@ -151,10 +161,10 @@ impl Theme {
 
         let f = &resolved.fonts;
         if let Some(name) = &f.text {
-            self.font_text = Some(Box::leak(name.clone().into_boxed_str()));
+            self.font_text = Some(intern(name));
         }
         if let Some(name) = &f.mono {
-            self.font_mono = Some(Box::leak(name.clone().into_boxed_str()));
+            self.font_mono = Some(intern(name));
         }
         if let Some(weight) = f.weight_normal {
             self.weight_normal = snap_weight(weight);
@@ -162,14 +172,44 @@ impl Theme {
         if let Some(weight) = f.weight_bold {
             self.weight_bold = snap_weight(weight);
         }
+        // Written in the CSS syntax the fonts' own documentation uses, and
+        // parsed by the same reader as a stylesheet's.
+        if let Some(features) = &f.features {
+            self.font_features = intern_features(parse_features(features));
+        }
+        if let Some(features) = &f.features_mono {
+            self.font_features_mono = intern_features(parse_features(features));
+        }
+    }
+
+    /// Overrides the body family with the user's own pick (`config.font`).
+    ///
+    /// Blank is "whatever the theme said", so the two compose rather than one
+    /// disabling the other: a theme supplies a font, and naming one here
+    /// overrules that part of it and leaves its colours alone. Applied last,
+    /// wherever a theme is resolved — see `theme_store::resolve_base`, whose
+    /// callers all pair with this.
+    pub fn use_font(&mut self, family: &str) {
+        let family = family.trim();
+        if family.is_empty() {
+            return;
+        }
+        self.font_text = Some(intern(family));
+        // And the weights it actually ships. The shaper matches weight exactly,
+        // so asking a family that has no 400 for a 400 doesn't get its regular —
+        // it gets the system font, and the chosen typeface never appears. See
+        // `text_raster::family_weights`. A family the database doesn't know
+        // (one a theme is embedding in this same breath) keeps the theme's.
+        if let Some((normal, bold)) = crate::text_raster::family_weights(family) {
+            self.weight_normal = normal;
+            self.weight_bold = bold;
+        }
     }
 
     /// Reads overrides from an Obsidian `theme.css`, keeping the default for
     /// any color that's missing or not a plain value.
     pub fn from_css(css: &str) -> Self {
         let mut theme = Theme::default();
-        // (`settle` at the end: the search fill is derived from the card and
-        // text colours this is about to replace.)
         theme.apply(&dark_variables(css));
         // Font families are often declared on `body`/`:root`, not inside
         // `.theme-dark`, so scan the whole sheet for them. Themes usually declare
@@ -187,6 +227,14 @@ impl Theme {
         if let Some(w) = css_number(css, "--font-bold") {
             theme.weight_bold = snap_weight(w);
         }
+        // The typography variables a theme applies with `font-feature-settings`.
+        // Not an Obsidian-standard name — the app's own variable is honoured
+        // first, then the one Primary (and the themes that follow it) uses.
+        theme.font_features = css_features(css, &["--font-text-feature", "--text-font-feature"]);
+        theme.font_features_mono = css_features(
+            css,
+            &["--font-monospace-feature", "--monospace-font-feature"],
+        );
         theme
     }
 
@@ -238,24 +286,98 @@ impl Theme {
     }
 }
 
+/// Parses a CSS `font-feature-settings` value — `"calt" 1,"cv11" 1,"case" 0` —
+/// into the tags a shaper takes.
+///
+/// A bare tag means on, as it does in CSS, and `on`/`off` are accepted beside
+/// the numeric form. A value that isn't four bytes isn't a feature tag, so it's
+/// dropped rather than padded into some other feature.
+fn parse_features(value: &str) -> Vec<Feature> {
+    let mut features = Vec::new();
+    for entry in value.split(',') {
+        let entry = entry.trim();
+        // Quoted, per the CSS grammar — which also delimits the tag from its
+        // value without having to guess where one ends.
+        let Some(rest) = entry.strip_prefix(['"', '\'']) else {
+            continue;
+        };
+        let Some(close) = rest.find(['"', '\'']) else {
+            continue;
+        };
+        let Ok(tag) = <[u8; 4]>::try_from(&rest.as_bytes()[..close]) else {
+            continue;
+        };
+        let value = match rest[close + 1..].trim() {
+            "" | "on" => 1,
+            "off" => 0,
+            number => match number.parse() {
+                Ok(value) => value,
+                Err(_) => continue,
+            },
+        };
+        features.push(Feature { tag: FeatureTag::new(&tag), value });
+    }
+    features
+}
+
+/// The font features declared for any of `keys`, as a CSS custom property.
+///
+/// **Only the variables, never a bare `font-feature-settings` rule.** A theme
+/// applies that rule under whatever selector it likes — Primary sets `"case"`
+/// on one — and hoisting a scoped rule to the whole board would turn on
+/// features somebody asked for in one place. The variables are the theme's
+/// typography-wide statement, which is what this is.
+fn css_features(css: &str, keys: &[&str]) -> &'static [Feature] {
+    keys.iter()
+        .find_map(|key| {
+            css_declaration(css, key, |value| {
+                // `var(--x)` is an indirection to another variable, which we
+                // look up directly — following it would be a second parser.
+                if value.starts_with("var(") {
+                    return None;
+                }
+                let features = parse_features(value);
+                (!features.is_empty()).then_some(features)
+            })
+        })
+        .map(intern_features)
+        .unwrap_or(&[])
+}
+
 /// The first concrete font family declared for any of `keys` anywhere in the
 /// sheet (not just `.theme-dark`), leaked to `'static`. Generic families
 /// (`sans-serif`, …) and unresolved `var()` values are skipped.
 fn css_font(css: &str, keys: &[&str]) -> Option<&'static str> {
-    for key in keys {
-        let mut search = css;
-        while let Some(idx) = search.find(key) {
-            let after = &search[idx + key.len()..];
-            search = after;
-            // Require `<key>:` exactly, so `--font-text` doesn't match inside
-            // `--font-text-theme`.
-            let Some(value) = after.trim_start().strip_prefix(':') else {
-                continue;
-            };
-            let end = value.find([';', '}']).unwrap_or(value.len());
-            if let Some(family) = first_family(value[..end].trim()) {
-                return Some(Box::leak(family.into_boxed_str()));
-            }
+    keys.iter().find_map(|key| {
+        css_declaration(css, key, |value| first_family(value).map(|f| intern(&f)))
+    })
+}
+
+/// Hands `read` the value of each `<key>: …` declaration in the sheet, until it
+/// returns something.
+///
+/// Every declaration, not just the first: a stylesheet may set the same
+/// property several times, and only some of those values are ones we can use —
+/// a `var()` indirection or a family list we can't resolve has to fall through
+/// to the next rather than end the search.
+///
+/// The colon must follow the key immediately, so `--font-text` doesn't match
+/// inside `--font-text-theme`.
+fn css_declaration<'a, T>(
+    css: &'a str,
+    key: &str,
+    mut read: impl FnMut(&'a str) -> Option<T>,
+) -> Option<T> {
+    let mut search = css;
+    while let Some(idx) = search.find(key) {
+        let after = &search[idx + key.len()..];
+        search = after;
+        let Some(value) = after.trim_start().strip_prefix(':') else {
+            continue;
+        };
+        let end = value.find([';', '}']).unwrap_or(value.len());
+        if let Some(found) = read(value[..end].trim()) {
+            return Some(found);
         }
     }
     None
@@ -303,6 +425,25 @@ fn css_number(css: &str, key: &str) -> Option<u16> {
         }
     }
     None
+}
+
+/// Maps a numeric font weight to iced's `Weight` enum, the only weight the live
+/// text path can request — which is why [`snap_weight`] exists at all: the
+/// rasterizer instances a variable font's `wght` axis at any value, and iced
+/// can only name nine of them, so both paths are held to the nine.
+pub fn iced_weight(weight: u16) -> iced::font::Weight {
+    use iced::font::Weight;
+    match weight {
+        0..=150 => Weight::Thin,
+        151..=250 => Weight::ExtraLight,
+        251..=350 => Weight::Light,
+        351..=450 => Weight::Normal,
+        451..=550 => Weight::Medium,
+        551..=650 => Weight::Semibold,
+        651..=750 => Weight::Bold,
+        751..=850 => Weight::ExtraBold,
+        _ => Weight::Black,
+    }
 }
 
 /// Snaps a font weight to the nearest standard 100 in `[100, 900]`.
@@ -462,8 +603,51 @@ fn remap_font(name: Option<&'static str>, internal: &[String]) -> Option<&'stati
         return Some(name);
     }
     match internal.iter().find(|i| i.starts_with(name)) {
-        Some(found) => Some(Box::leak(found.clone().into_boxed_str())),
+        Some(found) => Some(intern(found)),
         None => Some(name),
+    }
+}
+
+/// Interns a set of font features to `'static`, so [`Theme`] can stay `Copy`.
+///
+/// Bounded by the distinct sets in play rather than by how often a theme is
+/// applied — which matters because the theme picker re-resolves on every arrow
+/// press.
+fn intern_features(features: Vec<Feature>) -> &'static [Feature] {
+    static SETS: Mutex<Option<HashSet<&'static [Feature]>>> = Mutex::new(None);
+    if features.is_empty() {
+        return &[];
+    }
+    let mut guard = SETS.lock().unwrap();
+    let sets = guard.get_or_insert_with(HashSet::new);
+    match sets.get(features.as_slice()) {
+        Some(found) => found,
+        None => {
+            let leaked: &'static [Feature] = Box::leak(features.into_boxed_slice());
+            let _ = sets.insert(leaked);
+            leaked
+        }
+    }
+}
+
+/// Interns a font family name to `'static`.
+///
+/// [`Theme`] is `Copy`, so the names it holds can't be owned `String`s, and a
+/// family name has to outlive every card it's drawn on. Leaking each one was
+/// fine while a theme loaded once at startup — the font picker previews a
+/// family per arrow press, and interning is what keeps that bounded by the
+/// number of distinct families rather than by how long you scroll.
+pub fn intern(name: &str) -> &'static str {
+    static NAMES: Mutex<Option<HashSet<&'static str>>> = Mutex::new(None);
+    let mut guard = NAMES.lock().unwrap();
+    let names = guard.get_or_insert_with(HashSet::new);
+    match names.get(name) {
+        Some(found) => found,
+        None => {
+            let leaked: &'static str = Box::leak(name.to_owned().into_boxed_str());
+            names.insert(leaked);
+            leaked
+        }
     }
 }
 
@@ -855,5 +1039,79 @@ mod tests {
         assert_eq!(css_number(css, "--x"), None);
         assert_eq!(css_number(css, "--missing"), None);
     }
+
+    #[test]
+    fn font_features_are_read_from_the_theme_s_own_variable() {
+        let css = r#"
+            body { font-feature-settings: var(--text-font-feature); }
+            .theme-dark { --text-font-feature: "calt" 1,"case" 0,"cv11" 1,"ss03" on; }
+            .cm-editor { font-feature-settings: "zero" 1; }
+        "#;
+        let theme = Theme::from_css(css);
+        let got: Vec<(String, u32)> = theme
+            .font_features
+            .iter()
+            .map(|f| (String::from_utf8_lossy(f.tag.as_bytes()).into_owned(), f.value))
+            .collect();
+        assert_eq!(
+            got,
+            [("calt", 1), ("case", 0), ("cv11", 1), ("ss03", 1)]
+                .map(|(tag, value)| (tag.to_owned(), value))
+                .to_vec(),
+            "`on` means 1, and an explicit 0 has to survive as a 0 — it turns a \
+             feature the font enables by default back off",
+        );
+
+        // The scoped rule is not the theme's typography: applying one selector's
+        // features to the whole board would turn on what someone asked for in
+        // one corner of the UI.
+        assert!(
+            !theme.font_features.iter().any(|f| f.tag.as_bytes() == b"zero"),
+            "a bare font-feature-settings rule must not be hoisted",
+        );
+    }
+
+    #[test]
+    fn a_var_indirection_falls_through_to_the_variable_itself() {
+        // Primary writes `--interface-font-feature: var(--text-font-feature)`.
+        // Following that here would be a second CSS parser; the declaration it
+        // points at is in the same sheet, so the scan simply carries on.
+        let css = r#"
+            .theme-dark {
+              --font-text-feature: var(--text-font-feature);
+              --text-font-feature: "cv05" 1;
+            }
+        "#;
+        let theme = Theme::from_css(css);
+        assert_eq!(theme.font_features.len(), 1);
+        assert_eq!(theme.font_features[0].tag.as_bytes(), b"cv05");
+    }
+
+    #[test]
+    fn a_theme_without_features_asks_for_none() {
+        // Not "the defaults we think are nice" — a font's own defaults, which is
+        // what an empty set means to the shaper.
+        assert!(Theme::from_css(".theme-dark { color: #fff; }").font_features.is_empty());
+        assert!(Theme::default().font_features.is_empty());
+    }
+
+    #[test]
+    fn malformed_feature_entries_are_dropped_not_guessed() {
+        // Tags are four bytes. Anything else is not a feature, and padding or
+        // truncating one would silently turn on a different feature.
+        let parsed = parse_features(r#""toolong" 1,"ab" 1,"cv11" 1,notquoted 1,"cv05" maybe"#);
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].tag.as_bytes(), b"cv11");
+    }
+
+    #[test]
+    fn the_same_set_interns_to_the_same_slice() {
+        // The theme picker re-resolves on every arrow press, so this must not
+        // leak per keypress.
+        let a = intern_features(parse_features(r#""cv11" 1,"calt" 1"#));
+        let b = intern_features(parse_features(r#""cv11" 1,"calt" 1"#));
+        assert!(std::ptr::eq(a, b));
+    }
+
 }
 

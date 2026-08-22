@@ -12,6 +12,9 @@ pub struct Cache {
     entries: FxHashMap<KeyHash, Entry>,
     aliases: FxHashMap<KeyHash, KeyHash>,
     recently_used: FxHashSet<KeyHash>,
+    /// ThinkBoard patch: which set of OpenType features the entries below were
+    /// shaped with — see [`text::set_font_features`].
+    features: u64,
 }
 
 impl Cache {
@@ -31,6 +34,18 @@ impl Cache {
         font_system: &mut cosmic_text::FontSystem,
         key: Key<'_>,
     ) -> (KeyHash, &mut Entry) {
+        // ThinkBoard patch: features aren't part of the key — they're a global,
+        // set from the theme — so a changed set invalidates everything at once.
+        // Nothing else would: `trim` keeps whatever is still on screen, which is
+        // exactly the text that would go on showing the old theme's glyphs.
+        let features = text::font_features_generation();
+        if self.features != features {
+            self.features = features;
+            self.entries.clear();
+            self.aliases.clear();
+            self.recently_used.clear();
+        }
+
         let hash = key.hash(FxHasher::default());
 
         if let Some(hash) = self.aliases.get(&hash) {

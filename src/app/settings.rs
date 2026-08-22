@@ -23,6 +23,7 @@ pub(crate) enum Field {
     Canvas,
     Vault,
     Theme,
+    Font,
     SummonHotkey,
     DismissOnBackgroundClick,
     // Only surfaced in the UI on macOS (its Spaces are the only workspaces we
@@ -167,6 +168,11 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         "Theme",
         line(Field::Theme, app.draft(Field::Theme), "ThinkBoard Dark"),
         "A built-in scheme, or one of your own in the themes folder beside this config. Cmd/Ctrl+Shift+P → \"Change theme\" shows them with a preview. Blank uses the default.",
+    ));
+    items.push(setting(
+        "Font",
+        line(Field::Font, app.draft(Field::Font), "Theme default"),
+        "The body typeface, by family name — any font installed on your system. Cmd/Ctrl+Shift+P → \"Change font\" lists them, each set in its own face. Blank uses the theme's.",
     ));
     items.push(setting(
         "Theme CSS",
@@ -633,6 +639,7 @@ pub(crate) fn config_text(config: &Config, field: Field) -> String {
         Field::Canvas => config.canvas.clone(),
         Field::Vault => config.vault.clone(),
         Field::Theme => config.theme.clone(),
+        Field::Font => config.font.clone(),
         Field::SummonHotkey => config.summon_hotkey.clone(),
         Field::ThemeCss => config.theme_css.clone().unwrap_or_default(),
         Field::AiUrl => config.ai_url.clone(),
@@ -665,6 +672,7 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
         (Field::Canvas, Value::Text(s)) => config.canvas = s,
         (Field::Vault, Value::Text(s)) => config.vault = s,
         (Field::Theme, Value::Text(s)) => config.theme = s,
+        (Field::Font, Value::Text(s)) => config.font = s,
         (Field::SummonHotkey, Value::Text(s)) => config.summon_hotkey = s,
         (Field::ThemeCss, Value::Text(s)) => {
             config.theme_css = if s.trim().is_empty() { None } else { Some(s) };
@@ -837,7 +845,10 @@ impl App {
                 Task::batch([self.refresh_snapshots(), self.schedule_recluster()])
             }
             // A theme now swaps in place rather than waiting for a restart.
-            Field::ThemeCss => self.apply_theme_css(),
+            // Naming a theme, clearing the name to fall back to the
+            // stylesheet, pointing at a different stylesheet, choosing a font:
+            // all of them re-resolve, and all of them do it without a restart.
+            Field::Theme | Field::ThemeCss | Field::Font => self.apply_theme_css(),
             // Pointing at a different vault means a different Obsidian theme.
             Field::Vault => self.adopt_vault_theme(),
             // Arm or disarm the trackpad tap immediately (we're on the main

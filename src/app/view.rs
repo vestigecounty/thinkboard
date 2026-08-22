@@ -197,7 +197,8 @@ impl App {
             modal: self.settings_overlay
                 || self.command_palette.is_some()
                 || self.vault_browser.is_some()
-                || self.theme_picker.is_some(),
+                || self.theme_picker.is_some()
+                || self.font_picker.is_some(),
             show_fps: self.show_fps,
             spawning: &self.spawning,
             text_snapshots: &self.rasters.text,
@@ -244,6 +245,9 @@ impl App {
         }
         if let Some(browser) = &self.vault_browser {
             layers = layers.push(self.vault_browser_view(browser));
+        }
+        if let Some(picker) = &self.font_picker {
+            layers = layers.push(self.font_picker_view(picker));
         }
         if let Some(picker) = &self.theme_picker {
             layers = layers.push(self.theme_picker_view(picker));

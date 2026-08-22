@@ -2614,7 +2614,7 @@ impl Board<'_> {
                     let mut font = crate::UI_FONT;
                     // Match the raster path: body/bold use the theme's declared
                     // weights (a face is synthesized at each in `startup::run`).
-                    font.weight = iced_weight(if run.bold {
+                    font.weight = crate::theme::iced_weight(if run.bold {
                         self.theme.weight_bold
                     } else {
                         self.theme.weight_normal
@@ -2691,13 +2691,15 @@ impl Board<'_> {
         let mut byte: Vec<usize> = run.text.char_indices().map(|(b, _)| b).collect();
         byte.push(run.text.len());
 
-        let family = if run.mono {
-            self.theme.font_mono
+        let (family, features) = if run.mono {
+            (self.theme.font_mono, self.theme.font_features_mono)
         } else {
-            self.theme.font_text
+            (self.theme.font_text, self.theme.font_features)
         };
+        // The same features the run is drawn with, or a hit's box would be
+        // measured against different letterforms than the ones under it.
         let width = |text: &str| {
-            crate::text_raster::measure(text, f32::MAX, run.size, 1.0, family).0
+            crate::text_raster::measure(text, f32::MAX, run.size, 1.0, family, features).0
         };
 
         let mut hits = Vec::new();
@@ -3595,23 +3597,6 @@ fn blend(base: Color, tint: Color, amount: f32) -> Color {
         g: base.g + (tint.g - base.g) * amount,
         b: base.b + (tint.b - base.b) * amount,
         a: 1.0,
-    }
-}
-
-/// Maps a numeric font weight (expected snapped to the nearest 100) to iced's
-/// `Weight` enum, the only weight the live text path can request.
-fn iced_weight(weight: u16) -> iced::font::Weight {
-    use iced::font::Weight;
-    match weight {
-        0..=150 => Weight::Thin,
-        151..=250 => Weight::ExtraLight,
-        251..=350 => Weight::Light,
-        351..=450 => Weight::Normal,
-        451..=550 => Weight::Medium,
-        551..=650 => Weight::Semibold,
-        651..=750 => Weight::Bold,
-        751..=850 => Weight::ExtraBold,
-        _ => Weight::Black,
     }
 }
 

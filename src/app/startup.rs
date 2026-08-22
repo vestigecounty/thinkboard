@@ -176,20 +176,12 @@ pub(crate) fn run() -> iced::Result {
     // created, whereas a `LoadFont` task in the boot can run *before* the window
     // (and its compositor) exists and be silently dropped — leaving the live
     // text path to fall back to a system font.
-    if let Some(css) = config
-        .theme_css
-        .as_deref()
-        .and_then(|path| std::fs::read_to_string(path).ok())
-    {
-        let theme = crate::theme::Theme::from_css(&css);
-        let mut fonts = crate::theme::embedded_fonts(&css);
-        fonts.extend(crate::theme::synth_weight_faces(
-            &fonts,
-            &[theme.weight_normal, theme.weight_bold],
-        ));
-        for data in fonts {
-            app = app.font(data);
-        }
+    //
+    // Resolved the same way `App::new` resolves it, so the faces registered
+    // here are the ones the board will actually ask for — a named theme brings
+    // none, and registering some other stylesheet's would be dead weight.
+    for data in super::theme_store::resolve_base(&config).1 {
+        app = app.font(data);
     }
     app.default_font(UI_FONT)
         .subscription(App::subscription)

@@ -39,7 +39,11 @@ real one — use it for any run that might write settings.
   - `iced_graphics` — center-aligned text editing (`set_editor_centered`), and
     `editor_scroll_fraction`, which publishes how far the editor has scrolled so
     the app can draw a scrollbar for it. Both are globals, which is sound only
-    because one node is edited at a time.
+    because one node is edited at a time. Also `set_font_features`, which is a
+    global for a different reason: OpenType features come from the theme, so
+    every run on screen wants the same set. `iced::Font` has nowhere to carry
+    them, and `to_attributes` is the one place iced builds a `cosmic_text::Attrs`
+    — see **Font features** below.
   - `iced_wgpu` — honors wgpu backend env vars so
     `WGPU_DX12_PRESENTATION_SYSTEM=visual` can pick the DirectComposition
     swapchain (transparent overlay on Windows).
@@ -261,8 +265,94 @@ says — so the picker recolours and invalidates on each keypress and leaves the
 rasterizing until a theme is actually chosen. Clusters fall back the same way.
 
 Precedence is `config.theme` (by name) → `config.theme_css` (a stylesheet, which
-is what a vault's Obsidian theme feeds) → the built-in default, applied
-identically at startup and live so switching and relaunching agree.
+is what a vault's Obsidian theme feeds) → the built-in default. That order lives
+in **`theme_store::resolve_base`, and only there** — it used to be written out
+three times (the startup font pass, `App::new`, the live swap), and those have to
+agree or a theme looks one way when you pick it and another after a relaunch.
+
+Because a *named* theme wins, there has to be a way to un-name one: the theme
+picker's first row clears `config.theme`, handing the board back to the vault's
+Obsidian stylesheet — or to the built-in palette when there isn't one, which is
+what the row says it will do. Without it, trying one of ours on made a vault's
+own theme unreachable. The settings field writes the same value, so
+`Field::Theme` re-resolves live exactly as the picker does.
+
+**The font is config, not theme.** `config.font` names a body family and
+`Theme::use_font` layers it over whatever the theme asked for, as the last step
+of every resolution — so a font is a preference you keep while trying themes on,
+rather than something each theme takes back. It overrides only the body family;
+the monospace face still comes from the theme, since code wants a font picked
+for code. Blank means the theme's own, which is what the picker's first row
+sets — without it a font could be chosen but never unchosen.
+
+`font_picker` previews like the theme picker, and additionally drops
+`text_raster`'s shaping caches: they're keyed by text and size but *not* by the
+face those were shaped with, so a stale entry keeps the old typeface's metrics
+under the new one's glyphs. Its rows are each drawn in the family they name
+(`picker::Row::font`) — a few hundred family names in one uniform face tell you
+nothing about any of them.
+
+**Naming a family is not enough to get it.** The shaper matches weight
+*exactly* and falls back to the system face when nothing matches, and plenty of
+families have no 400 at all — Futura's regular is a 500, Arial Black's a 900,
+Skia reports 5. So `use_font` also snaps `weight_normal`/`weight_bold` to what
+the family ships (`text_raster::family_weights`), and the picker's rows ask iced
+for the same weight. Without that, choosing one of those silently renders the
+board in the system font. It's the same failure `synth_weight_faces` exists to
+prevent for a theme's embedded fonts.
+
+That is also why `use_font` reads the font database, so **`set_embedded_fonts`
+has to be called before it** in `App::new` — that entry point only takes effect
+while the database is still unbuilt.
+
+### Font features
+
+A font's stylistic alternates are substitution lookups that **do nothing until
+the shaper asks for them by tag**. Inter carries a single-storey `a` as `cv11`
+and shows the double-storey one until told otherwise; that's what a theme means
+by `font-feature-settings`, and ignoring it renders the theme's typeface with
+the wrong letterforms.
+
+`Theme::font_features` / `font_features_mono` carry the set, interned to
+`'static` so `Theme` stays `Copy`. Prose and code get **different** sets: a
+monospace face's slashed zero is chosen for code and wrong in a sentence.
+
+They have to reach *two* shapers, and a mismatch is visible — the rasterized
+bitmap and the live text would disagree on the same card:
+
+- ours, in `text_raster`'s `base_attrs`/`span_attrs`, and in `measure`, which
+  the search-hit boxes are laid out with (measure the hit under different
+  letterforms and the highlight lands beside the word);
+- iced's, via the vendored `text::set_font_features`. Every path that changes
+  the theme goes through `App::install_theme`, which is the only place that
+  global is written after startup.
+
+**Read from the CSS variables only**, never a bare `font-feature-settings`
+rule: a theme applies that rule under whatever selector it likes — Primary sets
+`"case"` on one — and hoisting a scoped rule to the whole board turns on
+features somebody asked for in one corner. Our own theme format takes the same
+string (`fonts.features`), parsed by the same reader.
+
+Features are part of no cache key — not iced's `text::cache::Key`, not
+`text_raster`'s layout or measurement caches. iced's cache watches
+`font_features_generation` and drops everything when it changes, because `trim`
+alone keeps exactly the text that is still on screen. Ours are dropped by
+whoever changes the theme.
+
+Two things the family list must keep doing. It drops faces whose `hhea`
+declares no horizontal metrics: macOS's `GB18030 Bitmap` is such a font, and
+swash reads an advance from it as `(count - 1) * 4` — an overflow panic in a
+debug build, inside the raster mutex, which poisons it and takes all text down
+(hence `with_raster` recovers from poisoning rather than propagating it). And it
+marks families that can't spell their own name (`FontFamily::legible`) so those
+rows fall back to the panel font: about 200 of the 455 here are Arabic, Hebrew,
+Devanagari, Noto script or symbol faces with no Latin glyphs, and a picker that
+sets every row in its own face leaves half the list as tofu.
+
+Both pickers must be **cancelled rather than dropped** (`App::dismiss_panels`).
+A preview is only undone by cancelling, so a picker discarded when another panel
+opens leaves what it was previewing on the board with nothing in the config to
+match it.
 
 ## Obsidian compatibility
 

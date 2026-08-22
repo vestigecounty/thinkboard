@@ -101,6 +101,48 @@ pub(super) fn resolve(config: &crate::config::Config) -> Option<crate::theme::Th
     Some(theme)
 }
 
+/// The theme the config asks for, with the faces a stylesheet embeds — and
+/// *before* [`crate::theme::Theme::use_font`], so this is also the theme's own
+/// idea of its font, which is what lets the font picker offer a way back to it.
+///
+/// **The one place that resolution order lives.** It was written out three
+/// times — the startup font pass, `App::new`, and the live swap — and those
+/// have to agree, or a theme looks one way when you pick it and another after
+/// a relaunch. Callers pair it with `use_font`, which is the only step this
+/// deliberately leaves out.
+pub(super) fn resolve_base(
+    config: &crate::config::Config,
+) -> (crate::theme::Theme, Vec<Vec<u8>>) {
+    if let Some(theme) = resolve(config) {
+        // A named theme has no embedded faces — it names families, and finding
+        // them is the font database's job.
+        return (theme, Vec::new());
+    }
+    let css = config
+        .theme_css
+        .as_deref()
+        .and_then(|path| match std::fs::read_to_string(path) {
+            Ok(css) => Some(css),
+            Err(error) => {
+                eprintln!("theme: could not read {path} ({error})");
+                None
+            }
+        });
+    // No theme (or an unreadable one): the built-in palette.
+    let Some(css) = css else {
+        return (crate::theme::Theme::default(), Vec::new());
+    };
+    let mut theme = crate::theme::Theme::from_css(&css);
+    let mut fonts = crate::theme::embedded_fonts(&css);
+    fonts.extend(crate::theme::synth_weight_faces(
+        &fonts,
+        &[theme.weight_normal, theme.weight_bold],
+    ));
+    // Point the theme's font names at the embedded files' real family names.
+    crate::theme::resolve_embedded_names(&mut theme, &fonts);
+    (theme, fonts)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -195,6 +195,17 @@ pub struct Fonts {
     pub weight_normal: Option<u16>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub weight_bold: Option<u16>,
+    /// OpenType features, in CSS `font-feature-settings` syntax:
+    /// `"calt" 1, "cv11" 1, "case" 0`.
+    ///
+    /// A string rather than a parsed list, because the tags mean nothing to
+    /// this crate — it has no shaper — and the syntax is the one every font's
+    /// documentation is already written in. The front-end parses it, the same
+    /// way it resolves a family name into a face.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub features: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub features_mono: Option<String>,
 }
 
 /// A theme with its two colour layers flattened: the palette's derivation, then

@@ -57,6 +57,7 @@ mod search;
 mod settings;
 mod startup;
 mod sync;
+mod font_picker;
 mod theme_picker;
 mod theme_store;
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
@@ -363,6 +364,17 @@ pub(crate) enum Message {
     CommitTheme,
     PickTheme(String),
 
+    /// Font picker (from the palette): the same panel over the installed
+    /// families, previewing the highlighted one on the board.
+    OpenFontPicker,
+    CloseFontPicker,
+    FontPickerInput(String),
+    FontPickerNav(picker::Nav),
+    FontPickerScrolled(f32),
+    /// Keep the highlighted font (Enter), or a clicked one.
+    CommitFont,
+    PickFont(String),
+
     /// Pick the vault folder: the request, the dialog once the overlay has
     /// hidden for it, and its answer.
     ChooseVault,
@@ -528,6 +540,8 @@ struct App {
     /// The theme picker, when open. Also shares the shell, and previews the
     /// highlighted theme on the board beneath it.
     theme_picker: Option<theme_picker::ThemePicker>,
+    /// The font picker, when open. Shares the shell and previews the same way.
+    font_picker: Option<font_picker::FontPicker>,
     /// The canvases the last vault walk found, newest first. Kept while the
     /// browser is closed so reopening it is instant; a fresh walk replaces it.
     vault_canvases: Vec<thinkboard_core::vault::CanvasEntry>,
@@ -643,24 +657,18 @@ impl App {
         // entirely in windowed mode.
         let (hotkey_manager, registered_hotkey) =
             startup::register_summon_hotkey(&config.summon_hotkey, windowed);
-        // A named theme wins. Failing that, the Obsidian stylesheet — read once
-        // for both its colors/font names and any fonts it embeds as base64
-        // WOFF2, which a named theme has no equivalent of.
-        let (mut theme, embedded_fonts) = match theme_store::resolve(&config) {
-            Some(theme) => (theme, Vec::new()),
-            None => match config.theme_css.as_deref() {
-                Some(path) => match std::fs::read_to_string(path) {
-                    Ok(css) => (ColorTheme::from_css(&css), crate::theme::embedded_fonts(&css)),
-                    Err(_) => {
-                        eprintln!("theme: could not read {path}");
-                        (ColorTheme::default(), Vec::new())
-                    }
-                },
-                None => (ColorTheme::default(), Vec::new()),
-            },
-        };
-        // Point the theme's font names at the embedded files' real family names.
-        crate::theme::resolve_embedded_names(&mut theme, &embedded_fonts);
+        // A named theme wins, failing that the Obsidian stylesheet — the same
+        // order the live swap and the startup font pass use, because all three
+        // go through `resolve_base`. The user's own font is layered on top.
+        let (mut theme, embedded_fonts) = theme_store::resolve_base(&config);
+        // Registered *before* `use_font`, which reads the font database to find
+        // the family's real weights and so builds it — and `set_embedded_fonts`
+        // only takes effect while it's still unbuilt. Get this the wrong way
+        // round and a theme's own font is missing from the board it ships with.
+        if !embedded_fonts.is_empty() {
+            text_raster::set_embedded_fonts(embedded_fonts);
+        }
+        theme.use_font(&config.font);
 
         // A real canvas loads from (and autosaves to) its file; the scratch
         // board is parsed from the embedded string and never touches disk.
@@ -681,20 +689,12 @@ impl App {
             }
         };
 
-        // Register the theme's embedded fonts in the raster font DB (for layout
-        // + rasterized draw), with a synthesized face at each themed weight for
-        // variable fonts so body/bold spans match the theme font rather than a
-        // system one (see synth_weight_faces). iced's own font system (the live
-        // draw path) is loaded separately, in `startup::run` via the builder —
-        // see there for why not `iced::font::load`.
-        let mut embedded_fonts = embedded_fonts;
-        embedded_fonts.extend(crate::theme::synth_weight_faces(
-            &embedded_fonts,
-            &[theme.weight_normal, theme.weight_bold],
-        ));
-        if !embedded_fonts.is_empty() {
-            text_raster::set_embedded_fonts(embedded_fonts);
-        }
+        // (The theme's embedded fonts went into the raster font DB above, with a
+        // synthesized face at each themed weight for variable fonts so body/bold
+        // spans match the theme font rather than a system one — see
+        // `synth_weight_faces`. iced's own font system, the live draw path, is
+        // loaded separately in `startup::run` via the builder; see there for why
+        // not `iced::font::load`.)
         text_raster::warm_up();
 
         let app = Self::build(Init {
@@ -728,6 +728,11 @@ impl App {
             registered_hotkey,
             windowed,
         } = init;
+
+        // The theme's OpenType features live in a global in the vendored
+        // renderer, not on `self.theme` — see `install_theme`, which every later
+        // change goes through. This is the first one.
+        iced_graphics::text::set_font_features(theme.font_features);
 
         let images = document
             .nodes
@@ -790,6 +795,7 @@ impl App {
             command_palette: None,
             vault_browser: None,
             theme_picker: None,
+            font_picker: None,
             vault_canvases: Vec::new(),
             vault_scanning: false,
             settings_overlay: false,
@@ -1079,9 +1085,7 @@ impl App {
 
             // --- Find bar ---
             Message::OpenSearch => {
-                self.command_palette = None; // mutually exclusive
-                self.vault_browser = None;
-                self.theme_picker = None;
+                let dismissed = self.dismiss_panels(); // mutually exclusive
                 if self.search.is_none() {
                     self.search = Some(Search {
                         query: String::new(),
@@ -1089,9 +1093,12 @@ impl App {
                         current: 0,
                     });
                 }
-                return iced::advanced::widget::operate(
-                    iced::advanced::widget::operation::focusable::focus(SEARCH_INPUT.clone()),
-                );
+                return Task::batch([
+                    dismissed,
+                    iced::advanced::widget::operate(
+                        iced::advanced::widget::operation::focusable::focus(SEARCH_INPUT.clone()),
+                    ),
+                ]);
             }
             Message::SearchInput(query) => return self.search_input(query),
             Message::SearchNext | Message::SearchPrev => {
@@ -1114,14 +1121,16 @@ impl App {
             // --- Command palette ---
             Message::OpenCommandPalette => {
                 self.search = None; // mutually exclusive
-                self.vault_browser = None;
-                self.theme_picker = None;
+                let dismissed = self.dismiss_panels();
                 self.command_palette = Some(picker::State::default());
-                return iced::advanced::widget::operate(
-                    iced::advanced::widget::operation::focusable::focus(
-                        command::COMMAND_INPUT.clone(),
+                return Task::batch([
+                    dismissed,
+                    iced::advanced::widget::operate(
+                        iced::advanced::widget::operation::focusable::focus(
+                            command::COMMAND_INPUT.clone(),
+                        ),
                     ),
-                );
+                ]);
             }
             Message::CloseCommandPalette => self.command_palette = None,
             Message::CommandPaletteInput(query) => {
@@ -1185,6 +1194,36 @@ impl App {
             }
             Message::CommitTheme => return self.commit_theme(),
             Message::PickTheme(name) => return self.pick_theme(&name),
+
+            Message::OpenFontPicker => return self.open_font_picker(),
+            Message::CloseFontPicker => return self.cancel_font_picker(),
+            Message::FontPickerInput(query) => {
+                if let Some(picker) = &mut self.font_picker {
+                    picker.state.query = query;
+                    picker.state.reset();
+                }
+                return self.preview_highlighted_font();
+            }
+            Message::FontPickerNav(nav) => {
+                let len = match &self.font_picker {
+                    Some(picker) => self.font_matches(&picker.state.query).len(),
+                    None => return Task::none(),
+                };
+                let scroll = match &mut self.font_picker {
+                    Some(picker) => {
+                        picker::navigate(&mut picker.state, nav, len, &font_picker::FONT_LIST)
+                    }
+                    None => Task::none(),
+                };
+                return Task::batch([scroll, self.preview_highlighted_font()]);
+            }
+            Message::FontPickerScrolled(offset) => {
+                if let Some(picker) = &mut self.font_picker {
+                    picker.state.offset = offset;
+                }
+            }
+            Message::CommitFont => return self.commit_font(),
+            Message::PickFont(name) => return self.pick_font(&name),
 
             Message::SwitchCanvas => return self.switch_canvas(),
             Message::OpenVaultBrowser => return self.open_vault_browser(),
@@ -1325,6 +1364,33 @@ impl App {
         }
         self.cache.clear();
         self.refresh_snapshots()
+    }
+
+    /// Installs `theme` as the one in use.
+    ///
+    /// Not just a field assignment: the OpenType features a theme asks for
+    /// reach iced's shaper through a global in the vendored renderer, since
+    /// `iced::Font` has nowhere to carry them. Every path that changes the
+    /// theme — adopting one, previewing one, putting one back — goes through
+    /// here, or the board's live text keeps the previous theme's letterforms
+    /// while its bitmaps show the new ones.
+    fn install_theme(&mut self, theme: crate::theme::Theme) {
+        self.theme = theme;
+        iced_graphics::text::set_font_features(theme.font_features);
+    }
+
+    /// Closes whichever type-to-narrow panel is open, because only one is ever
+    /// open at a time.
+    ///
+    /// The two pickers are *cancelled* rather than dropped: both preview on the
+    /// board as you scroll them, and a preview is only ever undone by
+    /// cancelling. Dropping one leaves what it was previewing on screen with
+    /// nothing in the config to match, until something else re-resolves the
+    /// theme — which may not be until the next launch.
+    fn dismiss_panels(&mut self) -> Task<Message> {
+        self.command_palette = None;
+        self.vault_browser = None;
+        Task::batch([self.cancel_theme_picker(), self.cancel_font_picker()])
     }
 
     fn pan(&mut self, delta: Vector, track: bool) {
@@ -1708,6 +1774,7 @@ impl App {
             CommandId::OpenBoard => Message::CanvasAction("open_board".to_owned()),
             CommandId::OpenVault => Message::ChooseVault,
             CommandId::ChooseTheme => Message::OpenThemePicker,
+            CommandId::ChooseFont => Message::OpenFontPicker,
             CommandId::SwitchCanvas => Message::SwitchCanvas,
             CommandId::FindOnBoard => Message::OpenSearch,
             // From the palette, settings open in-board (the tray still uses the
@@ -2027,6 +2094,9 @@ impl App {
         // Same for the vault browser, which shares the palette's shell.
         if self.vault_browser.is_some() {
             subscriptions.push(iced::event::listen_with(vault::key_event));
+        }
+        if self.font_picker.is_some() {
+            subscriptions.push(iced::event::listen_with(font_picker::key_event));
         }
         if self.theme_picker.is_some() {
             subscriptions.push(iced::event::listen_with(theme_picker::key_event));

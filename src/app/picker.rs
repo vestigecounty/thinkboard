@@ -162,6 +162,10 @@ pub(super) struct Row<'a> {
     /// A disabled row is greyed and can't be pressed (but still takes a slot,
     /// so the list doesn't reshuffle as the app's state changes under it).
     pub enabled: bool,
+    /// Draws the title in a face of the row's own choosing rather than the
+    /// panel's. Only the font picker uses it, where a list of family names in
+    /// one uniform face would tell you nothing about any of them.
+    pub font: Option<iced::Font>,
     pub press: Message,
 }
 
@@ -237,7 +241,11 @@ pub(super) fn view<'a>(
             let selected = i == state.selected;
             let title_color = if entry.enabled { text_c } else { muted };
             let mut line = row![
-                text(entry.title).size(14).font(font).color(title_color).width(Length::Fill)
+                text(entry.title)
+                    .size(14)
+                    .font(entry.font.unwrap_or(font))
+                    .color(title_color)
+                    .width(Length::Fill)
             ]
             // A row is a fixed height, and `layout::padded` seats a button's
             // content against its padding rather than centring it — so the line

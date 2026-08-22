@@ -101,6 +101,15 @@ pub struct Config {
     /// Only plain color values are used; `var()`/`color-mix()`/`hsl()` keep
     /// the built-in defaults.
     pub theme_css: Option<String>,
+    /// The body font family, by name — any family installed on the system, or
+    /// one a theme embeds. Blank takes whatever the theme asks for, and the
+    /// platform UI face if it asks for nothing.
+    ///
+    /// Deliberately *not* part of the theme: a theme is something you adopt
+    /// whole, a font is a preference you keep across all of them. It overrides
+    /// only the body family — the monospace face still comes from the theme,
+    /// since code wants a font chosen for code.
+    pub font: String,
     /// Overlay dim opacity over the desktop (0 = none, 1 = solid black).
     pub overlay_dim: f32,
     /// Whether node/cluster text may be centered. When true (default), plain or
@@ -210,6 +219,7 @@ impl Default for Config {
 
             theme: String::new(),
             theme_css: None,
+            font: String::new(),
             overlay_dim: 0.55,
             center_node_text: true,
             rasterize_text: true,

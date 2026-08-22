@@ -1358,6 +1358,182 @@ fn only_one_panel_is_open_at_a_time_including_the_theme_picker() {
 }
 
 #[test]
+fn the_theme_picker_can_hand_the_board_back_to_the_stylesheet() {
+    // A named theme wins over `theme_css`, so without a way to clear the name
+    // a vault's Obsidian theme is unreachable once you try one of ours on.
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.theme = "Nord".to_owned();
+    let _ = app.apply_theme_css();
+    let nord = app.theme.background;
+
+    send(&mut app, Message::OpenThemePicker);
+    send(&mut app, Message::PickTheme(String::new()));
+    assert_eq!(app.config.theme, "", "the name is cleared, not set to a theme");
+    assert_ne!(app.theme.background, nord, "and the board stops being Nord");
+}
+
+#[test]
+fn the_picker_opens_on_the_unnamed_row_when_no_theme_is_named() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    assert_eq!(app.config.theme, "");
+    send(&mut app, Message::OpenThemePicker);
+    assert_eq!(
+        app.highlighted_theme_name().as_deref(),
+        Some(""),
+        "the highlight opens on what's in use, which is no named theme",
+    );
+}
+
+#[test]
+fn naming_a_theme_in_settings_takes_effect_without_a_restart() {
+    // The settings field and the picker write the same config value, so they
+    // have to apply it the same way.
+    let mut app = app_with(two_nodes(), Vec::new());
+    let before = app.theme.background;
+    let type_theme = |app: &mut App, name: &str| {
+        send(app, Message::Settings(settings::Msg::Edit(settings::Field::Theme, name.to_owned())));
+        send(app, Message::Settings(settings::Msg::Commit));
+    };
+
+    type_theme(&mut app, "Nord");
+    assert_eq!(app.config.theme, "Nord");
+    assert_ne!(app.theme.background, before, "the board should already be Nord");
+
+    // And clearing it goes back, rather than leaving the last theme stuck on.
+    type_theme(&mut app, "");
+    assert_eq!(app.config.theme, "");
+    assert_eq!(app.theme.background, before);
+}
+
+// --- The font picker ---
+
+/// A family the font database is certain to have, whatever machine this runs
+/// on: the picker lists what the rasterizer can draw with, so anything in it
+/// qualifies.
+fn some_family() -> String {
+    text_raster::families().first().map(|f| f.name.clone()).expect("the system has fonts")
+}
+
+#[test]
+fn the_font_picker_opens_on_the_font_in_use() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    let family = some_family();
+    app.config.font = family.clone();
+    send(&mut app, Message::OpenFontPicker);
+    assert_eq!(app.highlighted_font().as_deref(), Some(family.as_str()));
+}
+
+#[test]
+fn the_first_row_is_the_theme_s_own_font() {
+    // Blank config, so nothing overrides the theme — the highlight opens on the
+    // entry that means exactly that.
+    let mut app = app_with(two_nodes(), Vec::new());
+    send(&mut app, Message::OpenFontPicker);
+    assert_eq!(app.highlighted_font().as_deref(), Some(""));
+}
+
+#[test]
+fn scrolling_the_font_picker_previews_on_the_board() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.rasters.text.insert(
+        0,
+        text_raster::snapshot_markdown("node a", 200.0, 100.0, 180.0, 17.0, app.theme, false, 1.0)
+            .expect("a bitmap"),
+    );
+    assert_eq!(app.theme.font_text, None, "the default theme names no family");
+
+    send(&mut app, Message::OpenFontPicker);
+    send(&mut app, Message::FontPickerNav(picker::Nav::Step(1)));
+    assert!(app.theme.font_text.is_some(), "the board should show the highlight");
+    // Same trick as the theme preview: drop the bitmaps and let the cards draw
+    // live, rather than re-rasterizing on every arrow press.
+    assert!(app.rasters.text.is_empty());
+}
+
+#[test]
+fn dismissing_the_font_picker_puts_the_old_font_back() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    let family = some_family();
+    app.config.font = family.clone();
+    let _ = app.apply_theme_css();
+    let before = app.theme.font_text;
+
+    send(&mut app, Message::OpenFontPicker);
+    send(&mut app, Message::FontPickerNav(picker::Nav::Step(1)));
+    send(&mut app, Message::CloseFontPicker);
+
+    assert!(app.font_picker.is_none());
+    assert_eq!(app.theme.font_text, before, "Esc must undo the preview");
+    assert_eq!(app.config.font, family, "and not have written the previewed one");
+}
+
+#[test]
+fn choosing_a_font_keeps_it() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    send(&mut app, Message::OpenFontPicker);
+    send(&mut app, Message::FontPickerNav(picker::Nav::Step(1)));
+    let previewed = app.theme.font_text.expect("a family is highlighted");
+
+    send(&mut app, Message::CommitFont);
+    assert!(app.font_picker.is_none());
+    assert_eq!(app.config.font, previewed, "the config records what was previewed");
+    assert_eq!(app.theme.font_text, Some(previewed), "what you saw is what you kept");
+}
+
+#[test]
+fn the_first_row_clears_a_font_back_to_the_theme_s() {
+    // The way back. Without it a font could be set but never unset, since the
+    // list is otherwise all families.
+    let mut app = app_with(two_nodes(), Vec::new());
+    let family = some_family();
+    app.config.font = family;
+    let _ = app.apply_theme_css();
+    assert!(app.theme.font_text.is_some());
+
+    send(&mut app, Message::OpenFontPicker);
+    send(&mut app, Message::PickFont(String::new()));
+    assert_eq!(app.config.font, "");
+    assert_eq!(app.theme.font_text, None, "back to the theme's own face");
+}
+
+#[test]
+fn a_font_survives_changing_the_theme() {
+    // The point of keeping it in the config rather than in the theme: adopting
+    // a theme takes its colours, not its typeface.
+    let mut app = app_with(two_nodes(), Vec::new());
+    let family = some_family();
+    app.config.font = family.clone();
+    let _ = app.apply_theme_css();
+
+    send(&mut app, Message::OpenThemePicker);
+    send(&mut app, Message::ThemePickerInput("solarized".to_owned()));
+    send(&mut app, Message::CommitTheme);
+
+    assert_eq!(app.config.theme, "Solarized Dark");
+    assert_eq!(app.theme.font_text, Some(family.as_str()));
+}
+
+#[test]
+fn another_panel_cancels_a_font_preview_rather_than_dropping_it() {
+    // A dropped picker would leave the previewed face on the board with a
+    // config that says otherwise — invisible until the next relaunch.
+    let mut app = app_with(two_nodes(), Vec::new());
+    send(&mut app, Message::OpenFontPicker);
+    send(&mut app, Message::FontPickerNav(picker::Nav::Step(1)));
+    assert!(app.theme.font_text.is_some());
+
+    send(&mut app, Message::OpenCommandPalette);
+    assert!(app.font_picker.is_none(), "the palette displaces the picker");
+    assert_eq!(app.theme.font_text, None, "and undoes what it was previewing");
+
+    send(&mut app, Message::OpenFontPicker);
+    send(&mut app, Message::FontPickerNav(picker::Nav::Step(1)));
+    send(&mut app, Message::OpenSearch);
+    assert!(app.font_picker.is_none(), "and so does the find bar");
+    assert_eq!(app.theme.font_text, None);
+}
+
+#[test]
 fn a_raster_in_flight_cannot_un_highlight_a_search_hit() {
     // Rasterizing runs in the background, so a batch started before the search
     // lands after it. Installing its bitmap would hide the highlight, since

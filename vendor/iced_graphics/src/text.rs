@@ -16,6 +16,7 @@ use crate::core::{Color, Pixels, Point, Rectangle, Size, Transformation};
 
 use std::borrow::Cow;
 use std::collections::HashSet;
+use std::sync::atomic;
 use std::sync::{Arc, OnceLock, RwLock, Weak};
 
 /// A text primitive.
@@ -255,13 +256,65 @@ pub fn align(
     min_bounds
 }
 
+/// ThinkBoard patch: the OpenType features every shaped run asks for.
+///
+/// A font's stylistic alternates — Inter's single-storey `a` (`cv11`), its
+/// disambiguation set (`ss02`), a theme's chosen ligatures — are substitution
+/// lookups that lie dormant unless the shaper requests them by tag. On the web
+/// that request is `font-feature-settings`; iced's [`Font`] has no equivalent,
+/// so an Obsidian theme's typography arrives here and is silently ignored.
+///
+/// A global, and sound for the same reason the editor's alignment is one: the
+/// features come from the theme, so every run on screen wants the same set.
+/// Text shaped before a theme changes keeps the old features until the caches
+/// are dropped, which is what `Renderer::clear_caches` is called for.
+static FONT_FEATURES: RwLock<Vec<cosmic_text::Feature>> = RwLock::new(Vec::new());
+
+/// ThinkBoard patch: sets the OpenType features applied to all shaped text.
+///
+/// Each entry is a four-byte tag and a value — `1` to enable, `0` to disable,
+/// or an index for a feature that takes one. Pass an empty slice for the
+/// font's own defaults.
+pub fn set_font_features(features: &[cosmic_text::Feature]) {
+    let mut slot = FONT_FEATURES.write().expect("font features");
+    if slot[..] == *features {
+        return;
+    }
+    slot.clear();
+    slot.extend_from_slice(features);
+    let _ = FONT_FEATURES_GENERATION.fetch_add(1, atomic::Ordering::Relaxed);
+}
+
+/// ThinkBoard patch: bumped whenever [`set_font_features`] changes the set.
+///
+/// The features are a global rather than part of a [`Font`], so they can't be
+/// part of a text cache key either — [`cache::Cache`] watches this instead and
+/// drops everything it shaped under a previous set.
+static FONT_FEATURES_GENERATION: atomic::AtomicU64 = atomic::AtomicU64::new(0);
+
+/// ThinkBoard patch: which set of features is in force, as a counter.
+pub fn font_features_generation() -> u64 {
+    FONT_FEATURES_GENERATION.load(atomic::Ordering::Relaxed)
+}
+
 /// Returns the attributes of the given [`Font`].
 pub fn to_attributes(font: Font) -> cosmic_text::Attrs<'static> {
-    cosmic_text::Attrs::new()
+    let attrs = cosmic_text::Attrs::new()
         .family(to_family(font.family))
         .weight(to_weight(font.weight))
         .stretch(to_stretch(font.stretch))
-        .style(to_style(font.style))
+        .style(to_style(font.style));
+
+    // ThinkBoard patch: apply the features set above. Read on every shaped run,
+    // so the lock is taken often but held for a clone of a handful of tags.
+    let features = FONT_FEATURES.read().expect("font features");
+    if features.is_empty() {
+        return attrs;
+    }
+    cosmic_text::Attrs {
+        font_features: cosmic_text::FontFeatures { features: features.clone() },
+        ..attrs
+    }
 }
 
 fn to_family(family: font::Family) -> cosmic_text::Family<'static> {

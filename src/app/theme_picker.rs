@@ -29,10 +29,15 @@ pub(crate) static THEME_LIST: LazyLock<Id> = LazyLock::new(|| Id::new("theme-pic
 /// what to put back if it's dismissed.
 pub(crate) struct ThemePicker {
     pub state: picker::State,
-    /// Read once when the panel opens. Re-reading the directory on every
-    /// keystroke would put disk access behind the arrow keys, and a theme
-    /// appearing mid-scroll would move the highlight under the user.
+    /// Read once when the panel opens, with a nameless entry first for
+    /// [`no_theme_label`]. Re-reading the directory on every keystroke would put
+    /// disk access behind the arrow keys, and a theme appearing mid-scroll would
+    /// move the highlight under the user.
     themes: Vec<ThemeFile>,
+    /// What naming no theme gives you: the Obsidian stylesheet if one is
+    /// configured, else the built-in palette. Resolved when the panel opens, so
+    /// the first row can preview like any other.
+    unnamed: Theme,
     /// The theme in use before the panel opened, restored on Esc.
     before: Theme,
     /// Its name, for restoring the config and for marking the row.
@@ -62,18 +67,25 @@ impl App {
         self.command_palette = None;
         self.vault_browser = None;
 
-        let themes = super::theme_store::all();
+        // The way back to the stylesheet. A named theme wins over
+        // `config.theme_css`, so without this row a vault's Obsidian theme
+        // becomes unreachable the moment you try one of ours on.
+        let mut themes = vec![ThemeFile { name: String::new(), ..ThemeFile::default() }];
+        themes.extend(super::theme_store::all());
         // Open on the theme in use, so the first arrow press is a step from
         // where you are rather than a jump to the top of the list.
         let before_name = self.config.theme.trim().to_owned();
-        let selected = themes
-            .iter()
-            .position(|t| t.name == before_name)
-            .unwrap_or(0);
+        let selected = themes.iter().position(|t| t.name == before_name).unwrap_or(0);
+
+        let mut unnamed = self.config.clone();
+        unnamed.theme.clear();
+        let (mut unnamed, _) = super::theme_store::resolve_base(&unnamed);
+        unnamed.use_font(&self.config.font);
 
         self.theme_picker = Some(ThemePicker {
             state: picker::State { selected, ..picker::State::default() },
             themes,
+            unnamed,
             before: self.theme,
             before_name,
         });
@@ -82,6 +94,20 @@ impl App {
         );
         // Scroll the list to wherever the current theme sits.
         Task::batch([focus, self.preview_highlighted()])
+    }
+
+    /// What a row says. The nameless first entry is named for what choosing it
+    /// *does*, which depends on whether there's a stylesheet behind it: with one
+    /// configured — which is what a vault sets up — clearing the name hands the
+    /// board back to Obsidian's own theme.
+    fn theme_label<'a>(&'a self, theme: &'a ThemeFile) -> &'a str {
+        if !theme.name.is_empty() {
+            return &theme.name;
+        }
+        match self.config.theme_css.as_deref().map(str::trim) {
+            Some(css) if !css.is_empty() => "Obsidian theme",
+            _ => "Built-in default",
+        }
     }
 
     /// The themes matching what's been typed, best first.
@@ -99,9 +125,11 @@ impl App {
                 // The author is matched but never shown — the same hidden search
                 // terms the command palette gives its commands, so "schoonover"
                 // finds Solarized without the name being cluttered by it.
-                let score = thinkboard_core::fuzzy::score(query, &theme.name).or_else(|| {
-                    thinkboard_core::fuzzy::score(query, theme.author.as_deref()?).map(|s| s - 4)
-                })?;
+                let score = thinkboard_core::fuzzy::score(query, self.theme_label(theme))
+                    .or_else(|| {
+                        thinkboard_core::fuzzy::score(query, theme.author.as_deref()?)
+                            .map(|s| s - 4)
+                    })?;
                 Some((i, score))
             })
             .collect();
@@ -131,9 +159,19 @@ impl App {
         let Some(file) = self.highlighted_theme() else {
             return Task::none();
         };
-        let mut theme = Theme::default();
-        theme.apply_resolved(&file.resolve());
-        self.theme = theme;
+        let theme = if file.name.is_empty() {
+            self.theme_picker.as_ref().map(|p| p.unnamed).unwrap_or_default()
+        } else {
+            let mut theme = Theme::default();
+            theme.apply_resolved(&file.resolve());
+            theme.use_font(&self.config.font);
+            theme
+        };
+        self.install_theme(theme);
+        // A theme carries typography as well as colour — a family, its weights,
+        // its OpenType features — and the shaping caches are keyed by none of
+        // those, so a stale entry would measure the previous theme's text.
+        crate::canvas::text_raster::clear_caches();
         self.rasters.clear();
         self.clusters.snapshots.clear();
         self.cache.clear();
@@ -170,8 +208,10 @@ impl App {
             return Task::none();
         };
         self.config.theme = picker.before_name;
-        self.theme = picker.before;
-        // The preview left the board drawing live text; rebuild the bitmaps.
+        self.install_theme(picker.before);
+        // The preview left the board drawing live text, measured under the
+        // theme it was previewing.
+        crate::canvas::text_raster::clear_caches();
         self.rasters.clear();
         self.clusters.snapshots.clear();
         self.cache.clear();
@@ -184,7 +224,7 @@ impl App {
             .into_iter()
             .filter_map(|index| picker.themes.get(index))
             .map(|theme| Row {
-                title: theme.name.as_str().into(),
+                title: self.theme_label(theme).into(),
                 // Which one you're on, the way the vault browser marks the open
                 // canvas. *Not* the author: attribution belongs in the file, and
                 // no editor puts it in front of you every time you pick a theme.
@@ -194,6 +234,7 @@ impl App {
                     "".into()
                 },
                 enabled: true,
+                font: None,
                 press: Message::PickTheme(theme.name.clone()),
             })
             .collect();

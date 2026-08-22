@@ -23,6 +23,7 @@
 
   "theme": "",
   "theme_css": null,
+  "font": "",
   "overlay_dim": 0.55,
   "center_node_text": true,
   "rasterize_text": true,

@@ -228,37 +228,10 @@ impl App {
     /// into directly, and iced's, which takes them as a task. Until both land,
     /// text falls back to the system face rather than showing nothing.
     pub(super) fn apply_theme_css(&mut self) -> Task<Message> {
-        // A named theme wins, exactly as it does at startup — otherwise
-        // switching one live and relaunching would disagree.
-        if let Some(theme) = super::theme_store::resolve(&self.config) {
-            return self.adopt_theme(theme, Vec::new());
-        }
-        let css = self
-            .config
-            .theme_css
-            .as_deref()
-            .and_then(|path| match std::fs::read_to_string(path) {
-                Ok(css) => Some(css),
-                Err(error) => {
-                    eprintln!("theme: could not read {path} ({error})");
-                    None
-                }
-            });
-
-        let (mut theme, fonts) = match &css {
-            Some(css) => {
-                let theme = crate::theme::Theme::from_css(css);
-                let mut fonts = crate::theme::embedded_fonts(css);
-                fonts.extend(crate::theme::synth_weight_faces(
-                    &fonts,
-                    &[theme.weight_normal, theme.weight_bold],
-                ));
-                (theme, fonts)
-            }
-            // No theme (or an unreadable one): back to the built-in palette.
-            None => (crate::theme::Theme::default(), Vec::new()),
-        };
-        crate::theme::resolve_embedded_names(&mut theme, &fonts);
+        // A named theme wins, exactly as it does at startup — `resolve_base` is
+        // shared with it, so switching one live and relaunching can't disagree.
+        let (mut theme, fonts) = super::theme_store::resolve_base(&self.config);
+        theme.use_font(&self.config.font);
         self.adopt_theme(theme, fonts)
     }
 
@@ -275,7 +248,7 @@ impl App {
             .collect();
         text_raster::add_embedded_fonts(fonts);
 
-        self.theme = theme;
+        self.install_theme(theme);
         // Every bitmap on the board has the old colours baked into it, and the
         // cluster labels with them.
         self.rasters.clear();
@@ -327,6 +300,7 @@ impl App {
                     entry.folder().into()
                 },
                 enabled: true,
+                font: None,
                 press: Message::OpenVaultCanvas(entry.path.clone()),
             })
             .collect();

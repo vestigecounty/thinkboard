@@ -29,6 +29,7 @@ pub(crate) enum CommandId {
     OpenBoard,
     OpenVault,
     ChooseTheme,
+    ChooseFont,
     SwitchCanvas,
     FindOnBoard,
     Settings,
@@ -93,6 +94,7 @@ static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
         cmd(SwitchCanvas, "Switch canvas", "vault browse boards open recent", "⌘O"),
         cmd(OpenVault, "Open vault…", "obsidian folder library", ""),
         cmd(ChooseTheme, "Change theme…", "colours colors appearance scheme palette dark", ""),
+        cmd(ChooseFont, "Change font…", "typeface family typography text serif mono", ""),
         cmd(AddNode, "Add node", "new note card", ""),
         cmd(AskAi, "Ask AI", "generate llm gpt", ""),
         cmd(Distribute, "Auto-layout selection", "distribute arrange tidy", ""),
@@ -188,6 +190,7 @@ pub(super) fn view<'a>(app: &'a App, state: &'a picker::State) -> Element<'a, Me
             title: command.title.into(),
             detail: command.shortcut.into(),
             enabled: command.id.is_enabled(app),
+            font: None,
             press: Message::RunCommand(command.id),
         })
         .collect();

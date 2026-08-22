@@ -14,7 +14,8 @@ use std::time::Instant;
 
 use cosmic_text::{
     Align, Attrs, AttrsList, Buffer, BufferLine, Color as CosmicColor, Family, FontSystem,
-    LineEnding, Metrics, Shaping, Style, SwashCache, Weight, Wrap,
+    Feature, FontFeatures, LineEnding, Metrics, Shaping, Style, SwashCache, Weight, Wrap,
+    fontdb,
 };
 use iced::Color;
 use iced::widget::image;
@@ -129,6 +130,7 @@ static EMBEDDED_FONTS: Mutex<Option<Vec<Vec<u8>>>> = Mutex::new(None);
 /// Registers decoded theme fonts to load into the font database.
 pub fn set_embedded_fonts(fonts: Vec<Vec<u8>>) {
     *EMBEDDED_FONTS.lock().unwrap() = Some(fonts);
+    *FAMILIES.lock().unwrap() = None; // the database will gain their families
 }
 
 /// Adds theme fonts to the font database *after* it has been built — a theme
@@ -151,11 +153,239 @@ pub fn add_embedded_fonts(fonts: Vec<Vec<u8>>) {
             db.load_font_data(data);
         }
     });
+    *FAMILIES.lock().unwrap() = None; // the database just gained their families
     clear_caches();
 }
 
+/// Every font family the rasterizer can actually draw with, sorted for display.
+///
+/// Read from the same database the board renders through, so a family offered
+/// here is one that will resolve — rather than a list from elsewhere that might
+/// name faces this font system can't see. Includes whatever a theme embedded,
+/// which is why the picker shows a theme's bundled typeface alongside the
+/// installed ones.
+///
+/// Families whose name starts with `.` are left out: those are the platform's
+/// private faces (`.SF NS`, `.LastResort`), which are not meant to be asked for
+/// by name and mostly render as fallback if you do.
+pub fn families() -> Vec<FontFamily> {
+    // Cached because probing every family costs ~8 ms, and the picker is opened
+    // on a keystroke. Invalidated only where the font *database* changes — not
+    // by `clear_caches`, which the font preview calls on every arrow press.
+    if let Some(cached) = FAMILIES.lock().unwrap().as_ref() {
+        return cached.clone();
+    }
+    let families = with_raster(|raster| {
+        // One pass over the faces for the names and, per name, the faces
+        // carrying it — which give both the weight to ask for and the ids
+        // [`renders_own_name`] checks the shaped glyphs against.
+        let mut faces: HashMap<String, Vec<Face>> = HashMap::new();
+        let db = raster.font_system.db();
+        for face in db.faces() {
+            if !lays_out_text(db, face.id) {
+                continue;
+            }
+            for (name, _) in &face.families {
+                if name.starts_with('.') {
+                    continue;
+                }
+                faces.entry(name.clone()).or_default().push(Face {
+                    id: face.id,
+                    weight: face.weight.0,
+                    upright: face.style == fontdb::Style::Normal,
+                });
+            }
+        }
+        let mut names: Vec<String> = faces.keys().cloned().collect();
+        names.sort_by_key(|name| name.to_lowercase());
+        names.dedup_by(|a, b| a.eq_ignore_ascii_case(b));
+        names
+            .into_iter()
+            .map(|name| {
+                let own = faces.get(&name).map(Vec::as_slice).unwrap_or_default();
+                let weight = nearest_weight(own, REGULAR);
+                let ids: Vec<fontdb::ID> = own.iter().map(|face| face.id).collect();
+                FontFamily {
+                    legible: renders_own_name(&mut raster.font_system, &name, &ids, weight),
+                    weight,
+                    name,
+                }
+            })
+            .collect::<Vec<_>>()
+    });
+    *FAMILIES.lock().unwrap() = Some(families.clone());
+    families
+}
+
+/// The last [`families`] scan. Costly to produce and stable until a font is
+/// loaded, which only a theme swap does.
+static FAMILIES: Mutex<Option<Vec<FontFamily>>> = Mutex::new(None);
+
+/// A font family the picker can offer.
+#[derive(Clone)]
+pub struct FontFamily {
+    pub name: String,
+    /// The upright weight to ask this family for — see [`family_weights`].
+    pub weight: u16,
+    /// Whether the family's own name is readable set in it.
+    ///
+    /// macOS ships dozens of faces with no Latin glyphs at all — Arabic, Thai,
+    /// Devanagari, and the whole Noto script set — and their names come out as
+    /// tofu boxes. A picker that draws every row in its own face therefore has
+    /// half its rows unreadable, naming fonts you then can't identify.
+    pub legible: bool,
+}
+
+/// What a regular and a bold nominally weigh.
+const REGULAR: u16 = 400;
+const BOLD: u16 = 700;
+
+/// The weights `family` actually ships, nearest to a regular and a bold —
+/// `None` if the font database has no upright face under that name.
+///
+/// **Asking for a weight a family hasn't got doesn't get you its nearest one,
+/// it gets you a different font.** The shaper matches weight exactly and falls
+/// back to the system face when nothing matches, and a surprising number of
+/// families have no 400 at all: Futura's regular is 500, Arial Black's is 900,
+/// Skia reports 5. Left alone, choosing one of those would silently render the
+/// board in the system font instead — the same failure the synthesized faces in
+/// `synth_weight_faces` exist to prevent for a theme's embedded fonts.
+pub fn family_weights(family: &str) -> Option<(u16, u16)> {
+    with_raster(|raster| {
+        let faces: Vec<Face> = raster
+            .font_system
+            .db()
+            .faces()
+            .filter(|face| face.families.iter().any(|(name, _)| name == family))
+            .map(|face| Face {
+                id: face.id,
+                weight: face.weight.0,
+                upright: face.style == fontdb::Style::Normal,
+            })
+            .collect();
+        (!faces.is_empty())
+            .then(|| (nearest_weight(&faces, REGULAR), nearest_weight(&faces, BOLD)))
+    })
+}
+
+/// One face of a family: enough to pick a weight and to recognise the face
+/// again in a shaped glyph.
+struct Face {
+    id: fontdb::ID,
+    weight: u16,
+    upright: bool,
+}
+
+/// The weight among `faces` closest to `target`, preferring the heavier of two
+/// equally close ones (a bold that lands between two faces should read as bold).
+///
+/// Upright faces only — except in a family that hasn't got one, which is not the
+/// oddity it sounds: Zapfino, Apple Chancery, Brush Script and Snell Roundhand
+/// are all script faces macOS marks italic throughout. Weighing those against a
+/// family's roman would pick the wrong face; excluding them outright would drop
+/// four perfectly pickable fonts off the list.
+fn nearest_weight(faces: &[Face], target: u16) -> u16 {
+    let upright = faces.iter().any(|face| face.upright);
+    faces
+        .iter()
+        .filter(|face| face.upright || !upright)
+        .map(|face| face.weight)
+        .min_by_key(|&weight| (weight.abs_diff(target), u16::MAX - weight))
+        .unwrap_or(target)
+}
+
+/// Whether `name` shapes to real glyphs *from its own faces*.
+///
+/// Two ways it doesn't. A character the face has no glyph for shapes to
+/// `.notdef` — glyph 0, the tofu box. Before that, though, the shaper
+/// substitutes another font that does have the character, which comes out
+/// legible but in the wrong typeface — a row that quietly shows you a different
+/// font than the one it names. Both are caught by the same check, since a
+/// substituted glyph carries the *other* face's id.
+fn renders_own_name(
+    font_system: &mut FontSystem,
+    name: &str,
+    own: &[fontdb::ID],
+    weight: u16,
+) -> bool {
+    const PROBE_PX: f32 = 16.0;
+    let mut buffer = Buffer::new(font_system, Metrics::new(PROBE_PX, PROBE_PX));
+    buffer.set_text(
+        font_system,
+        name,
+        // At the family's own weight, or this rejects every family without a
+        // 400 face — which is what it's for, not what it's testing.
+        &Attrs::new().family(Family::Name(name)).weight(Weight(weight)),
+        // `Basic` rather than `Advanced`: this asks which glyphs exist, not how
+        // they'd be composed, and it runs once per family in the database.
+        Shaping::Basic,
+        None,
+    );
+    buffer.shape_until_scroll(font_system, false);
+    buffer.layout_runs().all(|run| {
+        run.glyphs
+            .iter()
+            .all(|glyph| glyph.glyph_id != 0 && own.contains(&glyph.font_id))
+    })
+}
+
+/// Whether a face declares horizontal metrics, i.e. can say how wide its
+/// glyphs are.
+///
+/// macOS ships one bitmap-only font — `GB18030 Bitmap` — whose `hhea` puts the
+/// count at zero, and swash reads an advance from it as `(count - 1) * 4`: an
+/// overflow panic in a debug build, a nonsense offset in a release one. The
+/// panic happens inside the raster mutex, which poisons it and takes *all* text
+/// down with it.
+///
+/// A font that can't say how wide its glyphs are can't lay out text at all, so
+/// it's dropped from the list rather than handled downstream — and dropped
+/// before anything shapes with it, since the probe in [`renders_own_name`]
+/// would be the first thing to fall over.
+fn lays_out_text(db: &fontdb::Database, id: fontdb::ID) -> bool {
+    db.with_face_data(id, |data, face_index| {
+        // In a collection, each font has its own table directory, and the
+        // offsets in it are from the start of the *file* either way.
+        let header = if data.get(..4) == Some(&b"ttcf"[..]) {
+            let at = 12 + face_index as usize * 4;
+            match data.get(at..at + 4).and_then(|b| b.try_into().ok()) {
+                Some(b) => u32::from_be_bytes(b) as usize,
+                None => return false,
+            }
+        } else {
+            0
+        };
+        let Some(tables) = data
+            .get(header + 4..header + 6)
+            .map(|b| u16::from_be_bytes([b[0], b[1]]) as usize)
+        else {
+            return false;
+        };
+        (0..tables).any(|i| {
+            let at = header + 12 + i * 16;
+            let Some(record) = data.get(at..at + 16) else {
+                return false;
+            };
+            if &record[0..4] != b"hhea" {
+                return false;
+            }
+            let Ok(offset) = record[8..12].try_into().map(u32::from_be_bytes) else {
+                return false;
+            };
+            // `numberOfHMetrics` is the last of hhea's 36 bytes.
+            let at = offset as usize + 34;
+            data.get(at..at + 2).is_some_and(|b| u16::from_be_bytes([b[0], b[1]]) > 0)
+        })
+    })
+    .unwrap_or(false)
+}
+
 fn with_raster<R>(f: impl FnOnce(&mut Raster) -> R) -> R {
-    let mut guard = RASTER.lock().unwrap();
+    // Recovered rather than propagated: what's behind this lock is caches and a
+    // font database, so a thread that panicked mid-shape leaves nothing an
+    // onlooker can act on wrongly — whereas taking the poison would turn one bad
+    // font into an app with no text at all, permanently.
+    let mut guard = RASTER.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
     let raster = guard.get_or_insert_with(|| {
         let mut db = cosmic_text::fontdb::Database::new();
         // The system UI faces: an upright face (regular/bold via the weight
@@ -230,6 +460,7 @@ pub fn measure(
     font_size: f32,
     scale: f32,
     family: Option<&str>,
+    features: &[Feature],
 ) -> (f32, f32) {
     let font_px = font_size * scale;
     let line_px = font_px * LINE_HEIGHT;
@@ -251,7 +482,7 @@ pub fn measure(
         buffer.set_text(
             font_system,
             text,
-            &Attrs::new().family(family),
+            &with_features(Attrs::new().family(family), features),
             Shaping::Advanced,
             None,
         );
@@ -772,7 +1003,23 @@ fn syntax_color(kind: Syntax) -> Option<Color> {
 
 /// Base attributes for a rich-text buffer: the theme's body font (fallback SF).
 fn base_attrs(theme: &Theme) -> Attrs<'static> {
-    Attrs::new().family(theme.font_text.map(Family::Name).unwrap_or(Family::Name(crate::platform::UI_FONT_NAME)))
+    with_features(
+        Attrs::new().family(theme.font_text.map(Family::Name).unwrap_or(Family::Name(crate::platform::UI_FONT_NAME))),
+        theme.font_features,
+    )
+}
+
+/// Asks the shaper for `features` on top of `attrs`.
+///
+/// A font's stylistic alternates are substitution lookups that do nothing until
+/// requested by tag — Inter carries a single-storey `a` as `cv11` and shows the
+/// double-storey one until asked. Themes declare the set they want in CSS; this
+/// is where it reaches the shaper.
+fn with_features<'a>(attrs: Attrs<'a>, features: &[Feature]) -> Attrs<'a> {
+    if features.is_empty() {
+        return attrs;
+    }
+    attrs.font_features(FontFeatures { features: features.to_vec() })
 }
 
 /// cosmic-text attributes for one Markdown span, colored from the theme.
@@ -782,6 +1029,12 @@ fn span_attrs(span: &markdown::Span, body_px: f32, theme: &Theme) -> Attrs<'stat
     } else {
         theme.font_text.map(Family::Name).unwrap_or(Family::Name(crate::platform::UI_FONT_NAME))
     });
+    // Code has its own set: a monospace face's slashed zero and disambiguated
+    // letterforms are chosen for code, and are wrong for prose (and vice versa).
+    attrs = with_features(
+        attrs,
+        if span.code { theme.font_features_mono } else { theme.font_features },
+    );
     // Body/bold use the theme's declared weights (snapped to the nearest 100),
     // which is where the synthesized faces live — so 450/750 themes render at
     // 500/800 rather than falling back to a system face.
@@ -966,7 +1219,7 @@ mod measure_tests {
         // Self-calibrate to this machine's font rather than a hard-coded pixel
         // threshold (fonts, and thus wrap points, differ across platforms/CI).
         // Measure each on a single line by allowing effectively unlimited width.
-        let (plain_w, _) = measure(text, 100_000.0, 17.0, 1.0, theme.font_text);
+        let (plain_w, _) = measure(text, 100_000.0, 17.0, 1.0, theme.font_text, theme.font_features);
         let (source_w, _) = measure_source(text, 100_000.0, 17.0, 1.0, &theme);
 
         // A font with no wider bold face (some minimal CI fonts, or faux-bold
@@ -978,7 +1231,7 @@ mod measure_tests {
         // Between the two single-line widths, plain still fits on one line but the
         // wider bold source must wrap — so the source measures taller.
         let wrap = (plain_w + source_w) / 2.0;
-        let (_, plain_h) = measure(text, wrap, 17.0, 1.0, theme.font_text);
+        let (_, plain_h) = measure(text, wrap, 17.0, 1.0, theme.font_text, theme.font_features);
         let (_, source_h) = measure_source(text, wrap, 17.0, 1.0, &theme);
         assert!(
             source_h > plain_h,
@@ -1033,7 +1286,7 @@ mod measure_tests {
         let text = "Just a plain label with no markup at all in it here";
         assert_eq!(
             measure_source(text, 200.0, 17.0, 1.0, &theme),
-            measure(text, 200.0, 17.0, 1.0, theme.font_text),
+            measure(text, 200.0, 17.0, 1.0, theme.font_text, theme.font_features),
         );
     }
 
@@ -1070,15 +1323,111 @@ mod measure_tests {
         // measurement must be taller.
         let text = "one two three four five six seven eight nine ten eleven twelve";
         // Single-line width on this machine's font.
-        let (w, _) = measure(text, 100_000.0, 17.0, 1.0, theme.font_text);
+        let (w, _) = measure(text, 100_000.0, 17.0, 1.0, theme.font_text, theme.font_features);
         // Fits at the literal width `w + MD_PADDING`, but wraps once inset
         // (`w + MD_PADDING - 2*MD_PADDING = w - MD_PADDING < w`).
         let arg = w + MD_PADDING;
-        let (_, plain_h) = measure(text, arg, 17.0, 1.0, theme.font_text);
+        let (_, plain_h) = measure(text, arg, 17.0, 1.0, theme.font_text, theme.font_features);
         let (_, md_h) = measure_markdown(text, arg, 17.0, &theme);
         assert!(
             md_h > plain_h,
             "measure_markdown must count the inset (rendered) wrap: {md_h} vs {plain_h}",
         );
     }
+
+    /// A synthetic face, for the weight arithmetic.
+    fn face(weight: u16, upright: bool) -> Face {
+        Face { id: fontdb::ID::dummy(), weight, upright }
+    }
+
+    #[test]
+    fn a_family_is_asked_for_at_a_weight_it_actually_has() {
+        // The whole point: ask Futura for a 400 and you don't get its regular,
+        // you get the system font. Its lightest upright is a 500.
+        let futura = [face(500, true), face(700, true), face(800, true)];
+        assert_eq!(nearest_weight(&futura, REGULAR), 500);
+        assert_eq!(nearest_weight(&futura, BOLD), 700);
+
+        // Arial Black is a 900 and nothing else, so that's both.
+        let black = [face(900, true)];
+        assert_eq!(nearest_weight(&black, REGULAR), 900);
+        assert_eq!(nearest_weight(&black, BOLD), 900);
+
+        // Skia reports 5, which is not a standard step and still has to resolve
+        // to itself rather than to a 400 that isn't there.
+        assert_eq!(nearest_weight(&[face(5, true)], REGULAR), 5);
+    }
+
+    #[test]
+    fn a_tie_goes_to_the_heavier_face() {
+        // 300 and 500 are equally far from a 400; a bold that lands between two
+        // faces should read as the bolder of them.
+        assert_eq!(nearest_weight(&[face(300, true), face(500, true)], REGULAR), 500);
+        assert_eq!(nearest_weight(&[face(600, true), face(800, true)], BOLD), 800);
+    }
+
+    #[test]
+    fn italic_faces_only_count_where_a_family_has_nothing_else() {
+        // Weighing a roman against its own italic would pick the wrong face…
+        let both = [face(400, true), face(900, false)];
+        assert_eq!(nearest_weight(&both, BOLD), 400, "the upright face, far as it is");
+
+        // …but Zapfino, Apple Chancery, Brush Script and Snell Roundhand are
+        // marked italic throughout, and excluding them outright would drop four
+        // perfectly pickable fonts off the list.
+        assert_eq!(nearest_weight(&[face(500, false)], REGULAR), 500);
+    }
+
+    #[test]
+    fn every_offered_family_resolves_to_the_weight_it_was_listed_with() {
+        // `families` and `family_weights` read the same database by different
+        // routes — the picker previews through the first and the board renders
+        // through the second, so a disagreement shows up as a font that looks
+        // one way in the list and another once chosen.
+        for family in families() {
+            let weights = family_weights(&family.name);
+            assert_eq!(
+                weights.map(|(normal, _)| normal),
+                Some(family.weight),
+                "{} listed at {} but resolved elsewhere",
+                family.name,
+                family.weight,
+            );
+        }
+    }
+
+
+    #[test]
+    fn the_themes_features_reach_the_shaper() {
+        use cosmic_text::FeatureTag;
+        const SINGLE_STOREY_A: &[Feature] = &[Feature { tag: FeatureTag::new(b"cv11"), value: 1 }];
+        const SLASHED_ZERO: &[Feature] = &[Feature { tag: FeatureTag::new(b"zero"), value: 1 }];
+
+        let mut theme = Theme::default();
+        assert!(
+            base_attrs(&theme).font_features.features.is_empty(),
+            "no theme features means the font's own defaults, not a set of ours",
+        );
+
+        theme.font_features = SINGLE_STOREY_A;
+        theme.font_features_mono = SLASHED_ZERO;
+        assert_eq!(base_attrs(&theme).font_features.features, SINGLE_STOREY_A);
+
+        // Prose and code ask for different sets: a monospace face's slashed
+        // zero is chosen for code and wrong in a sentence.
+        let span = |code| markdown::Span {
+            text: "x".to_owned(),
+            bold: false,
+            italic: false,
+            code,
+            heading: 0,
+            link: false,
+            url: None,
+            syntax: Syntax::Plain,
+        };
+        let (prose, code) = (span(false), span(true));
+        assert_eq!(span_attrs(&prose, 17.0, &theme).font_features.features, SINGLE_STOREY_A);
+        assert_eq!(span_attrs(&code, 17.0, &theme).font_features.features, SLASHED_ZERO);
+    }
+
 }
