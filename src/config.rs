@@ -54,10 +54,21 @@ pub struct Config {
     /// "Ctrl+Space", "PrintScreen". Modifiers: Cmd/Command/Super, Ctrl/Control,
     /// Alt/Option, Shift (and CmdOrCtrl). Defaults to the Pause key; a blank
     /// string disables the hotkey entirely.
+    ///
+    /// **Pause is a key most Macs don't have** — macOS reports it as F15, which
+    /// exists on a full-size external keyboard and no laptop. It stays the
+    /// default because it is the one chord nothing else claims, and on macOS
+    /// [`Config::summon_gesture`] covers the gap; anyone on a laptop who wants
+    /// a key rather than a swipe sets one here.
     pub summon_hotkey: String,
-    /// macOS only (experimental): summon/dismiss the overlay with a four-finger
-    /// downward trackpad swipe. Off by default; taps a private framework, so it
-    /// only runs while enabled. Ignored on other platforms.
+    /// macOS only: summon/dismiss the overlay with a four-finger downward
+    /// trackpad swipe. Ignored on other platforms, where it defaults off.
+    ///
+    /// **On by default on macOS, and the summon the welcome board leads with.**
+    /// The hotkey default is the Pause key, which macOS reports as F15 — a key
+    /// no laptop has, so on a MacBook the gesture is the only summon that works
+    /// out of the box. It taps a private framework, so it runs only while
+    /// enabled and is a setting away from off.
     pub summon_gesture: bool,
 
     // --- Zoom & pan feel ---
@@ -201,7 +212,9 @@ impl Default for Config {
             windowed: false,
             tray_icon_monochrome: false,
             summon_hotkey: "Pause".to_owned(),
-            summon_gesture: false,
+            // See the field: on a Mac the default hotkey is a key most Macs
+            // haven't got, so the gesture is what makes the overlay reachable.
+            summon_gesture: cfg!(target_os = "macos"),
 
             min_zoom: 0.1,
             max_zoom: 6.0,
@@ -767,4 +780,15 @@ mod tests {
 
         let _ = std::fs::remove_dir_all(&dir);
     }
+
+    #[test]
+    fn the_trackpad_gesture_is_on_where_the_default_hotkey_is_unreachable() {
+        // macOS reports the Pause key as F15, which no laptop has — so on a Mac
+        // the gesture is the only summon that works out of the box. Elsewhere
+        // the key exists and the gesture isn't ours to enable.
+        let fresh = Config::default();
+        assert_eq!(fresh.summon_gesture, cfg!(target_os = "macos"));
+        assert_eq!(fresh.summon_hotkey, "Pause");
+    }
+
 }

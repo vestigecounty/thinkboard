@@ -145,6 +145,36 @@ scrollbar thumb and `Board::draw_search_hits` both do. The failure is silent and
 looks like a colour bug: the search highlight's black ink drew on bare card for
 four rounds while its yellow fill went straight under the card.
 
+## First run
+
+No configured board means the embedded **welcome board** — a scratch canvas
+that never touches disk and comes back each launch. `finish_welcome` completes
+it for the machine it's on, which is why the file has a `SUMMON` placeholder in
+it rather than instructions.
+
+**The default hotkey is a key most Macs haven't got.** `Pause` is what macOS
+reports as F15, which exists on a full-size external keyboard and no laptop —
+so on macOS `summon_gesture` (the four-finger swipe) defaults **on** and the
+welcome board leads with it, mentioning the key second. Changing the hotkey
+default instead would mean picking a chord that might already be claimed;
+this way nothing is taken and the overlay is still reachable.
+
+**Obsidian's own vault registry is read** — `core::obsidian`, from
+`obsidian.json` beside its settings — and each vault becomes a button on the
+welcome board. Someone arriving from Obsidian shouldn't have to find their own
+vault in a folder dialog. It is never authoritative: entries that no longer
+exist are dropped, an unreadable or absent file is simply no vaults, and the
+folder picker beside them still works.
+
+The board says three more things it used to leave out: the command palette
+exists (it is now the way to most of the app), Ask AI needs a provider before
+its menu item appears, and `.canvas` files round-trip — the trust question for
+anyone pointing an unfamiliar app at their notes.
+
+**One word for the thing you work on: "board".** `.canvas` is the file format
+and "canvas" stays a hidden search term, so Obsidian's word still finds the
+command, but no user-facing string says both.
+
 ## The vault
 
 A vault is a **scope, not a mode**. `config.vault` says where to look for

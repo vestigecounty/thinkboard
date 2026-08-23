@@ -1,25 +1,180 @@
 {
-	"nodes":[
-		{"id":"welcome","type":"text","text":"# Welcome to ThinkBoard\n\nThis is a **scratch board** — play with it freely. Nothing here is saved, and it resets every launch.\n\nWhen you're ready, create or open a real board with the buttons below.","x":-825,"y":-365,"width":575,"height":276},
-		{"id":"tip_edit","type":"text","text":"**Double-click** any note to edit. Press **Esc** or **Cmd/Ctrl+Enter** when you're done.","x":-12,"y":-498,"width":389,"height":61},
-		{"id":"tip_connect","type":"text","text":"Hover a note's edge to reveal a **dot**, then drag it onto another note to connect them.","x":-10,"y":-375,"width":392,"height":61},
-		{"id":"tip_ai","type":"text","text":"Right-click a note and choose **Ask AI**. The chain of notes leading into it becomes the prompt, and the reply lands as new connected notes.","x":12,"y":-256,"width":361,"height":96},
-		{"id":"tip_settings","type":"text","text":"Open **Settings** from the tray icon to customize the theme, AI, and more.","x":26,"y":-135,"width":320,"height":110},
-		{"id":"tip_summon","type":"text","text":"Press **Pause** (or your custom shortcut from Settings) anytime to summon or dismiss ThinkBoard over your desktop.","x":6,"y":123,"width":375,"height":81},
-		{"id":"tip_gesture","type":"text","text":"On **macOS**, you can also enable a **four-finger swipe down** in Settings to summon or dismiss the board with a trackpad gesture.","x":6,"y":230,"width":375,"height":90},
-		{"id":"action_new","type":"text","text":"Create your first board","x":-869,"y":80,"width":319,"height":119,"color":"4","tb_action":"new_board"},
-		{"id":"action_open","type":"text","text":"Open an existing board…","x":-520,"y":80,"width":310,"height":119,"color":"5","tb_action":"open_board"},
-		{"id":"18c0fcb5b7290b88","type":"text","text":"Right-click empty space for canvas options like **Auto-layout**.","x":24,"y":4,"width":323,"height":81}
+	"nodes": [
+		{
+			"id": "welcome",
+			"type": "text",
+			"text": "# Welcome to ThinkBoard\n\nThis is a **scratch board** \u2014 play with it freely. Nothing here is saved, and it comes back each time you launch without a board of your own.\n\nBoards are Obsidian `.canvas` files. ThinkBoard reads and writes them in place and keeps anything it doesn't use, so a board stays one Obsidian can open.",
+			"x": -825,
+			"y": -365,
+			"width": 575,
+			"height": 300
+		},
+		{
+			"id": "tip_edit",
+			"type": "text",
+			"text": "**Double-click** any note to edit. Press **Esc** or **Cmd/Ctrl+Enter** when you're done.",
+			"x": -12,
+			"y": -498,
+			"width": 389,
+			"height": 61
+		},
+		{
+			"id": "tip_connect",
+			"type": "text",
+			"text": "Hover a note's edge to reveal a **dot**, then drag it onto another note to connect them.",
+			"x": -10,
+			"y": -375,
+			"width": 392,
+			"height": 61
+		},
+		{
+			"id": "tip_ai",
+			"type": "text",
+			"text": "**Ask AI** turns a chain of notes into a prompt and writes the reply back onto the board.\n\nIt needs a provider first \u2014 **Settings \u2192 AI**, pick one and paste a key. Until then the menu item stays hidden.",
+			"x": 12,
+			"y": -256,
+			"width": 361,
+			"height": 134
+		},
+		{
+			"id": "tip_settings",
+			"type": "text",
+			"text": "Open **Settings** from the menu-bar icon \u2014 themes, fonts, AI, and how the board behaves.",
+			"x": 26,
+			"y": -98,
+			"width": 320,
+			"height": 110
+		},
+		{
+			"id": "tip_summon",
+			"type": "text",
+			"text": "SUMMON",
+			"x": 6,
+			"y": 141,
+			"width": 375,
+			"height": 115
+		},
+		{
+			"id": "action_new",
+			"type": "text",
+			"text": "Create your first board",
+			"x": -869,
+			"y": 80,
+			"width": 319,
+			"height": 119,
+			"color": "4",
+			"tb_action": "new_board"
+		},
+		{
+			"id": "action_open",
+			"type": "text",
+			"text": "Open an existing board\u2026",
+			"x": -520,
+			"y": 80,
+			"width": 310,
+			"height": 119,
+			"color": "5",
+			"tb_action": "open_board"
+		},
+		{
+			"id": "18c0fcb5b7290b88",
+			"type": "text",
+			"text": "Right-click empty space for board options like **Auto-layout** and **Snap to grid**.",
+			"x": 24,
+			"y": 36,
+			"width": 323,
+			"height": 81
+		},
+		{
+			"id": "tip_palette",
+			"type": "text",
+			"x": -14,
+			"y": -625,
+			"width": 392,
+			"height": 90,
+			"text": "Press **Cmd/Ctrl+Shift+P** for the command palette \u2014 every action, searchable: switch board, change theme or font, auto-layout, group."
+		},
+		{
+			"id": "action_vault",
+			"type": "text",
+			"x": -869,
+			"y": 220,
+			"width": 319,
+			"height": 100,
+			"text": "Use an Obsidian vault\u2026",
+			"tb_action": "open_vault"
+		}
 	],
-	"edges":[
-		{"id":"e_edit","fromNode":"welcome","fromSide":"right","toNode":"tip_edit","toSide":"left"},
-		{"id":"e_connect","fromNode":"welcome","fromSide":"right","toNode":"tip_connect","toSide":"left"},
-		{"id":"e_ai","fromNode":"welcome","fromSide":"right","toNode":"tip_ai","toSide":"left"},
-		{"id":"e_settings","fromNode":"welcome","fromSide":"right","toNode":"tip_settings","toSide":"left"},
-		{"id":"e_summon","fromNode":"welcome","fromSide":"right","toNode":"tip_summon","toSide":"left"},
-		{"id":"e_gesture","fromNode":"welcome","fromSide":"right","toNode":"tip_gesture","toSide":"left"},
-		{"id":"e_new","fromNode":"welcome","fromSide":"bottom","toNode":"action_new","toSide":"top"},
-		{"id":"e_open","fromNode":"welcome","fromSide":"bottom","toNode":"action_open","toSide":"top"},
-		{"id":"18c1fcb5b7292eb0","fromNode":"welcome","fromSide":"right","toNode":"18c0fcb5b7290b88","toSide":"left"}
+	"edges": [
+		{
+			"id": "e_edit",
+			"fromNode": "welcome",
+			"fromSide": "right",
+			"toNode": "tip_edit",
+			"toSide": "left"
+		},
+		{
+			"id": "e_connect",
+			"fromNode": "welcome",
+			"fromSide": "right",
+			"toNode": "tip_connect",
+			"toSide": "left"
+		},
+		{
+			"id": "e_ai",
+			"fromNode": "welcome",
+			"fromSide": "right",
+			"toNode": "tip_ai",
+			"toSide": "left"
+		},
+		{
+			"id": "e_settings",
+			"fromNode": "welcome",
+			"fromSide": "right",
+			"toNode": "tip_settings",
+			"toSide": "left"
+		},
+		{
+			"id": "e_summon",
+			"fromNode": "welcome",
+			"fromSide": "right",
+			"toNode": "tip_summon",
+			"toSide": "left"
+		},
+		{
+			"id": "e_new",
+			"fromNode": "welcome",
+			"fromSide": "bottom",
+			"toNode": "action_new",
+			"toSide": "top"
+		},
+		{
+			"id": "e_open",
+			"fromNode": "welcome",
+			"fromSide": "bottom",
+			"toNode": "action_open",
+			"toSide": "top"
+		},
+		{
+			"id": "18c1fcb5b7292eb0",
+			"fromNode": "welcome",
+			"fromSide": "right",
+			"toNode": "18c0fcb5b7290b88",
+			"toSide": "left"
+		},
+		{
+			"id": "e_tip_palette",
+			"fromNode": "welcome",
+			"fromSide": "right",
+			"toNode": "tip_palette",
+			"toSide": "left"
+		},
+		{
+			"id": "e_action_vault",
+			"fromNode": "welcome",
+			"fromSide": "bottom",
+			"toNode": "action_vault",
+			"toSide": "top"
+		}
 	]
 }

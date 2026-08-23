@@ -89,7 +89,7 @@ static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
     let mut list = vec![
         cmd(NewBoard, "New board", "create file", ""),
         cmd(OpenBoard, "Open board", "file canvas load", ""),
-        cmd(SwitchCanvas, "Switch canvas", "vault browse boards open recent", "⌘O"),
+        cmd(SwitchCanvas, "Switch board", "vault browse canvas open recent switch", "⌘O"),
         cmd(OpenVault, "Open vault…", "obsidian folder library", ""),
         cmd(ChooseTheme, "Change theme…", "colours colors appearance scheme palette dark", ""),
         cmd(ChooseFont, "Change font…", "typeface family typography text serif mono", ""),

@@ -85,7 +85,7 @@ impl App {
     pub(super) fn vault_scanned(&mut self, entries: Vec<vault::CanvasEntry>, truncated: bool) {
         if truncated {
             eprintln!(
-                "vault: stopped after {} canvases — the list is partial (is {} really the vault?)",
+                "vault: stopped after {} boards — the list is partial (is {} really the vault?)",
                 vault::MAX_ENTRIES,
                 self.config.vault
             );
@@ -166,14 +166,7 @@ impl App {
             // Cancelled: re-summon the overlay we hid for the dialog.
             return self.resummon_after_dialog(Task::none());
         };
-        self.config.vault = path.to_string_lossy().into_owned();
-        self.persist_config();
-        self.vault_canvases.clear();
-        // An explicit vault outranks the root inferred from the open canvas,
-        // so re-resolve it — the board's images may have been unresolvable
-        // until now (a vault copied without its `.obsidian` folder).
-        self.rebase_on_vault();
-        let theme = self.adopt_vault_theme();
+        let theme = self.adopt_vault(path);
         // Summon the board back *before* opening the browser: the browser
         // focuses its input, and on Linux the re-summon builds a whole new
         // window (hiding there means closing), so focusing first would aim at
@@ -183,6 +176,25 @@ impl App {
             self.resummon_after_dialog(Task::none())
                 .chain(Task::done(Message::OpenVaultBrowser)),
         ])
+    }
+
+    /// Points the app at `path` as its vault: remembers it, re-resolves what
+    /// hangs off it, and takes its Obsidian theme.
+    ///
+    /// Shared by the folder dialog and the welcome board's per-vault buttons.
+    /// The dialog path has an overlay to bring back afterwards, which is the
+    /// only thing that differs between them.
+    pub(super) fn adopt_vault(&mut self, path: PathBuf) -> Task<Message> {
+        self.config.vault = path.to_string_lossy().into_owned();
+        self.persist_config();
+        self.vault_canvases.clear();
+        self.settings_drafts
+            .insert(super::settings::Field::Vault, self.config.vault.clone());
+        // An explicit vault outranks the root inferred from the open canvas, so
+        // re-resolve it — the board's images may have been unresolvable until
+        // now (a vault copied without its `.obsidian` folder).
+        self.rebase_on_vault();
+        self.adopt_vault_theme()
     }
 
     /// Adopts the vault's active Obsidian theme, if it has one and the current
@@ -286,9 +298,9 @@ impl App {
         let empty = if self.vault_scanning {
             "Searching the vault…"
         } else if self.vault_canvases.is_empty() {
-            "No canvases in this vault"
+            "No boards in this vault"
         } else {
-            "No matching canvas"
+            "No matching board"
         };
 
         picker::view(
@@ -296,7 +308,7 @@ impl App {
             state,
             Shell {
                 panel: Panel::Vault,
-                placeholder: "Switch to a canvas…",
+                placeholder: "Switch board…",
                 on_submit: Message::OpenSelectedCanvas,
                 empty: empty.into(),
             },

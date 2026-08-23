@@ -126,14 +126,14 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
 
     items.push(header("General"));
     items.push(setting(
-        "Canvas",
+        "Board",
         path_line(Field::Canvas, app.draft(Field::Canvas)),
-        "The board opened on launch. Restart to load a different one.",
+        "The `.canvas` file opened on launch. Restart to load a different one.",
     ));
     items.push(setting(
         "Vault",
         path_line(Field::Vault, app.draft(Field::Vault)),
-        "Your Obsidian vault folder. Cmd/Ctrl+O then lists every canvas in it, and the board follows the vault's Obsidian theme. Leave blank to open boards by dialog only.",
+        "Your Obsidian vault folder. Cmd/Ctrl+O then lists every board in it, and the board follows the vault's Obsidian theme. Leave blank to open boards by dialog only.",
     ));
     items.push(hotkey_row(app, font, muted));
     items.push(setting(
@@ -155,12 +155,12 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         toggle(Field::PersistAcrossSpaces, c.persist_across_spaces),
         "Keep the board up when you switch macOS Spaces (else it auto-dismisses).",
     ));
-    // Experimental raw-trackpad gesture, macOS-only (uses a private framework).
+    // Raw-trackpad gesture, macOS-only (uses a private framework).
     #[cfg(target_os = "macos")]
     items.push(setting(
         "Four-finger swipe to summon",
         toggle(Field::SummonGesture, c.summon_gesture),
-        "Experimental: swipe four fingers down on the trackpad to show/hide the board.",
+        "Swipe four fingers down on the trackpad to show or hide the board. On by default on a Mac, where the Pause hotkey below needs a keyboard most Macs haven't got.",
     ));
 
     items.push(header("Appearance"));

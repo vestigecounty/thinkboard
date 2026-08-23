@@ -394,8 +394,8 @@ pub(crate) enum Message {
     /// A "Browse…" file dialog resolved (a path, or `None` if cancelled).
     SettingsBrowsed(settings::Field, Option<PathBuf>),
     /// A create/open-board action was invoked — from a scratch-board button
-    /// node (its `tb_action`) or the tray menu. Values: "new_board" /
-    /// "open_board".
+    /// node (its `tb_action`) or the tray menu. Values: "new_board",
+    /// "open_board", "open_vault", or "use_vault:<path>".
     CanvasAction(String),
     /// The overlay has hidden; now open the deferred create/open-board dialog.
     OpenBoardDialog,
@@ -1766,9 +1766,17 @@ impl App {
     // --- Boards ---
 
     fn canvas_action(&mut self, action: &str) -> Task<Message> {
+        // A vault the welcome board found in Obsidian's own registry: already a
+        // path, so there is nothing to ask and no dialog to hide the overlay
+        // for — adopt it and show what's in it.
+        if let Some(path) = action.strip_prefix("use_vault:") {
+            let adopted = self.adopt_vault(PathBuf::from(path));
+            return Task::batch([adopted, Task::done(Message::OpenVaultBrowser)]);
+        }
         let create = match action {
             "new_board" => true,
             "open_board" => false,
+            "open_vault" => return self.choose_vault(),
             _ => return Task::none(),
         };
         // The overlay is always-on-top and would cover the native file dialog,

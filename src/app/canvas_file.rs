@@ -17,10 +17,92 @@ use crate::model::{CanvasDocument, CanvasNode, NodeKind};
 /// button nodes (carrying a `tb_action` field) create or open a real board.
 const SCRATCH_CANVAS: &str = include_str!("welcome.canvas");
 
-/// Parses the embedded scratch board. It's compiled in and validated by a
-/// unit test, so a parse failure is a build-time bug, not a runtime condition.
+/// Parses the embedded scratch board and finishes it for this machine. It's
+/// compiled in and validated by a unit test, so a parse failure is a build-time
+/// bug, not a runtime condition.
 pub(super) fn scratch_document() -> CanvasDocument {
-    serde_json::from_str(SCRATCH_CANVAS).expect("embedded scratch canvas is valid")
+    let mut document: CanvasDocument =
+        serde_json::from_str(SCRATCH_CANVAS).expect("embedded scratch canvas is valid");
+    finish_welcome(&mut document, &thinkboard_core::obsidian::vaults());
+    document
+}
+
+/// Fills in the parts of the welcome board that depend on where it's running:
+/// how to summon the overlay here, and which Obsidian vaults are on this
+/// machine.
+///
+/// Takes the vaults rather than reading them, so the shaping can be tested
+/// without an Obsidian install.
+fn finish_welcome(document: &mut CanvasDocument, vaults: &[thinkboard_core::obsidian::Vault]) {
+    for node in &mut document.nodes {
+        if node.id == "tip_summon" {
+            node.text = Some(summon_tip().to_owned());
+        }
+    }
+
+    // A button per vault Obsidian knows about, beside the "Use an Obsidian
+    // vault…" picker. The whole point of reading the registry: someone arriving
+    // from Obsidian shouldn't have to find their own vault in a folder dialog.
+    // Capped, because the row is a row and a long tail of old vaults is not
+    // what anyone came for.
+    const SHOWN: usize = 3;
+    let anchor = document
+        .nodes
+        .iter()
+        .find(|node| node.id == "action_vault")
+        .map(|node| (node.x, node.y, node.width, node.height));
+    let Some((x, y, width, height)) = anchor else {
+        return;
+    };
+    for (i, vault) in vaults.iter().take(SHOWN).enumerate() {
+        let mut node = CanvasNode {
+            id: format!("action_vault_{i}"),
+            kind: "text".to_owned(),
+            text: Some(format!("Open vault **{}**", vault.name)),
+            file: None,
+            // Stacked below the button rather than beside it: the tips run down
+            // the right of the board, and a row of these would grow into them.
+            x,
+            y: y + (i as f32 + 1.0) * (height + 20.0),
+            width,
+            height,
+            color: None,
+            extra: Default::default(),
+        };
+        let _ = node.extra.insert(
+            "tb_action".to_owned(),
+            serde_json::Value::String(format!("use_vault:{}", vault.path.display())),
+        );
+        document.nodes.push(node);
+    }
+    // Nothing found: the button beside them is the only way in, and its label
+    // shouldn't promise a list that isn't there.
+    if vaults.is_empty() {
+        for node in &mut document.nodes {
+            if node.id == "action_vault" {
+                node.text = Some("Choose an Obsidian vault…".to_owned());
+            }
+        }
+    }
+}
+
+/// How to summon the overlay on this platform, for the welcome board.
+///
+/// macOS leads with the trackpad gesture because the default hotkey is the
+/// Pause key, which macOS reports as F15 — a key a laptop hasn't got. Telling a
+/// MacBook user to press it is telling them to do something impossible.
+fn summon_tip() -> &'static str {
+    #[cfg(target_os = "macos")]
+    {
+        "Swipe **four fingers down** on the trackpad to summon or dismiss the board over \
+         whatever you're doing.\n\nThere's a hotkey too — **Pause**, which needs a full-size \
+         keyboard. Set your own in Settings, or use the menu-bar icon."
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        "Press **Pause** anytime to summon or dismiss the board over whatever you're doing. \
+         Set your own shortcut in Settings."
+    }
 }
 
 /// Whether `path` is an Obsidian canvas we can open (case-insensitive
@@ -390,25 +472,96 @@ mod tests {
         assert!(!document.edges.is_empty());
     }
 
-    #[test]
-    fn the_scratch_board_has_create_and_open_buttons() {
-        let document = scratch_document();
-        let actions: Vec<&str> = document
+    /// The welcome board as it parses, before it is finished for a machine.
+    fn welcome() -> CanvasDocument {
+        serde_json::from_str(SCRATCH_CANVAS).expect("the embedded board parses")
+    }
+
+    fn actions(document: &CanvasDocument) -> Vec<&str> {
+        document
             .nodes
             .iter()
             .filter_map(|node| node.extra.get("tb_action").and_then(|v| v.as_str()))
-            .collect();
-        // Exactly the two onboarding buttons, and every button is a real node
-        // the click handler can find by its `tb_action`.
-        assert_eq!(actions, ["new_board", "open_board"]);
-        for action in ["new_board", "open_board"] {
-            let button = document
-                .nodes
-                .iter()
-                .find(|n| n.extra.get("tb_action").and_then(|v| v.as_str()) == Some(action))
-                .unwrap_or_else(|| panic!("missing {action} button"));
+            .collect()
+    }
+
+    fn vault(name: &str) -> thinkboard_core::obsidian::Vault {
+        thinkboard_core::obsidian::Vault {
+            path: FsPath::new("/vaults").join(name),
+            name: name.to_owned(),
+            open: false,
+            last_opened: 0,
+        }
+    }
+
+    #[test]
+    fn the_scratch_board_has_its_onboarding_buttons() {
+        let mut document = welcome();
+        finish_welcome(&mut document, &[]);
+        assert_eq!(actions(&document), ["new_board", "open_board", "open_vault"]);
+        // Every button is a real node the click handler can find by its action.
+        for button in document.nodes.iter().filter(|n| n.extra.contains_key("tb_action")) {
             assert_eq!(button.kind, "text");
             assert!(button.text.as_deref().is_some_and(|t| !t.is_empty()));
+        }
+    }
+
+    #[test]
+    fn a_vault_obsidian_knows_about_becomes_a_button() {
+        // The point of reading Obsidian's registry: arriving from Obsidian
+        // shouldn't mean finding your own vault in a folder dialog.
+        let mut document = welcome();
+        finish_welcome(&mut document, &[vault("Notes"), vault("Work")]);
+        assert_eq!(
+            actions(&document),
+            ["new_board", "open_board", "open_vault", "use_vault:/vaults/Notes", "use_vault:/vaults/Work"],
+        );
+        let named = document
+            .nodes
+            .iter()
+            .find(|n| n.text.as_deref().is_some_and(|t| t.contains("Notes")))
+            .expect("a button naming the vault");
+        assert!(named.text.as_deref().unwrap().contains("Notes"));
+    }
+
+    #[test]
+    fn the_vault_buttons_are_capped_and_stacked_clear_of_the_tips() {
+        let many: Vec<_> = ["A", "B", "C", "D", "E"].iter().map(|n| vault(n)).collect();
+        let mut document = welcome();
+        finish_welcome(&mut document, &many);
+        let buttons: Vec<_> = document
+            .nodes
+            .iter()
+            .filter(|n| {
+                n.extra.get("tb_action").and_then(|v| v.as_str()).is_some_and(|a| a.starts_with("use_vault:"))
+            })
+            .collect();
+        assert_eq!(buttons.len(), 3, "a long tail of old vaults is not what anyone came for");
+        // Along one row, not stacked on top of each other.
+        assert!(buttons.windows(2).all(|w| w[0].x == w[1].x && w[0].y < w[1].y));
+    }
+
+    #[test]
+    fn the_summon_tip_says_what_works_on_this_platform() {
+        let mut document = welcome();
+        finish_welcome(&mut document, &[]);
+        let tip = document
+            .nodes
+            .iter()
+            .find(|n| n.id == "tip_summon")
+            .and_then(|n| n.text.clone())
+            .expect("a summon tip");
+        assert_ne!(tip, "SUMMON", "the placeholder must be filled in");
+        if cfg!(target_os = "macos") {
+            // The default hotkey is F15, which a MacBook hasn't got, so the
+            // gesture has to lead — telling someone to press Pause is telling
+            // them to do something impossible.
+            assert!(tip.starts_with("Swipe"), "{tip}");
+            let (swipe, pause) = (tip.find("four fingers"), tip.find("Pause"));
+            assert!(swipe < pause, "the gesture must come first: {tip}");
+        } else {
+            assert!(tip.contains("Pause"), "{tip}");
+            assert!(!tip.contains("four fingers"), "no trackpad gesture off macOS: {tip}");
         }
     }
 
