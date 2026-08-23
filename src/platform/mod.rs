@@ -111,6 +111,19 @@ pub fn set_summon_gesture_enabled(enable: bool) {
     backend::set_summon_gesture_enabled(enable);
 }
 
+/// Stops this app being the active one, so the keyboard goes back to whatever
+/// was in front before the overlay was summoned.
+///
+/// Hiding the window isn't enough on macOS: summoning calls
+/// `activateIgnoringOtherApps`, because ordering a non-activating panel forward
+/// leaves focus behind — and nothing undoes that when the panel goes away. The
+/// board vanishes, the app stays active, and it takes a click on another window
+/// to type anywhere again. A no-op elsewhere, where hiding a window hands focus
+/// on by itself.
+pub fn release_focus() {
+    backend::release_focus();
+}
+
 /// The top safe-area inset in points: the macOS notch / menu-bar height, so
 /// top-anchored overlay UI can avoid being clipped. 0 on platforms without one.
 pub fn top_safe_inset() -> f32 {

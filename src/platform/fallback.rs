@@ -28,6 +28,9 @@ pub fn set_gesture_handler(_handler: impl Fn() + Send + Sync + 'static) {}
 pub fn set_summon_gesture_enabled(_enable: bool) {}
 
 /// No safe-area inset to account for on this platform.
+/// Hiding the window already hands focus to whatever is behind it here.
+pub fn release_focus() {}
+
 pub fn top_safe_inset() -> f32 {
     0.0
 }

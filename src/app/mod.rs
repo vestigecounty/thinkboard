@@ -418,6 +418,9 @@ pub(crate) enum Message {
     /// A window finished closing; clears our settings-window handle.
     WindowClosed(window::Id),
     Exit,
+    /// Give the keyboard back to whatever was in front, once the overlay has
+    /// actually gone — see [`App::dismiss_window`].
+    ReleaseFocus,
     /// The OS asked to close the window (close button / Cmd+Q). Flush the
     /// autosave and quit — bypasses the dismiss animation.
     Quit,
@@ -1233,10 +1236,11 @@ impl App {
                 match self.phase {
                     Phase::Running | Phase::Entering { .. } => self.begin_exit(),
                     // Second Esc during the exit animation: hide right away.
-                    Phase::Exiting { .. } => return self.hide_window(),
+                    Phase::Exiting { .. } => return self.dismiss_window(),
                     Phase::Hidden => {}
                 }
             }
+            Message::ReleaseFocus => crate::platform::release_focus(),
             Message::Quit => return self.save_and_exit(),
             // The global hotkey is an OS-level registration that keeps firing
             // even while we're recording its replacement — ignore the toggle so
@@ -1896,9 +1900,24 @@ impl App {
             && !summon_churn
             && matches!(self.phase, Phase::Running | Phase::Entering { .. });
         if dismiss {
-            return self.hide_window();
+            return self.dismiss_window();
         }
         Task::none()
+    }
+
+    /// Dismisses the overlay: hides it *and* stops being the active app.
+    ///
+    /// What the user means by dismissing is "give me back what I was doing", so
+    /// the keyboard has to go with the window — otherwise the board vanishes,
+    /// the next keystroke still arrives here, and it takes a click on another
+    /// window to escape. **Not** what the dialog paths want: those hide the
+    /// overlay precisely so a native dialog can use the focus we still hold, so
+    /// they call [`App::hide_window`] directly.
+    fn dismiss_window(&mut self) -> Task<Message> {
+        // *Chained*, not called here: hiding the window is a task iced performs
+        // after this returns, and handing the keyboard on while our window is
+        // still up and key just gets it handed straight back.
+        self.hide_window().chain(Task::done(Message::ReleaseFocus))
     }
 
     /// Hides the overlay window, keeping the app resident for the next summon.
@@ -1967,7 +1986,7 @@ impl App {
                     / self.config.anim_secs(EXIT_DURATION);
                 if t >= 1.0 {
                     return if self.overlay {
-                        self.hide_window()
+                        self.dismiss_window()
                     } else {
                         self.save_and_exit()
                     };

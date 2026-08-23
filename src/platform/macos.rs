@@ -11,6 +11,7 @@
 
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr::NonNull;
+use std::sync::atomic::{AtomicI32, Ordering};
 use std::sync::{Mutex, Once, OnceLock};
 
 use block2::RcBlock;
@@ -18,7 +19,8 @@ use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2::{ClassType, MainThreadOnly, define_class};
 use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSEvent, NSEventMask, NSPanel, NSScreen,
+    NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy,
+    NSRunningApplication, NSEvent, NSEventMask, NSPanel, NSScreen,
     NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
     NSWorkspaceActiveSpaceDidChangeNotification,
 };
@@ -40,6 +42,37 @@ pub const SUPPORTS_GESTURES: bool = true;
 /// The main screen's top safe-area inset (px) — the MacBook notch / menu-bar
 /// height. `safeAreaInsets` is macOS 12+, so guard with `respondsToSelector` to
 /// avoid an unrecognized selector on older systems (which have no notch anyway).
+/// The app that had the keyboard when the overlay was last summoned, by pid.
+/// 0 when we don't know of one.
+static PREVIOUS_APP: AtomicI32 = AtomicI32::new(0);
+
+/// Hands the keyboard back to whatever was in front before the overlay took it.
+///
+/// The counterpart to the `activateIgnoringOtherApps` in
+/// [`configure_overlay_window`]: summoning has to take focus explicitly, because
+/// a non-activating panel doesn't get it, so dismissing has to give it back just
+/// as explicitly. **`deactivate()` on its own does not do it** — AppKit treats it
+/// as a request and, with nothing else asking to come forward, simply leaves us
+/// active with no window on screen. So the app we took focus *from* is activated
+/// by name, and `deactivate` is only the fallback for when it has since quit.
+pub fn release_focus() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return; // main-thread only; a background caller would be a no-op anyway
+    };
+    let pid = PREVIOUS_APP.swap(0, Ordering::Relaxed);
+    let previous = (pid != 0)
+        .then(|| NSRunningApplication::runningApplicationWithProcessIdentifier(pid))
+        .flatten();
+    if let Some(previous) = previous {
+        // Not `ActivateAllWindows`: bring it back as it was, rather than
+        // unstacking every window it had.
+        if previous.activateWithOptions(NSApplicationActivationOptions::empty()) {
+            return;
+        }
+    }
+    NSApplication::sharedApplication(mtm).deactivate();
+}
+
 pub fn top_safe_inset() -> f32 {
     use objc2::runtime::NSObjectProtocol;
     let Some(mtm) = MainThreadMarker::new() else {
@@ -454,6 +487,18 @@ pub fn configure_overlay_window() {
         // panel then lands on the Space that's active now.
         window.makeKeyAndOrderFront(None);
         window.orderFrontRegardless();
+    }
+
+    // Who had the keyboard before we take it, so dismissing can give it back.
+    // `deactivate()` alone is not enough: AppKit treats it as advisory and, with
+    // no other app asking to be frontmost, leaves us active with our window
+    // gone — which is exactly the symptom, a board that vanishes while the next
+    // keystroke still arrives here.
+    if let Some(front) = NSWorkspace::sharedWorkspace().frontmostApplication() {
+        let pid = front.processIdentifier();
+        if pid != std::process::id() as i32 {
+            PREVIOUS_APP.store(pid, Ordering::Relaxed);
+        }
     }
 
     // Grab keyboard focus for the just-shown overlay. Ordering a non-activating

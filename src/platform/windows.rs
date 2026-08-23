@@ -107,6 +107,9 @@ fn app_window() -> Option<HWND> {
 }
 
 /// No safe-area inset to account for on this platform.
+/// Hiding the window already hands focus to whatever is behind it here.
+pub fn release_focus() {}
+
 pub fn top_safe_inset() -> f32 {
     0.0
 }
