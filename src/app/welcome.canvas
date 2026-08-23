@@ -97,12 +97,13 @@
 		{
 			"id": "action_vault",
 			"type": "text",
-			"x": -869,
-			"y": 220,
+			"x": -1250,
+			"y": -40,
 			"width": 319,
 			"height": 100,
 			"text": "Use an Obsidian vault\u2026",
-			"tb_action": "open_vault"
+			"tb_action": "open_vault",
+			"color": "#c8a54b"
 		}
 	],
 	"edges": [
@@ -172,9 +173,9 @@
 		{
 			"id": "e_action_vault",
 			"fromNode": "welcome",
-			"fromSide": "bottom",
+			"fromSide": "left",
 			"toNode": "action_vault",
-			"toSide": "top"
+			"toSide": "right"
 		}
 	]
 }

@@ -10,7 +10,7 @@ use iced::{Task, window};
 
 use super::sync::{file_mtime, should_reload};
 use super::{App, Message};
-use crate::model::{CanvasDocument, CanvasNode, NodeKind};
+use crate::model::{CanvasEdge, CanvasDocument, CanvasNode, NodeKind};
 
 /// The embedded scratch board shown when no real canvas is configured. A
 /// throwaway playground: never written to disk, reset on every launch. Its
@@ -46,27 +46,35 @@ fn finish_welcome(document: &mut CanvasDocument, vaults: &[thinkboard_core::obsi
     // Capped, because the row is a row and a long tail of old vaults is not
     // what anyone came for.
     const SHOWN: usize = 3;
+    /// Narrower than the button they hang from, so three fit in the column
+    /// left of the tips.
+    const WIDTH: f32 = 240.0;
+    const GAP: f32 = 30.0;
     let anchor = document
         .nodes
         .iter()
         .find(|node| node.id == "action_vault")
-        .map(|node| (node.x, node.y, node.width, node.height));
-    let Some((x, y, width, height)) = anchor else {
+        .map(|node| (node.x, node.y, node.height, node.color.clone()));
+    let Some((x, y, height, color)) = anchor else {
         return;
     };
     for (i, vault) in vaults.iter().take(SHOWN).enumerate() {
+        let id = format!("action_vault_{i}");
         let mut node = CanvasNode {
-            id: format!("action_vault_{i}"),
+            // Above the button and fanning away from the board, not beside it
+            // or below it: side by side the link to the second vault runs
+            // straight through the first, and the row reads as a chain of one
+            // vault leading to the next rather than three offers from one.
+            x: x - i as f32 * (WIDTH + GAP),
+            y: y - height - 60.0,
+            width: WIDTH,
+            height,
+            id: id.clone(),
             kind: "text".to_owned(),
             text: Some(format!("Open vault **{}**", vault.name)),
             file: None,
-            // Stacked below the button rather than beside it: the tips run down
-            // the right of the board, and a row of these would grow into them.
-            x,
-            y: y + (i as f32 + 1.0) * (height + 20.0),
-            width,
-            height,
-            color: None,
+            // The gold of the button they belong to, so the group reads as one.
+            color: color.clone(),
             extra: Default::default(),
         };
         let _ = node.extra.insert(
@@ -74,6 +82,16 @@ fn finish_welcome(document: &mut CanvasDocument, vaults: &[thinkboard_core::obsi
             serde_json::Value::String(format!("use_vault:{}", vault.path.display())),
         );
         document.nodes.push(node);
+        // Each hangs off the button itself — every link leaving the same top
+        // port, so they fan out instead of threading through one another.
+        document.edges.push(CanvasEdge {
+            id: format!("e_{id}"),
+            from_node: "action_vault".to_owned(),
+            from_side: "top".to_owned(),
+            to_node: id,
+            to_side: "bottom".to_owned(),
+            extra: Default::default(),
+        });
     }
     // Nothing found: the button beside them is the only way in, and its label
     // shouldn't promise a list that isn't there.
@@ -525,7 +543,7 @@ mod tests {
     }
 
     #[test]
-    fn the_vault_buttons_are_capped_and_stacked_clear_of_the_tips() {
+    fn the_vault_buttons_are_capped_linked_and_clear_of_the_tips() {
         let many: Vec<_> = ["A", "B", "C", "D", "E"].iter().map(|n| vault(n)).collect();
         let mut document = welcome();
         finish_welcome(&mut document, &many);
@@ -537,8 +555,40 @@ mod tests {
             })
             .collect();
         assert_eq!(buttons.len(), 3, "a long tail of old vaults is not what anyone came for");
-        // Along one row, not stacked on top of each other.
-        assert!(buttons.windows(2).all(|w| w[0].x == w[1].x && w[0].y < w[1].y));
+        // One row above the button, fanning away from the board: side by side,
+        // the link to the second vault runs through the first and the row reads
+        // as a chain of one vault leading to the next.
+        assert!(buttons.windows(2).all(|w| w[0].y == w[1].y && w[0].x > w[1].x));
+        let anchor = document.nodes.iter().find(|n| n.id == "action_vault").expect("the button");
+        assert!(buttons.iter().all(|b| b.y + b.height < anchor.y), "above the root button");
+        assert!(buttons.iter().all(|b| b.x <= anchor.x), "and away from the rest of the board");
+
+        // Each hangs off the button itself, from the same top port — so they fan
+        // out rather than threading through one another.
+        for button in &buttons {
+            let edge = document
+                .edges
+                .iter()
+                .find(|e| e.to_node == button.id)
+                .unwrap_or_else(|| panic!("{} is not connected to anything", button.id));
+            assert_eq!(edge.from_node, "action_vault", "parented to the button, not to a sibling");
+            assert_eq!((edge.from_side.as_str(), edge.to_side.as_str()), ("top", "bottom"));
+        }
+
+        // And they wear its colour, so the group reads as one offer.
+        assert!(buttons.iter().all(|b| b.color == anchor.color && b.color.is_some()));
+
+        // Clear of the tips, which run down the right of the board.
+        let tips = document.nodes.iter().filter(|n| n.id.starts_with("tip_"));
+        for tip in tips {
+            for button in &buttons {
+                let overlaps = button.x < tip.x + tip.width
+                    && tip.x < button.x + button.width
+                    && button.y < tip.y + tip.height
+                    && tip.y < button.y + button.height;
+                assert!(!overlaps, "{} overlaps {}", button.id, tip.id);
+            }
+        }
     }
 
     #[test]
