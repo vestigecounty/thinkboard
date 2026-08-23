@@ -216,7 +216,7 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     items.push(setting(
         "Model",
         line(Field::AiModel, app.draft(Field::AiModel), ""),
-        "Model name sent to the endpoint.",
+        "Model name sent to the endpoint. Cmd/Ctrl+Shift+P → \"Change AI model\" lists what the endpoint serves, so you needn't type one exactly.",
     ));
     items.push(setting(
         "API key",

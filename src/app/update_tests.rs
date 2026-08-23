@@ -1405,6 +1405,94 @@ fn naming_a_theme_in_settings_takes_effect_without_a_restart() {
     assert_eq!(app.theme.background, before);
 }
 
+// --- The model picker ---
+
+use thinkboard_core::ai::Model;
+
+fn model(id: &str) -> Model {
+    Model { id: id.to_owned(), name: None, context: None }
+}
+
+/// An app with a provider configured and a list already fetched for it.
+fn app_with_models(ids: &[&str]) -> App {
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
+    send(&mut app, Message::OpenModelPicker);
+    let url = app.config.ai_url.clone();
+    send(&mut app, Message::ModelsFetched(url, Ok(ids.iter().map(|id| model(id)).collect())));
+    app
+}
+
+#[test]
+fn a_fetched_list_fills_the_picker() {
+    let app = app_with_models(&["anthropic/claude-sonnet-4", "openai/gpt-4o"]);
+    assert_eq!(app.model_matches("").len(), 2);
+    assert_eq!(app.highlighted_model().as_deref(), Some("anthropic/claude-sonnet-4"));
+}
+
+#[test]
+fn typing_narrows_the_models() {
+    let mut app = app_with_models(&["anthropic/claude-sonnet-4", "openai/gpt-4o"]);
+    send(&mut app, Message::ModelPickerInput("gpt".to_owned()));
+    assert_eq!(app.highlighted_model().as_deref(), Some("openai/gpt-4o"));
+}
+
+#[test]
+fn choosing_a_model_writes_the_id_the_endpoint_gave() {
+    // The whole point: the id goes through exactly, rather than being retyped
+    // from memory and failing at the next question asked.
+    let mut app = app_with_models(&["accounts/fireworks/models/llama-v3p1-70b-instruct"]);
+    send(&mut app, Message::CommitModel);
+    assert!(app.model_picker.is_none());
+    assert_eq!(app.config.ai_model, "accounts/fireworks/models/llama-v3p1-70b-instruct");
+    // And the settings form shows it, rather than the value it opened with.
+    assert_eq!(
+        app.settings_drafts.get(&settings::Field::AiModel).map(String::as_str),
+        Some("accounts/fireworks/models/llama-v3p1-70b-instruct"),
+    );
+}
+
+#[test]
+fn a_failed_fetch_is_shown_rather_than_swallowed() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
+    send(&mut app, Message::OpenModelPicker);
+    let url = app.config.ai_url.clone();
+    send(&mut app, Message::ModelsFetched(url, Err("401: key rejected".to_owned())));
+    let picker = app.model_picker.as_ref().expect("still open");
+    assert!(!picker.loading);
+    assert_eq!(picker.error.as_deref(), Some("401: key rejected"));
+}
+
+#[test]
+fn a_fetch_for_another_endpoint_is_discarded() {
+    // Switch provider while a request is in flight and the answer still lands.
+    // Taking it would offer one provider's models under another's name.
+    let mut app = app_with_models(&["openai/gpt-4o"]);
+    send(&mut app, Message::CloseModelPicker);
+    app.config.ai_url = "https://api.fireworks.ai/inference/v1".to_owned();
+    send(&mut app, Message::OpenModelPicker);
+
+    send(
+        &mut app,
+        Message::ModelsFetched(
+            "https://openrouter.ai/api/v1".to_owned(),
+            Ok(vec![model("openai/gpt-4o")]),
+        ),
+    );
+    assert!(app.model_matches("").is_empty(), "the stale list must not show");
+    assert!(app.model_picker.as_ref().expect("open").loading, "still waiting on its own");
+}
+
+#[test]
+fn the_command_is_greyed_without_an_endpoint() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url.clear();
+    assert!(!command::CommandId::ChooseModel.is_enabled(&app));
+    app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
+    assert!(command::CommandId::ChooseModel.is_enabled(&app));
+}
+
 // --- The font picker ---
 
 /// A family the font database is certain to have, whatever machine this runs

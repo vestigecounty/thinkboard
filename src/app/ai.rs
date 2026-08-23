@@ -59,6 +59,11 @@ pub(super) struct Ai {
     /// Pending requests' input chains, each shimmered on its own clock (see
     /// [`board::AiFlow`]) so concurrent generations animate independently.
     pub(super) flows: Vec<board::AiFlow>,
+    /// What the last `GET /models` found, against the endpoint it asked. Kept
+    /// so reopening the model picker is instant, and refetched behind that —
+    /// the vault browser's bargain, for the same reason: the panel has to be up
+    /// on the keystroke that asked for it.
+    pub(super) models: Vec<(String, Vec<thinkboard_core::ai::Model>)>,
 }
 
 /// A configured tint (an Obsidian preset "1"–"6") as a node color value, or

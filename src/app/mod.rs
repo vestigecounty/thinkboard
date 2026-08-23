@@ -58,6 +58,7 @@ mod settings;
 mod startup;
 mod sync;
 mod font_picker;
+mod model_picker;
 mod theme_picker;
 mod theme_store;
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
@@ -364,6 +365,18 @@ pub(crate) enum Message {
     CommitTheme,
     PickTheme(String),
 
+    /// Model picker (from the palette): the same panel over whatever the AI
+    /// endpoint says it serves, and the fetch that fills it.
+    OpenModelPicker,
+    CloseModelPicker,
+    ModelPickerInput(String),
+    ModelPickerNav(picker::Nav),
+    ModelPickerScrolled(f32),
+    ModelsFetched(String, Result<Vec<thinkboard_core::ai::Model>, String>),
+    /// Keep the highlighted model (Enter), or a clicked one.
+    CommitModel,
+    PickModel(String),
+
     /// Font picker (from the palette): the same panel over the installed
     /// families, previewing the highlighted one on the board.
     OpenFontPicker,
@@ -542,6 +555,9 @@ struct App {
     theme_picker: Option<theme_picker::ThemePicker>,
     /// The font picker, when open. Shares the shell and previews the same way.
     font_picker: Option<font_picker::FontPicker>,
+    /// The model picker, when open. Shares the shell; unlike the others it has
+    /// to fetch its rows, so it can be open with none.
+    model_picker: Option<model_picker::ModelPicker>,
     /// The canvases the last vault walk found, newest first. Kept while the
     /// browser is closed so reopening it is instant; a fresh walk replaces it.
     vault_canvases: Vec<thinkboard_core::vault::CanvasEntry>,
@@ -796,6 +812,7 @@ impl App {
             vault_browser: None,
             theme_picker: None,
             font_picker: None,
+            model_picker: None,
             vault_canvases: Vec::new(),
             vault_scanning: false,
             settings_overlay: false,
@@ -1225,6 +1242,37 @@ impl App {
             Message::CommitFont => return self.commit_font(),
             Message::PickFont(name) => return self.pick_font(&name),
 
+            Message::OpenModelPicker => return self.open_model_picker(),
+            Message::CloseModelPicker => self.model_picker = None,
+            Message::ModelPickerInput(query) => {
+                if let Some(picker) = &mut self.model_picker {
+                    picker.state.query = query;
+                    picker.state.reset();
+                }
+            }
+            Message::ModelPickerNav(nav) => {
+                let len = match &self.model_picker {
+                    Some(picker) => self.model_matches(&picker.state.query).len(),
+                    None => return Task::none(),
+                };
+                if let Some(picker) = &mut self.model_picker {
+                    return picker::navigate(
+                        &mut picker.state,
+                        nav,
+                        len,
+                        &model_picker::MODEL_LIST,
+                    );
+                }
+            }
+            Message::ModelPickerScrolled(offset) => {
+                if let Some(picker) = &mut self.model_picker {
+                    picker.state.offset = offset;
+                }
+            }
+            Message::ModelsFetched(url, models) => self.models_fetched(url, models),
+            Message::CommitModel => return self.commit_model(),
+            Message::PickModel(id) => return self.pick_model(&id),
+
             Message::SwitchCanvas => return self.switch_canvas(),
             Message::OpenVaultBrowser => return self.open_vault_browser(),
             Message::CloseVaultBrowser => self.vault_browser = None,
@@ -1390,6 +1438,7 @@ impl App {
     fn dismiss_panels(&mut self) -> Task<Message> {
         self.command_palette = None;
         self.vault_browser = None;
+        self.model_picker = None;
         Task::batch([self.cancel_theme_picker(), self.cancel_font_picker()])
     }
 
@@ -1775,6 +1824,7 @@ impl App {
             CommandId::OpenVault => Message::ChooseVault,
             CommandId::ChooseTheme => Message::OpenThemePicker,
             CommandId::ChooseFont => Message::OpenFontPicker,
+            CommandId::ChooseModel => Message::OpenModelPicker,
             CommandId::SwitchCanvas => Message::SwitchCanvas,
             CommandId::FindOnBoard => Message::OpenSearch,
             // From the palette, settings open in-board (the tray still uses the
@@ -2094,6 +2144,9 @@ impl App {
         // Same for the vault browser, which shares the palette's shell.
         if self.vault_browser.is_some() {
             subscriptions.push(iced::event::listen_with(vault::key_event));
+        }
+        if self.model_picker.is_some() {
+            subscriptions.push(iced::event::listen_with(model_picker::key_event));
         }
         if self.font_picker.is_some() {
             subscriptions.push(iced::event::listen_with(font_picker::key_event));

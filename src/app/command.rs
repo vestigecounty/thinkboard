@@ -30,6 +30,7 @@ pub(crate) enum CommandId {
     OpenVault,
     ChooseTheme,
     ChooseFont,
+    ChooseModel,
     SwitchCanvas,
     FindOnBoard,
     Settings,
@@ -61,6 +62,9 @@ impl CommandId {
             // Nothing to browse until a vault has been picked — "Open vault…"
             // sits right above it.
             CommandId::SwitchCanvas => app.has_vault(),
+            // Nothing to ask for a list without an endpoint — "API URL" in
+            // settings is what turns this on.
+            CommandId::ChooseModel => app.config.ai_enabled(),
             _ => true,
         }
     }
@@ -95,6 +99,7 @@ static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
         cmd(OpenVault, "Open vault…", "obsidian folder library", ""),
         cmd(ChooseTheme, "Change theme…", "colours colors appearance scheme palette dark", ""),
         cmd(ChooseFont, "Change font…", "typeface family typography text serif mono", ""),
+        cmd(ChooseModel, "Change AI model…", "llm gpt claude openrouter fireworks provider", ""),
         cmd(AddNode, "Add node", "new note card", ""),
         cmd(AskAi, "Ask AI", "generate llm gpt", ""),
         cmd(Distribute, "Auto-layout selection", "distribute arrange tidy", ""),

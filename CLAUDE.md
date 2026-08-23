@@ -90,7 +90,8 @@ rasterizer) stays desktop-side.
 | `raster` | text bitmaps and semantic-zoom clusters (both computed off-thread) |
 | `ai` / `ghosts` | streamed answers; Copilot-style suggestion cards |
 | `canvas_file` | opening, autosaving, reloading the `.canvas` file; vault roots |
-| `picker` | the panel shell shared by the command palette and the vault browser |
+| `picker` | the panel shell shared by the palette, vault browser and the pickers |
+| `theme_picker` / `font_picker` / `model_picker` | what fills that shell besides the palette |
 | `vault` | finding the vault's boards and switching between them |
 | `search`, `clipboard`, `command`, `settings`, `startup`, `tray`, `sync` | as named |
 
@@ -353,6 +354,30 @@ Both pickers must be **cancelled rather than dropped** (`App::dismiss_panels`).
 A preview is only undone by cancelling, so a picker discarded when another panel
 opens leaves what it was previewing on the board with nothing in the config to
 match it.
+
+## The model picker
+
+A model name is exact and unguessable — `anthropic/claude-sonnet-4`,
+`accounts/fireworks/models/llama-v3p1-70b-instruct` — and typing one from memory
+fails at the *next question asked*, not when you type it. So the list comes from
+the endpoint: `GET {ai_url}/models`, which is part of the OpenAI API every
+preset implements, local runtimes included. **There is nothing provider-specific
+here** — OpenRouter and Fireworks were the ones worth browsing (421 models on
+OpenRouter), but neither needed its own code path. Fields past `id` are
+extensions: OpenRouter gives a display name and a context window, a plain
+endpoint gives neither, and both are read only when present.
+
+It's the one panel that **fetches**, so it has two states the others don't —
+in flight and failed — and both are shown in the list's own empty row, so the
+panel is up on the keystroke that asked for it either way. A finished fetch
+carries the URL it was for and is dropped if that no longer matches, or
+switching provider mid-flight would offer one provider's models under another's
+name. The last list is kept (one endpoint's worth) so reopening is instant, and
+refetched behind it — the vault browser's bargain.
+
+Failures are phrased as something to act on rather than a status code: a 401 is
+"the API key was rejected", a 404 is "this endpoint has no model list", which is
+the ordinary answer from a local runtime rather than a fault.
 
 ## Obsidian compatibility
 

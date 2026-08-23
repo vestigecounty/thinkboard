@@ -63,6 +63,105 @@ fn authed_post(url: &str, api_key: &str) -> reqwest::RequestBuilder {
     req
 }
 
+/// A GET against the same endpoint, with the same headers [`authed_post`] sets.
+fn authed_get(url: &str, api_key: &str) -> reqwest::RequestBuilder {
+    let mut req = reqwest::Client::new().get(url).header("X-Title", "ThinkBoard");
+    let key = api_key.trim();
+    if !key.is_empty() {
+        req = req.bearer_auth(key);
+    }
+    req
+}
+
+/// One model an endpoint offers.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Model {
+    /// What gets sent as `model` — the authoritative name.
+    pub id: String,
+    /// A human-readable title where the provider gives one ("Anthropic: Claude
+    /// Sonnet 4"). OpenRouter does; a plain OpenAI-compatible endpoint doesn't.
+    pub name: Option<String>,
+    /// Context window in tokens, where stated. Worth showing: it's the thing
+    /// most likely to decide between two models with similar names.
+    pub context: Option<u64>,
+}
+
+/// The models an endpoint offers, by its OpenAI-compatible `GET /models`.
+///
+/// **Not per-provider.** OpenRouter and Fireworks were the ones worth browsing —
+/// hundreds of models each, with names nobody recalls exactly — but the route is
+/// part of the OpenAI API that every preset here implements, local runtimes
+/// included, so there is nothing provider-specific to write. Fields beyond `id`
+/// are extensions, read when present and skipped when not.
+pub async fn models(base_url: &str, api_key: &str) -> Result<Vec<Model>, String> {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let response = authed_get(&url, api_key).send().await.map_err(|e| e.to_string())?;
+    if !response.status().is_success() {
+        let status = response.status();
+        let body = response.text().await.unwrap_or_default();
+        return Err(describe_failure(status, &body));
+    }
+    let body: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+    Ok(parse_models(&body))
+}
+
+/// Reads the model list out of a `/models` response.
+///
+/// Split from the request so the shapes can be tested without one. Anything
+/// without an `id` is skipped rather than shown as a blank row — an entry we
+/// can't name is one we can't select either.
+fn parse_models(body: &serde_json::Value) -> Vec<Model> {
+    // `data` is where the OpenAI shape puts them; a couple of endpoints return
+    // the bare array instead.
+    let items = body.get("data").or(Some(body)).and_then(|d| d.as_array());
+    let mut models: Vec<Model> = items
+        .into_iter()
+        .flatten()
+        .filter_map(|item| {
+            let id = item.get("id").and_then(|v| v.as_str())?.trim();
+            (!id.is_empty()).then(|| Model {
+                id: id.to_owned(),
+                name: item
+                    .get("name")
+                    .and_then(|v| v.as_str())
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty() && *name != id)
+                    .map(str::to_owned),
+                context: ["context_length", "context_window", "max_context_length"]
+                    .iter()
+                    .find_map(|key| item.get(*key).and_then(serde_json::Value::as_u64)),
+            })
+        })
+        .collect();
+    // Alphabetical, which for these ids groups a vendor's models together
+    // ("anthropic/…", "openai/…") — the order you'd want to scroll.
+    models.sort_by_key(|model| model.id.to_lowercase());
+    models.dedup_by(|a, b| a.id == b.id);
+    models
+}
+
+/// A failed request, in a sentence a user can act on rather than a status code.
+fn describe_failure(status: reqwest::StatusCode, body: &str) -> String {
+    let detail = serde_json::from_str::<serde_json::Value>(body)
+        .ok()
+        .and_then(|v| {
+            v.pointer("/error/message")
+                .or_else(|| v.pointer("/message"))
+                .and_then(|m| m.as_str())
+                .map(str::to_owned)
+        })
+        .unwrap_or_else(|| body.chars().take(200).collect());
+    match status {
+        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
+            format!("{status}: the API key was rejected ({detail})")
+        }
+        reqwest::StatusCode::NOT_FOUND => {
+            format!("{status}: this endpoint has no model list ({detail})")
+        }
+        _ => format!("{status}: {detail}"),
+    }
+}
+
 fn system_prompt(max_notes: usize) -> String {
     format!(
         "You are a helpful assistant inside a mind-mapping canvas. The user's \
@@ -1087,4 +1186,64 @@ mod tests {
         assert_eq!(parts[1]["type"], "image_url");
         assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,AAA");
     }
+
+    #[test]
+    fn model_lists_are_read_from_either_shape() {
+        // OpenRouter: rich entries, a display name and a context window.
+        let openrouter = serde_json::json!({"data": [
+            {"id": "anthropic/claude-sonnet-4", "name": "Anthropic: Claude Sonnet 4",
+             "context_length": 200000},
+            {"id": "openai/gpt-4o", "name": "OpenAI: GPT-4o", "context_length": 128000},
+        ]});
+        let models = parse_models(&openrouter);
+        assert_eq!(models.len(), 2);
+        assert_eq!(models[0].id, "anthropic/claude-sonnet-4");
+        assert_eq!(models[0].name.as_deref(), Some("Anthropic: Claude Sonnet 4"));
+        assert_eq!(models[0].context, Some(200_000));
+
+        // Fireworks and plain OpenAI: an id and nothing else worth showing.
+        let plain = serde_json::json!({"data": [
+            {"id": "accounts/fireworks/models/llama-v3p1-70b-instruct", "object": "model"},
+        ]});
+        let models = parse_models(&plain);
+        assert_eq!(models.len(), 1);
+        assert_eq!(models[0].name, None, "no name is better than a repeated id");
+        assert_eq!(models[0].context, None);
+
+        // A bare array, which a couple of endpoints return instead of `data`.
+        let bare = serde_json::json!([{"id": "local-model"}]);
+        assert_eq!(parse_models(&bare)[0].id, "local-model");
+    }
+
+    #[test]
+    fn unusable_entries_are_dropped_and_the_rest_sorted() {
+        let body = serde_json::json!({"data": [
+            {"id": "zeta"},
+            {"object": "model"},          // no id: not selectable, so not shown
+            {"id": "   "},                // nor is a blank one
+            {"id": "Alpha"},
+            {"id": "zeta"},               // a duplicate is one model, not two
+            {"id": "beta", "name": "beta"},
+        ]});
+        let models = parse_models(&body);
+        let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
+        assert_eq!(ids, ["Alpha", "beta", "zeta"], "case-insensitive, so vendors group");
+        assert_eq!(models[1].name, None, "a name equal to the id says nothing twice");
+    }
+
+    #[test]
+    fn a_failure_says_what_to_do_about_it() {
+        let unauthorized = describe_failure(
+            reqwest::StatusCode::UNAUTHORIZED,
+            r#"{"error": {"message": "No auth credentials found"}}"#,
+        );
+        assert!(unauthorized.contains("API key"), "{unauthorized}");
+        assert!(unauthorized.contains("No auth credentials found"), "{unauthorized}");
+
+        // A provider that simply hasn't got the route — the common case for a
+        // local runtime — shouldn't read as a broken key.
+        let missing = describe_failure(reqwest::StatusCode::NOT_FOUND, "<html>404</html>");
+        assert!(missing.contains("no model list"), "{missing}");
+    }
+
 }
