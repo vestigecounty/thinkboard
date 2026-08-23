@@ -12,18 +12,12 @@
 //! colours the theme now says. So a preview recolours and invalidates, and the
 //! rasterizing is left until a theme is actually chosen.
 
-use std::sync::LazyLock;
-
-use iced::advanced::widget::Id;
 use iced::{Element, Task};
 
-use super::picker::{self, Row, Shell};
+use super::picker::{self, Panel, Row, Shell};
 use super::{App, Message};
 use crate::theme::Theme;
 use thinkboard_core::theme::ThemeFile;
-
-pub(crate) static THEME_INPUT: LazyLock<Id> = LazyLock::new(|| Id::new("theme-picker"));
-pub(crate) static THEME_LIST: LazyLock<Id> = LazyLock::new(|| Id::new("theme-picker-list"));
 
 /// The open picker: the query and highlight, the themes as of opening, and
 /// what to put back if it's dismissed.
@@ -50,22 +44,12 @@ pub(crate) fn key_event(
     _status: iced::event::Status,
     _window: iced::window::Id,
 ) -> Option<Message> {
-    use iced::keyboard::key::{Key, Named};
-    if let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-        key: Key::Named(Named::Escape),
-        ..
-    }) = event
-    {
-        return Some(Message::CloseThemePicker);
-    }
-    picker::nav_key(&event).map(Message::ThemePickerNav)
+    picker::panel_key(&event, Panel::Theme)
 }
 
 impl App {
     pub(super) fn open_theme_picker(&mut self) -> Task<Message> {
-        self.search = None; // mutually exclusive with the other panels
-        self.command_palette = None;
-        self.vault_browser = None;
+        let opened = self.open_panel(Panel::Theme);
 
         // The way back to the stylesheet. A named theme wins over
         // `config.theme_css`, so without this row a vault's Obsidian theme
@@ -89,11 +73,8 @@ impl App {
             before: self.theme,
             before_name,
         });
-        let focus = iced::advanced::widget::operate(
-            iced::advanced::widget::operation::focusable::focus(THEME_INPUT.clone()),
-        );
         // Scroll the list to wherever the current theme sits.
-        Task::batch([focus, self.preview_highlighted()])
+        Task::batch([opened, self.preview_highlighted()])
     }
 
     /// What a row says. The nameless first entry is named for what choosing it
@@ -115,26 +96,12 @@ impl App {
         let Some(picker) = &self.theme_picker else {
             return Vec::new();
         };
-        let mut scored: Vec<(usize, i32)> = picker
-            .themes
-            .iter()
-            .enumerate()
-            .filter_map(|(i, theme)| {
-                // Name first, then the author at a small penalty — the same
-                // title-then-keywords shape the command palette uses.
-                // The author is matched but never shown — the same hidden search
-                // terms the command palette gives its commands, so "schoonover"
-                // finds Solarized without the name being cluttered by it.
-                let score = thinkboard_core::fuzzy::score(query, self.theme_label(theme))
-                    .or_else(|| {
-                        thinkboard_core::fuzzy::score(query, theme.author.as_deref()?)
-                            .map(|s| s - 4)
-                    })?;
-                Some((i, score))
-            })
-            .collect();
-        scored.sort_by_key(|&(_, score)| std::cmp::Reverse(score));
-        scored.into_iter().map(|(i, _)| i).collect()
+        // The author is matched but never shown — a hidden term like the
+        // palette's keywords, so "schoonover" finds Solarized without the name
+        // being cluttered by it.
+        thinkboard_core::fuzzy::rank(&picker.themes, |theme| {
+            thinkboard_core::fuzzy::score_alias(query, self.theme_label(theme), theme.author.as_deref())
+        })
     }
 
     /// The name of the theme the highlight is on, without holding a borrow on
@@ -171,10 +138,7 @@ impl App {
         // A theme carries typography as well as colour — a family, its weights,
         // its OpenType features — and the shaping caches are keyed by none of
         // those, so a stale entry would measure the previous theme's text.
-        crate::canvas::text_raster::clear_caches();
-        self.rasters.clear();
-        self.clusters.snapshots.clear();
-        self.cache.clear();
+        self.drop_text_bitmaps();
         Task::none()
     }
 
@@ -211,10 +175,7 @@ impl App {
         self.install_theme(picker.before);
         // The preview left the board drawing live text, measured under the
         // theme it was previewing.
-        crate::canvas::text_raster::clear_caches();
-        self.rasters.clear();
-        self.clusters.snapshots.clear();
-        self.cache.clear();
+        self.drop_text_bitmaps();
         Task::batch([self.refresh_snapshots(), self.schedule_recluster()])
     }
 
@@ -243,13 +204,9 @@ impl App {
             self,
             &picker.state,
             Shell {
+                panel: Panel::Theme,
                 placeholder: "Theme…",
-                input: THEME_INPUT.clone(),
-                list: THEME_LIST.clone(),
-                on_input: Message::ThemePickerInput,
                 on_submit: Message::CommitTheme,
-                on_scroll: Message::ThemePickerScrolled,
-                on_close: Message::CloseThemePicker,
                 empty: "No matching theme".into(),
             },
             rows,

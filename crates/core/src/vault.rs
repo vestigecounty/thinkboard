@@ -19,11 +19,6 @@ pub const MAX_ENTRIES: usize = 5_000;
 /// levels; past this it's a mount or a symlinked tree we shouldn't be in.
 pub const MAX_DEPTH: usize = 12;
 
-/// Penalty applied to a folder-path match, so a query is ranked against the
-/// board's own name first and only falls back to where it lives. Mirrors the
-/// command palette's title-then-keywords fallback.
-const PATH_PENALTY: i32 = 4;
-
 /// One `.canvas` file found in the vault.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CanvasEntry {
@@ -194,19 +189,9 @@ pub fn rank(entries: &[CanvasEntry], query: &str) -> Vec<usize> {
     if query.is_empty() {
         return (0..entries.len()).collect();
     }
-    let mut scored: Vec<(usize, i32)> = entries
-        .iter()
-        .enumerate()
-        .filter_map(|(i, entry)| {
-            let score = fuzzy::score(query, entry.name()).or_else(|| {
-                fuzzy::score(query, &entry.relative).map(|score| score - PATH_PENALTY)
-            })?;
-            Some((i, score))
-        })
-        .collect();
-    // Stable sort, so equal scores stay in modified order.
-    scored.sort_by_key(|&(_, score)| std::cmp::Reverse(score));
-    scored.into_iter().map(|(i, _)| i).collect()
+    fuzzy::rank(entries, |entry| {
+        fuzzy::score_alias(query, entry.name(), Some(&entry.relative))
+    })
 }
 
 #[cfg(test)]

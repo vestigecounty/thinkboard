@@ -195,13 +195,38 @@ a runtime swap must use the other entry point — which also clears the layout
 and measurement caches, since their keys carry text and size but not the face
 those were shaped with.
 
-`picker` is the shell both it and the command palette draw: input, rows,
-keyboard nav. Rows are a **fixed height applied to the row**, not assumed of it
-— iced reports a scroll position but won't say where a given child landed, so
-keeping the highlight on screen is arithmetic over that constant, and the two
-must not drift. Panels supply their own rows and messages; a subscription
-handler is a bare `fn` and can't capture them, so `picker::nav_key` returns a
-`Nav` that each module maps onto its own message.
+`picker` is the shell all five panels draw: input, rows, keyboard nav. Rows are
+a **fixed height applied to the row**, not assumed of it — iced reports a scroll
+position but won't say where a given child landed, so keeping the highlight on
+screen is arithmetic over that constant, and the two must not drift.
+
+**`picker::Panel` names which panel a message is about.** Typing, arrowing,
+scrolling and dismissing are the same four interactions everywhere, so they are
+one message each (`PanelInput`, `PanelNav`, `PanelScrolled`, `ClosePanel`)
+rather than four per panel, resolved through four small matches on `App`
+(`panel_state`, `panel_len`, `panel_preview`, `close_panel`). Written out per
+panel they were 155 lines of `update` and climbing with each new one. A panel
+still needs its own `key_event`, because a subscription handler is a bare `fn`
+that can't capture which panel it is — but that function's whole body is now
+`picker::panel_key(&event, Panel::X)`.
+
+**Every opener goes through `App::open_panel`,** which dismisses the rest and
+focuses the input. Each used to name the panels it displaced, and those lists
+drifted: the font and model pickers could be open at once, with the font preview
+left applied over a config that disagreed. `dismiss_panels` *cancels* the two
+pickers that preview rather than dropping them, since a preview is only ever
+undone by cancelling — and it deliberately leaves the find bar alone, so that
+re-summoning the find bar doesn't empty the query it already holds; `open_panel`
+closes that separately. The test walks every ordered pair rather than the ones
+someone thought to name.
+
+**Ranking is one shape, in `core::fuzzy`.** `score_alias` scores what a row
+*says* and falls back to terms it carries but doesn't show — the palette's
+keywords, a theme's author, a model's display name, a board's vault-relative
+path — at `ALIAS_PENALTY`, so a row found by something invisible never outranks
+one found by what's printed on it. `rank` is the enumerate-score-sort around it,
+and is a **stable** sort, which is what lets each caller's own order stand in as
+the tiebreak: registry order in the palette, modified time in the vault.
 
 ## Themes
 
@@ -448,6 +473,20 @@ the ordinary answer from a local runtime rather than a fault.
   is a single label: host and URL centred in the card. Text nodes centre or
   left-align per `center_node_text`. Keep new kinds consistent with whichever
   of the two they resemble.
+
+## Testing conventions worth knowing
+
+`App::drop_text_bitmaps` is what "the text is stale" means: the bitmaps, the
+cluster snapshots, the scene cache, **and** `text_raster`'s shaping caches. That
+last one is the one that gets forgotten — it is keyed by text and size but not
+by the face or features those were measured with, so leaving it is how a new
+theme gets laid out to the old one's metrics.
+
+Test nodes and edges come from `thinkboard_core::fixtures`, shared with this
+crate's tests through core's `fixtures` feature (a dev-dependency on the same
+path crate, so it is never on in a shipping build). They are bases to amend with
+struct-update syntax — `CanvasNode { width: 400.0, ..node("a") }` — so a test
+says what it is *about* rather than spelling out ten fields.
 
 ## Benchmarks
 

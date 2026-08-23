@@ -73,6 +73,40 @@ const SEARCH_HIT_CURRENT: Color = Color::from_rgb(1.0, 0.882, 0.302);
 /// starts reading as a smudge on the card.
 const SEARCH_HIT: Color = Color::from_rgb(0.55, 0.485, 0.166);
 const SEARCH_INK: Color = Color::BLACK;
+/// What a Cmd/Ctrl chord does. Separated from the event so the table can be
+/// read — and tested — without a live board: which chords take Shift, and which
+/// need something selected, is the part that is easy to get subtly wrong.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Chord {
+    Undo,
+    Redo,
+    Copy,
+    Paste,
+    Find,
+    Palette,
+    SwitchCanvas,
+}
+
+/// The chord for a latin `letter`, or `None` if the board doesn't claim it —
+/// in which case the key falls through untouched.
+fn chord(letter: char, shift: bool, has_selection: bool) -> Option<Chord> {
+    Some(match (letter, shift) {
+        ('z', false) => Chord::Undo,
+        ('z', true) => Chord::Redo,
+        // Nothing selected is nothing to copy, and the chord should reach
+        // whatever else wants it rather than be swallowed.
+        ('c', _) if has_selection => Chord::Copy,
+        ('v', _) => Chord::Paste,
+        ('f', _) => Chord::Find,
+        // The command palette, on the Sublime/Zed chord.
+        ('p', true) => Chord::Palette,
+        // Switch boards: the vault browser where a vault is configured, the
+        // ordinary open dialog where one isn't.
+        ('o', false) => Chord::SwitchCanvas,
+        _ => return None,
+    })
+}
+
 /// Weight of a suggestion card's dashed outline, in world units.
 const GHOST_STROKE: f32 = 1.5;
 /// Line color for a hovered link — a muted blue.
@@ -651,100 +685,39 @@ impl canvas::Program<Message> for Board<'_> {
             {
                 Some(canvas::Action::publish(Message::DeleteSelected).and_capture())
             }
-            // Cmd+Z undo / Cmd+Shift+Z redo, when not editing (the editor
-            // gets these keys during a session). Matched on the *latin* key for
-            // the physical position (the trick the editor and iced's copy/paste
-            // use) so it fires regardless of the active keyboard layout.
+            // The Cmd/Ctrl chords, none of which fire during an edit session —
+            // the editor gets those keys for its own use. Matched on the
+            // *latin* key for the physical position (the trick the editor and
+            // iced's copy/paste use) so they fire whatever the keyboard layout.
             Event::Keyboard(keyboard::Event::KeyPressed {
                 key,
                 physical_key,
                 modifiers,
                 ..
-            }) if self.editing.is_none()
-                && modifiers.command()
-                && key.to_latin(*physical_key) == Some('z') =>
-            {
-                let message = if modifiers.shift() {
-                    Message::Redo
-                } else {
-                    Message::Undo
+            }) if self.editing.is_none() && modifiers.command() => {
+                let letter = key.to_latin(*physical_key)?;
+                let message = match chord(letter, modifiers.shift(), !self.selected.is_empty())? {
+                    Chord::Undo => Message::Undo,
+                    Chord::Redo => Message::Redo,
+                    Chord::Copy => Message::CopyNodes,
+                    Chord::Find => Message::OpenSearch,
+                    Chord::Palette => Message::OpenCommandPalette,
+                    Chord::SwitchCanvas => Message::SwitchCanvas,
+                    Chord::Paste => Message::Paste {
+                        // At the cursor, or the middle of the view when it is
+                        // off-canvas.
+                        world: cursor
+                            .position()
+                            .map(|p| self.camera.to_world(p - Vector::new(bounds.x, bounds.y)))
+                            .unwrap_or_else(|| {
+                                self.camera.to_world(Point::new(
+                                    bounds.width / 2.0,
+                                    bounds.height / 2.0,
+                                ))
+                            }),
+                    },
                 };
                 Some(canvas::Action::publish(message).and_capture())
-            }
-            // Cmd+C copies the selected nodes (and edges among them) to the
-            // clipboard, when not editing (the editor gets Cmd+C in a session).
-            Event::Keyboard(keyboard::Event::KeyPressed {
-                key,
-                physical_key,
-                modifiers,
-                ..
-            }) if self.editing.is_none()
-                && modifiers.command()
-                && key.to_latin(*physical_key) == Some('c')
-                && !self.selected.is_empty() =>
-            {
-                Some(canvas::Action::publish(Message::CopyNodes).and_capture())
-            }
-            // Cmd+V pastes clipboard nodes/text/image as new node(s) at the
-            // cursor (or the view center if the cursor is off-canvas), when not
-            // editing — the editor gets Cmd+V during a session.
-            Event::Keyboard(keyboard::Event::KeyPressed {
-                key,
-                physical_key,
-                modifiers,
-                ..
-            }) if self.editing.is_none()
-                && modifiers.command()
-                && key.to_latin(*physical_key) == Some('v') =>
-            {
-                let world = cursor
-                    .position()
-                    .map(|p| self.camera.to_world(p - Vector::new(bounds.x, bounds.y)))
-                    .unwrap_or_else(|| {
-                        self.camera
-                            .to_world(Point::new(bounds.width / 2.0, bounds.height / 2.0))
-                    });
-                Some(canvas::Action::publish(Message::Paste { world }).and_capture())
-            }
-            // Cmd+F (macOS) / Ctrl+F (Win/Linux) opens the in-board find bar,
-            // when not editing (the editor keeps the key for its own use).
-            Event::Keyboard(keyboard::Event::KeyPressed {
-                key,
-                physical_key,
-                modifiers,
-                ..
-            }) if self.editing.is_none()
-                && modifiers.command()
-                && key.to_latin(*physical_key) == Some('f') =>
-            {
-                Some(canvas::Action::publish(Message::OpenSearch).and_capture())
-            }
-            // Cmd/Ctrl+Shift+P: the command palette (Sublime/Zed convention).
-            Event::Keyboard(keyboard::Event::KeyPressed {
-                key,
-                physical_key,
-                modifiers,
-                ..
-            }) if self.editing.is_none()
-                && modifiers.command()
-                && modifiers.shift()
-                && key.to_latin(*physical_key) == Some('p') =>
-            {
-                Some(canvas::Action::publish(Message::OpenCommandPalette).and_capture())
-            }
-            // Cmd/Ctrl+O: switch boards — the vault browser where a vault is
-            // configured, the ordinary open dialog where one isn't.
-            Event::Keyboard(keyboard::Event::KeyPressed {
-                key,
-                physical_key,
-                modifiers,
-                ..
-            }) if self.editing.is_none()
-                && modifiers.command()
-                && !modifiers.shift()
-                && key.to_latin(*physical_key) == Some('o') =>
-            {
-                Some(canvas::Action::publish(Message::SwitchCanvas).and_capture())
             }
             Event::Mouse(mouse_event) => {
                 let position = cursor
@@ -3872,5 +3845,49 @@ mod cluster_snap_tests {
         let anchor = Point::new(40.0, 20.0);
         let delta = cluster_delta(Point::new(44.0, 26.0), anchor, 20.0);
         assert_eq!(delta, Vector::ZERO);
+    }
+
+}
+
+#[cfg(test)]
+mod chord_tests {
+    use super::{Chord, chord};
+
+    #[test]
+    fn the_chord_table_is_shift_sensitive_where_it_should_be() {
+        // Undo/redo are the same letter, told apart by Shift.
+        assert_eq!(chord('z', false, false), Some(Chord::Undo));
+        assert_eq!(chord('z', true, false), Some(Chord::Redo));
+
+        // The palette wants Shift; plain Cmd+P is not ours to take.
+        assert_eq!(chord('p', true, false), Some(Chord::Palette));
+        assert_eq!(chord('p', false, false), None);
+
+        // Cmd+O switches boards, and Cmd+Shift+O is left alone.
+        assert_eq!(chord('o', false, false), Some(Chord::SwitchCanvas));
+        assert_eq!(chord('o', true, false), None);
+
+        // The rest don't care either way, and shouldn't start caring quietly.
+        for shift in [false, true] {
+            assert_eq!(chord('v', shift, false), Some(Chord::Paste));
+            assert_eq!(chord('f', shift, false), Some(Chord::Find));
+        }
+    }
+
+    #[test]
+    fn copy_needs_a_selection_and_otherwise_lets_the_key_through() {
+        assert_eq!(chord('c', false, true), Some(Chord::Copy));
+        assert_eq!(
+            chord('c', false, false),
+            None,
+            "with nothing selected the chord must fall through, not be swallowed",
+        );
+    }
+
+    #[test]
+    fn a_letter_the_board_does_not_claim_is_left_alone() {
+        for letter in ['a', 'x', 's', 'q', 'w'] {
+            assert_eq!(chord(letter, false, true), None, "Cmd+{letter} is not ours");
+        }
     }
 }

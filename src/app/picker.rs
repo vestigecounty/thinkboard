@@ -13,6 +13,7 @@
 //! drift apart.
 
 use std::borrow::Cow;
+use std::sync::LazyLock;
 
 use iced::advanced::widget::Id;
 use iced::advanced::widget::operation::scrollable::AbsoluteOffset;
@@ -54,6 +55,67 @@ fn row_padding(rows: usize) -> iced::Padding {
     let content = rows as f32 * ROW_HEIGHT + rows.saturating_sub(1) as f32 * ROW_SPACING;
     let scrollbar = if content > LIST_HEIGHT { SCROLLBAR_WIDTH } else { 0.0 };
     iced::Padding::default().left(ROW_PAD_X).right(ROW_PAD_X + scrollbar)
+}
+
+/// Which panel a shared message is about.
+///
+/// The five differ in what fills them and what choosing a row does; they do
+/// *not* differ in typing, arrowing, scrolling or dismissing. Naming the panel
+/// is what lets those four be one message each rather than four apiece — and
+/// what keeps `App::update` a dispatch table as they multiply.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Panel {
+    Command,
+    Vault,
+    Theme,
+    Font,
+    Model,
+}
+
+impl Panel {
+    /// The text input's widget id, for focusing it when the panel opens.
+    pub(crate) fn input_id(self) -> Id {
+        self.ids().0.clone()
+    }
+
+    /// The scrollable list's id, for [`navigate`]'s scrolling.
+    pub(crate) fn list_id(self) -> &'static Id {
+        self.ids().1
+    }
+
+    fn ids(self) -> (&'static Id, &'static Id) {
+        macro_rules! ids {
+            ($name:literal) => {{
+                static INPUT: LazyLock<Id> = LazyLock::new(|| Id::new(concat!($name, "-panel")));
+                static LIST: LazyLock<Id> = LazyLock::new(|| Id::new(concat!($name, "-panel-list")));
+                (&*INPUT, &*LIST)
+            }};
+        }
+        match self {
+            Panel::Command => ids!("command"),
+            Panel::Vault => ids!("vault"),
+            Panel::Theme => ids!("theme"),
+            Panel::Font => ids!("font"),
+            Panel::Model => ids!("model"),
+        }
+    }
+}
+
+/// Escape dismisses, the arrow keys navigate.
+///
+/// Each panel still needs its own `key_event` for the subscription — a handler
+/// is a bare `fn`, so it can't capture which panel it belongs to — but that is
+/// now the only thing those functions say.
+pub(crate) fn panel_key(event: &iced::Event, panel: Panel) -> Option<Message> {
+    use iced::keyboard::key::{Key, Named};
+    if let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+        key: Key::Named(Named::Escape),
+        ..
+    }) = event
+    {
+        return Some(Message::ClosePanel(panel));
+    }
+    nav_key(event).map(|nav| Message::PanelNav(panel, nav))
 }
 
 /// What's open: the query, the highlighted row, and where the list is scrolled.
@@ -169,20 +231,16 @@ pub(super) struct Row<'a> {
     pub press: Message,
 }
 
-/// The messages and labels that make a shell one panel rather than the other.
+/// What makes a shell one panel rather than another.
+///
+/// Only what actually differs: typing, scrolling and dismissing are the same
+/// interactions everywhere, so [`Panel`] supplies those messages and their
+/// widget ids rather than each caller repeating them.
 pub(super) struct Shell<'a> {
+    pub panel: Panel,
     pub placeholder: &'a str,
-    /// Focus target for the input; the caller focuses it when opening.
-    pub input: Id,
-    /// The list, for [`navigate`]'s scrolling.
-    pub list: Id,
-    pub on_input: fn(String) -> Message,
     /// Enter — run/open whatever is highlighted.
     pub on_submit: Message,
-    /// The list was scrolled by hand; carries the new vertical offset.
-    pub on_scroll: fn(f32) -> Message,
-    /// Esc, or a click outside the panel.
-    pub on_close: Message,
     /// Shown in place of the rows when there are none.
     pub empty: Cow<'a, str>,
 }
@@ -201,9 +259,10 @@ pub(super) fn view<'a>(
     let (text_c, muted, accent, input_bg, border_c) =
         (theme.text, theme.text_muted, theme.accent, theme.background, theme.border);
 
+    let which = shell.panel;
     let input = text_input(shell.placeholder, &state.query)
-        .id(shell.input)
-        .on_input(shell.on_input)
+        .id(which.input_id())
+        .on_input(move |query| Message::PanelInput(which, query))
         .on_submit(shell.on_submit)
         .size(15)
         .font(font)
@@ -267,12 +326,13 @@ pub(super) fn view<'a>(
                     .style(move |_theme, status| super::chrome::menu_item(&ct, status, selected)),
             );
         }
-        let on_scroll = shell.on_scroll;
         Element::from(
             container(
                 scrollable(list)
-                    .id(shell.list)
-                    .on_scroll(move |viewport| on_scroll(viewport.absolute_offset().y)),
+                    .id(which.list_id().clone())
+                    .on_scroll(move |viewport| {
+                        Message::PanelScrolled(which, viewport.absolute_offset().y)
+                    }),
             )
             .max_height(LIST_HEIGHT),
         )
@@ -294,7 +354,7 @@ pub(super) fn view<'a>(
         // Clear the macOS notch, like the find bar.
         .padding(iced::Padding::default().top(64.0 + app.top_safe_inset));
 
-    mouse_area(backdrop).on_press(shell.on_close).into()
+    mouse_area(backdrop).on_press(Message::ClosePanel(which)).into()
 }
 
 #[cfg(test)]

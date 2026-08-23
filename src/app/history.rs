@@ -254,30 +254,14 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use thinkboard_core::fixtures::{self, edge};
 
     fn node(id: &str, text: &str, width: f32) -> CanvasNode {
         CanvasNode {
-            id: id.to_owned(),
-            kind: "text".to_owned(),
             text: Some(text.to_owned()),
-            file: None,
-            x: 0.0,
-            y: 0.0,
             width,
             height: 100.0,
-            color: None,
-            extra: Default::default(),
-        }
-    }
-
-    fn edge(from: &str, to: &str) -> CanvasEdge {
-        CanvasEdge {
-            id: format!("{from}->{to}"),
-            from_node: from.to_owned(),
-            from_side: "right".to_owned(),
-            to_node: to.to_owned(),
-            to_side: "left".to_owned(),
-            extra: Default::default(),
+            ..fixtures::node(id)
         }
     }
 

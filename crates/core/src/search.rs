@@ -101,21 +101,10 @@ fn scan<T>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::Map;
+    use crate::fixtures;
 
     fn node(text: &str) -> CanvasNode {
-        CanvasNode {
-            id: "n".to_owned(),
-            kind: "text".to_owned(),
-            text: Some(text.to_owned()),
-            file: None,
-            x: 0.0,
-            y: 0.0,
-            width: 100.0,
-            height: 100.0,
-            color: None,
-            extra: Map::new(),
-        }
+        CanvasNode { text: Some(text.to_owned()), height: 100.0, ..fixtures::node("n") }
     }
 
     #[test]

@@ -10,18 +10,12 @@
 //! first row exists: it clears the override and hands the choice back to
 //! whatever theme is in use.
 
-use std::sync::LazyLock;
-
-use iced::advanced::widget::Id;
 use iced::{Element, Task};
 
-use super::picker::{self, Row, Shell};
+use super::picker::{self, Panel, Row, Shell};
 use super::{App, Message};
 use crate::canvas::text_raster::{self, FontFamily};
 use crate::theme::Theme;
-
-pub(crate) static FONT_INPUT: LazyLock<Id> = LazyLock::new(|| Id::new("font-picker"));
-pub(crate) static FONT_LIST: LazyLock<Id> = LazyLock::new(|| Id::new("font-picker-list"));
 
 /// The first row: no override, i.e. a blank `config.font`.
 const THEME_DEFAULT: &str = "Theme default";
@@ -51,15 +45,7 @@ pub(crate) fn key_event(
     _status: iced::event::Status,
     _window: iced::window::Id,
 ) -> Option<Message> {
-    use iced::keyboard::key::{Key, Named};
-    if let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-        key: Key::Named(Named::Escape),
-        ..
-    }) = event
-    {
-        return Some(Message::CloseFontPicker);
-    }
-    picker::nav_key(&event).map(Message::FontPickerNav)
+    picker::panel_key(&event, Panel::Font)
 }
 
 /// What a row says: the family, or the standing-in name for the empty entry.
@@ -69,10 +55,7 @@ fn label(entry: &str) -> &str {
 
 impl App {
     pub(super) fn open_font_picker(&mut self) -> Task<Message> {
-        self.search = None; // mutually exclusive with the other panels
-        self.command_palette = None;
-        self.vault_browser = None;
-        self.theme_picker = None;
+        let opened = self.open_panel(Panel::Font);
 
         // The empty name is the way back to the theme's own font; it has no
         // face of its own, so it's drawn in the panel's like any other row that
@@ -92,10 +75,7 @@ impl App {
             before: self.theme,
             before_font,
         });
-        let focus = iced::advanced::widget::operate(
-            iced::advanced::widget::operation::focusable::focus(FONT_INPUT.clone()),
-        );
-        Task::batch([focus, self.preview_highlighted_font()])
+        Task::batch([opened, self.preview_highlighted_font()])
     }
 
     /// The families matching what's been typed, best first.
@@ -103,16 +83,9 @@ impl App {
         let Some(picker) = &self.font_picker else {
             return Vec::new();
         };
-        let mut scored: Vec<(usize, i32)> = picker
-            .entries
-            .iter()
-            .enumerate()
-            .filter_map(|(i, entry)| {
-                Some((i, thinkboard_core::fuzzy::score(query, label(&entry.name))?))
-            })
-            .collect();
-        scored.sort_by_key(|&(_, score)| std::cmp::Reverse(score));
-        scored.into_iter().map(|(i, _)| i).collect()
+        thinkboard_core::fuzzy::rank(&picker.entries, |entry| {
+            thinkboard_core::fuzzy::score(query, label(&entry.name))
+        })
     }
 
     /// The family the highlight is on — `""` for the theme's own.
@@ -138,9 +111,7 @@ impl App {
         theme.use_font(&entry);
         self.install_theme(theme);
         text_raster::clear_caches();
-        self.rasters.clear();
-        self.clusters.snapshots.clear();
-        self.cache.clear();
+        self.drop_text_bitmaps();
         Task::none()
     }
 
@@ -180,9 +151,7 @@ impl App {
         // The preview left the board drawing live text, shaped in a face that
         // is no longer the one in use.
         text_raster::clear_caches();
-        self.rasters.clear();
-        self.clusters.snapshots.clear();
-        self.cache.clear();
+        self.drop_text_bitmaps();
         Task::batch([self.refresh_snapshots(), self.schedule_recluster()])
     }
 
@@ -213,13 +182,9 @@ impl App {
             self,
             &picker.state,
             Shell {
+                panel: Panel::Font,
                 placeholder: "Font…",
-                input: FONT_INPUT.clone(),
-                list: FONT_LIST.clone(),
-                on_input: Message::FontPickerInput,
                 on_submit: Message::CommitFont,
-                on_scroll: Message::FontPickerScrolled,
-                on_close: Message::CloseFontPicker,
                 empty: "No matching font".into(),
             },
             rows,

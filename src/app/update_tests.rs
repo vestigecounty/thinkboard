@@ -48,16 +48,10 @@ fn type_text(app: &mut App, text: &str) {
 
 fn text_node(id: &str, text: &str) -> CanvasNode {
     CanvasNode {
-        id: id.to_owned(),
-        kind: "text".to_owned(),
         text: Some(text.to_owned()),
-        file: None,
-        x: 0.0,
-        y: 0.0,
         width: 200.0,
         height: 100.0,
-        color: None,
-        extra: Default::default(),
+        ..thinkboard_core::fixtures::node(id)
     }
 }
 
@@ -1069,7 +1063,7 @@ fn typing_narrows_the_list_and_enter_resolves_the_highlighted_board() {
     let mut app = app_with_vault(&["Inbox.canvas", "Projects/Roadmap.canvas", "Ideas.canvas"]);
     send(&mut app, Message::SwitchCanvas);
 
-    send(&mut app, Message::VaultBrowserInput("road".to_owned()));
+    send(&mut app, Message::PanelInput(picker::Panel::Vault, "road".to_owned()));
     assert_eq!(app.vault_matches("road").len(), 1);
     assert_eq!(
         app.selected_canvas(),
@@ -1078,7 +1072,7 @@ fn typing_narrows_the_list_and_enter_resolves_the_highlighted_board() {
 
     // A query matching nothing leaves nothing to open, rather than opening
     // whatever the highlight last pointed at.
-    send(&mut app, Message::VaultBrowserInput("zzz".to_owned()));
+    send(&mut app, Message::PanelInput(picker::Panel::Vault, "zzz".to_owned()));
     assert_eq!(app.selected_canvas(), None);
 }
 
@@ -1087,11 +1081,11 @@ fn arrowing_moves_the_highlight_through_the_filtered_list() {
     let mut app = app_with_vault(&["A.canvas", "B.canvas", "C.canvas"]);
     send(&mut app, Message::SwitchCanvas);
 
-    send(&mut app, Message::VaultBrowserNav(picker::Nav::Step(1)));
+    send(&mut app, Message::PanelNav(picker::Panel::Vault, picker::Nav::Step(1)));
     assert_eq!(app.selected_canvas(), Some(PathBuf::from("/vault/B.canvas")));
     // Up from the first row wraps to the last, as in the palette.
-    send(&mut app, Message::VaultBrowserNav(picker::Nav::First));
-    send(&mut app, Message::VaultBrowserNav(picker::Nav::Step(-1)));
+    send(&mut app, Message::PanelNav(picker::Panel::Vault, picker::Nav::First));
+    send(&mut app, Message::PanelNav(picker::Panel::Vault, picker::Nav::Step(-1)));
     assert_eq!(app.selected_canvas(), Some(PathBuf::from("/vault/C.canvas")));
 }
 
@@ -1099,7 +1093,7 @@ fn arrowing_moves_the_highlight_through_the_filtered_list() {
 fn a_finished_scan_replaces_the_list_and_drops_the_stale_highlight() {
     let mut app = app_with_vault(&["A.canvas", "B.canvas", "C.canvas"]);
     send(&mut app, Message::SwitchCanvas);
-    send(&mut app, Message::VaultBrowserNav(picker::Nav::Last));
+    send(&mut app, Message::PanelNav(picker::Panel::Vault, picker::Nav::Last));
     assert_eq!(app.selected_canvas(), Some(PathBuf::from("/vault/C.canvas")));
 
     // The rescan comes back with a shorter list. The highlight indexed the old
@@ -1292,7 +1286,7 @@ fn scrolling_the_picker_previews_on_the_board() {
     let before = app.theme.background;
 
     send(&mut app, Message::OpenThemePicker);
-    send(&mut app, Message::ThemePickerNav(picker::Nav::Step(1)));
+    send(&mut app, Message::PanelNav(picker::Panel::Theme, picker::Nav::Step(1)));
     assert_ne!(app.theme.background, before, "the board should show the highlight");
     // The bitmaps carried the old colours, so the preview drops them — which is
     // also what makes it cheap enough to run on every keypress, since the cards
@@ -1310,10 +1304,10 @@ fn dismissing_the_picker_puts_the_old_theme_back() {
     let nord = app.theme.background;
     send(&mut app, Message::OpenThemePicker);
 
-    send(&mut app, Message::ThemePickerNav(picker::Nav::Step(2)));
+    send(&mut app, Message::PanelNav(picker::Panel::Theme, picker::Nav::Step(2)));
     assert_ne!(app.theme.background, nord);
 
-    send(&mut app, Message::CloseThemePicker);
+    send(&mut app, Message::ClosePanel(picker::Panel::Theme));
     assert!(app.theme_picker.is_none());
     assert_eq!(app.theme.background, nord, "Esc must undo the preview");
     assert_eq!(app.config.theme, "Nord", "and not have written the previewed one");
@@ -1323,7 +1317,7 @@ fn dismissing_the_picker_puts_the_old_theme_back() {
 fn choosing_a_theme_keeps_it() {
     let mut app = app_with(two_nodes(), Vec::new());
     send(&mut app, Message::OpenThemePicker);
-    send(&mut app, Message::ThemePickerInput("solarized".to_owned()));
+    send(&mut app, Message::PanelInput(picker::Panel::Theme, "solarized".to_owned()));
     let previewed = app.theme.background;
 
     send(&mut app, Message::CommitTheme);
@@ -1336,13 +1330,94 @@ fn choosing_a_theme_keeps_it() {
 fn typing_narrows_the_themes_by_name_and_author() {
     let mut app = app_with(two_nodes(), Vec::new());
     send(&mut app, Message::OpenThemePicker);
-    send(&mut app, Message::ThemePickerInput("gruv".to_owned()));
+    send(&mut app, Message::PanelInput(picker::Panel::Theme, "gruv".to_owned()));
     assert_eq!(app.highlighted_theme_name().as_deref(), Some("Gruvbox Dark"));
 
     // Authors are searchable but never shown — hidden terms, like the command
     // palette's keywords.
-    send(&mut app, Message::ThemePickerInput("schoonover".to_owned()));
+    send(&mut app, Message::PanelInput(picker::Panel::Theme, "schoonover".to_owned()));
     assert_eq!(app.highlighted_theme_name().as_deref(), Some("Solarized Dark"));
+}
+
+/// Every panel against every other, rather than the pairs someone thought to
+/// name. The lists each opener kept had drifted — the font and model pickers
+/// could be open together, with the font preview left applied over a config
+/// that said otherwise — and a table is the only version of this test that
+/// stays true when a sixth panel is added.
+#[test]
+fn opening_any_panel_closes_every_other() {
+    let open = |app: &mut App, which: usize| {
+        send(
+            app,
+            match which {
+                0 => Message::OpenCommandPalette,
+                1 => Message::OpenVaultBrowser,
+                2 => Message::OpenThemePicker,
+                3 => Message::OpenFontPicker,
+                4 => Message::OpenModelPicker,
+                _ => Message::OpenSearch,
+            },
+        );
+    };
+    let open_count = |app: &App| {
+        usize::from(app.command_palette.is_some())
+            + usize::from(app.vault_browser.is_some())
+            + usize::from(app.theme_picker.is_some())
+            + usize::from(app.font_picker.is_some())
+            + usize::from(app.model_picker.is_some())
+            + usize::from(app.search.is_some())
+    };
+
+    for first in 0..6 {
+        for second in 0..6 {
+            if first == second {
+                continue;
+            }
+            let mut app = app_with(two_nodes(), Vec::new());
+            app.config.vault = "/tmp".to_owned(); // so the browser has something to open
+            app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
+            open(&mut app, first);
+            open(&mut app, second);
+            assert_eq!(
+                open_count(&app),
+                1,
+                "opening {second} over {first} left {} panels up",
+                open_count(&app),
+            );
+        }
+    }
+}
+
+#[test]
+fn opening_a_panel_undoes_a_preview_left_by_another() {
+    // The font and theme pickers show their highlight on the board. Displacing
+    // one has to put the board back, or it keeps a face the config never got.
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
+    assert_eq!(app.theme.font_text, None);
+
+    send(&mut app, Message::OpenFontPicker);
+    send(&mut app, Message::PanelNav(picker::Panel::Font, picker::Nav::Step(1)));
+    assert!(app.theme.font_text.is_some(), "previewing a font");
+
+    send(&mut app, Message::OpenModelPicker);
+    assert!(app.font_picker.is_none());
+    assert_eq!(app.theme.font_text, None, "the preview must not outlive its picker");
+}
+
+#[test]
+fn reopening_the_find_bar_keeps_what_was_typed() {
+    // `dismiss_panels` clears the find bar along with the panels, so the
+    // find-bar opener has to notice it is already open.
+    let mut app = app_with(vec![text_node("a", "ThinkBoard")], Vec::new());
+    send(&mut app, Message::OpenSearch);
+    send(&mut app, Message::SearchInput("hinkBo".to_owned()));
+    send(&mut app, Message::OpenSearch);
+    assert_eq!(
+        app.search.as_ref().map(|s| s.query.as_str()),
+        Some("hinkBo"),
+        "re-summoning the find bar must not empty it",
+    );
 }
 
 #[test]
@@ -1433,7 +1508,7 @@ fn a_fetched_list_fills_the_picker() {
 #[test]
 fn typing_narrows_the_models() {
     let mut app = app_with_models(&["anthropic/claude-sonnet-4", "openai/gpt-4o"]);
-    send(&mut app, Message::ModelPickerInput("gpt".to_owned()));
+    send(&mut app, Message::PanelInput(picker::Panel::Model, "gpt".to_owned()));
     assert_eq!(app.highlighted_model().as_deref(), Some("openai/gpt-4o"));
 }
 
@@ -1469,7 +1544,7 @@ fn a_fetch_for_another_endpoint_is_discarded() {
     // Switch provider while a request is in flight and the answer still lands.
     // Taking it would offer one provider's models under another's name.
     let mut app = app_with_models(&["openai/gpt-4o"]);
-    send(&mut app, Message::CloseModelPicker);
+    send(&mut app, Message::ClosePanel(picker::Panel::Model));
     app.config.ai_url = "https://api.fireworks.ai/inference/v1".to_owned();
     send(&mut app, Message::OpenModelPicker);
 
@@ -1531,7 +1606,7 @@ fn scrolling_the_font_picker_previews_on_the_board() {
     assert_eq!(app.theme.font_text, None, "the default theme names no family");
 
     send(&mut app, Message::OpenFontPicker);
-    send(&mut app, Message::FontPickerNav(picker::Nav::Step(1)));
+    send(&mut app, Message::PanelNav(picker::Panel::Font, picker::Nav::Step(1)));
     assert!(app.theme.font_text.is_some(), "the board should show the highlight");
     // Same trick as the theme preview: drop the bitmaps and let the cards draw
     // live, rather than re-rasterizing on every arrow press.
@@ -1547,8 +1622,8 @@ fn dismissing_the_font_picker_puts_the_old_font_back() {
     let before = app.theme.font_text;
 
     send(&mut app, Message::OpenFontPicker);
-    send(&mut app, Message::FontPickerNav(picker::Nav::Step(1)));
-    send(&mut app, Message::CloseFontPicker);
+    send(&mut app, Message::PanelNav(picker::Panel::Font, picker::Nav::Step(1)));
+    send(&mut app, Message::ClosePanel(picker::Panel::Font));
 
     assert!(app.font_picker.is_none());
     assert_eq!(app.theme.font_text, before, "Esc must undo the preview");
@@ -1559,7 +1634,7 @@ fn dismissing_the_font_picker_puts_the_old_font_back() {
 fn choosing_a_font_keeps_it() {
     let mut app = app_with(two_nodes(), Vec::new());
     send(&mut app, Message::OpenFontPicker);
-    send(&mut app, Message::FontPickerNav(picker::Nav::Step(1)));
+    send(&mut app, Message::PanelNav(picker::Panel::Font, picker::Nav::Step(1)));
     let previewed = app.theme.font_text.expect("a family is highlighted");
 
     send(&mut app, Message::CommitFont);
@@ -1594,7 +1669,7 @@ fn a_font_survives_changing_the_theme() {
     let _ = app.apply_theme_css();
 
     send(&mut app, Message::OpenThemePicker);
-    send(&mut app, Message::ThemePickerInput("solarized".to_owned()));
+    send(&mut app, Message::PanelInput(picker::Panel::Theme, "solarized".to_owned()));
     send(&mut app, Message::CommitTheme);
 
     assert_eq!(app.config.theme, "Solarized Dark");
@@ -1607,7 +1682,7 @@ fn another_panel_cancels_a_font_preview_rather_than_dropping_it() {
     // config that says otherwise — invisible until the next relaunch.
     let mut app = app_with(two_nodes(), Vec::new());
     send(&mut app, Message::OpenFontPicker);
-    send(&mut app, Message::FontPickerNav(picker::Nav::Step(1)));
+    send(&mut app, Message::PanelNav(picker::Panel::Font, picker::Nav::Step(1)));
     assert!(app.theme.font_text.is_some());
 
     send(&mut app, Message::OpenCommandPalette);
@@ -1615,7 +1690,7 @@ fn another_panel_cancels_a_font_preview_rather_than_dropping_it() {
     assert_eq!(app.theme.font_text, None, "and undoes what it was previewing");
 
     send(&mut app, Message::OpenFontPicker);
-    send(&mut app, Message::FontPickerNav(picker::Nav::Step(1)));
+    send(&mut app, Message::PanelNav(picker::Panel::Font, picker::Nav::Step(1)));
     send(&mut app, Message::OpenSearch);
     assert!(app.font_picker.is_none(), "and so does the find bar");
     assert_eq!(app.theme.font_text, None);
@@ -1653,3 +1728,4 @@ fn a_raster_in_flight_cannot_un_highlight_a_search_hit() {
     send(&mut app, Message::SnapshotsReady(vec![(0, fresh)]));
     assert!(app.rasters.text.contains_key(&0));
 }
+

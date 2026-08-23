@@ -271,30 +271,19 @@ fn centroid(points: impl Iterator<Item = (f32, f32)>) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixtures;
 
     fn node(id: &str, x: f32, y: f32) -> CanvasNode {
-        CanvasNode {
-            id: id.to_owned(),
-            kind: "text".to_owned(),
-            text: None,
-            file: None,
-            x,
-            y,
-            width: 100.0,
-            height: 40.0,
-            color: None,
-            extra: Default::default(),
-        }
+        CanvasNode { x, y, ..fixtures::node(id) }
     }
 
+    /// Layout flows downward, so its links leave the bottom and arrive at the top.
     fn edge(from: &str, to: &str) -> CanvasEdge {
         CanvasEdge {
             id: format!("{from}-{to}"),
-            from_node: from.to_owned(),
             from_side: "bottom".to_owned(),
-            to_node: to.to_owned(),
             to_side: "top".to_owned(),
-            extra: Default::default(),
+            ..fixtures::edge(from, to)
         }
     }
 

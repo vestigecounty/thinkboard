@@ -63,7 +63,11 @@ pub(super) struct Ai {
     /// so reopening the model picker is instant, and refetched behind that —
     /// the vault browser's bargain, for the same reason: the panel has to be up
     /// on the keystroke that asked for it.
-    pub(super) models: Vec<(String, Vec<thinkboard_core::ai::Model>)>,
+    ///
+    /// One endpoint's worth. You configure a provider and stay on it, so a map
+    /// would only ever hold the one entry and outlive the setting that made it
+    /// relevant.
+    pub(super) models: Option<(String, Vec<thinkboard_core::ai::Model>)>,
 }
 
 /// A configured tint (an Obsidian preset "1"–"6") as a node color value, or

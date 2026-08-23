@@ -764,6 +764,15 @@ fn parse_delta(data: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fixtures;
+
+    fn node(id: &str, text: &str) -> CanvasNode {
+        CanvasNode { text: Some(text.to_owned()), width: 10.0, height: 10.0, ..fixtures::node(id) }
+    }
+
+    fn edge(from: &str, to: &str) -> CanvasEdge {
+        CanvasEdge { id: format!("{from}{to}"), ..fixtures::edge(from, to) }
+    }
 
     /// A node of `kind` at `(x, y)` sized `w`x`h`, with `text` (or a label, for
     /// a group).
@@ -916,32 +925,6 @@ mod tests {
             outside,
         ];
         assert_eq!(group_images(&nodes, 0), vec!["pics/a.png".to_owned()]);
-    }
-
-    fn node(id: &str, text: &str) -> CanvasNode {
-        CanvasNode {
-            id: id.to_owned(),
-            kind: "text".to_owned(),
-            text: Some(text.to_owned()),
-            file: None,
-            x: 0.0,
-            y: 0.0,
-            width: 10.0,
-            height: 10.0,
-            color: None,
-            extra: Default::default(),
-        }
-    }
-
-    fn edge(from: &str, to: &str) -> CanvasEdge {
-        CanvasEdge {
-            id: format!("{from}{to}"),
-            from_node: from.to_owned(),
-            from_side: "right".to_owned(),
-            to_node: to.to_owned(),
-            to_side: "left".to_owned(),
-            extra: Default::default(),
-        }
     }
 
     #[test]

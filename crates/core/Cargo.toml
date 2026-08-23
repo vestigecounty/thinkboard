@@ -28,3 +28,8 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 [[bench]]
 name = "document"
 harness = false
+
+[features]
+# Node/edge builders for tests. Enabled by the desktop crate's dev-dependency
+# on this one; never by a shipping build.
+fixtures = []

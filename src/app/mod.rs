@@ -328,24 +328,16 @@ pub(crate) enum Message {
     SearchPrev,
     /// Close the find bar (Esc / ×).
     CloseSearch,
-    /// Command palette (Cmd/Ctrl+Shift+P): open, close, filter, move the
-    /// selection, run a clicked command, or run the highlighted one (Enter).
+    /// Command palette (Cmd/Ctrl+Shift+P): open it, run a clicked command, or
+    /// run the highlighted one (Enter). Filtering and moving the selection are
+    /// [`Message::PanelInput`] and [`Message::PanelNav`], as in every panel.
     OpenCommandPalette,
-    CloseCommandPalette,
-    CommandPaletteInput(String),
-    CommandPaletteNav(picker::Nav),
-    /// The list was scrolled by hand; carries the new vertical offset.
-    CommandPaletteScrolled(f32),
     RunCommand(command::CommandId),
     RunSelectedCommand,
 
     /// Vault browser (Cmd/Ctrl+O when a vault is set): the same panel over the
     /// vault's canvases.
     OpenVaultBrowser,
-    CloseVaultBrowser,
-    VaultBrowserInput(String),
-    VaultBrowserNav(picker::Nav),
-    VaultBrowserScrolled(f32),
     /// A background vault walk finished: its canvases, and whether it stopped
     /// early at the entry cap.
     VaultScanned(Vec<thinkboard_core::vault::CanvasEntry>, bool),
@@ -357,10 +349,6 @@ pub(crate) enum Message {
     /// Theme picker (from the palette): the same panel over the themes, with
     /// the board previewing whichever is highlighted.
     OpenThemePicker,
-    CloseThemePicker,
-    ThemePickerInput(String),
-    ThemePickerNav(picker::Nav),
-    ThemePickerScrolled(f32),
     /// Keep the highlighted theme (Enter), or a clicked one.
     CommitTheme,
     PickTheme(String),
@@ -368,10 +356,6 @@ pub(crate) enum Message {
     /// Model picker (from the palette): the same panel over whatever the AI
     /// endpoint says it serves, and the fetch that fills it.
     OpenModelPicker,
-    CloseModelPicker,
-    ModelPickerInput(String),
-    ModelPickerNav(picker::Nav),
-    ModelPickerScrolled(f32),
     ModelsFetched(String, Result<Vec<thinkboard_core::ai::Model>, String>),
     /// Keep the highlighted model (Enter), or a clicked one.
     CommitModel,
@@ -380,13 +364,17 @@ pub(crate) enum Message {
     /// Font picker (from the palette): the same panel over the installed
     /// families, previewing the highlighted one on the board.
     OpenFontPicker,
-    CloseFontPicker,
-    FontPickerInput(String),
-    FontPickerNav(picker::Nav),
-    FontPickerScrolled(f32),
     /// Keep the highlighted font (Enter), or a clicked one.
     CommitFont,
     PickFont(String),
+
+    /// Typing, arrowing, scrolling and dismissing — the same four interactions
+    /// in every panel, so one message each rather than four apiece. What a
+    /// panel *is* stays in its own messages below.
+    PanelInput(picker::Panel, String),
+    PanelNav(picker::Panel, picker::Nav),
+    PanelScrolled(picker::Panel, f32),
+    ClosePanel(picker::Panel),
 
     /// Pick the vault folder: the request, the dialog once the overlay has
     /// hidden for it, and its answer.
@@ -1137,36 +1125,36 @@ impl App {
 
             // --- Command palette ---
             Message::OpenCommandPalette => {
-                self.search = None; // mutually exclusive
-                let dismissed = self.dismiss_panels();
+                let opened = self.open_panel(picker::Panel::Command);
                 self.command_palette = Some(picker::State::default());
-                return Task::batch([
-                    dismissed,
-                    iced::advanced::widget::operate(
-                        iced::advanced::widget::operation::focusable::focus(
-                            command::COMMAND_INPUT.clone(),
-                        ),
-                    ),
-                ]);
+                return opened;
             }
-            Message::CloseCommandPalette => self.command_palette = None,
-            Message::CommandPaletteInput(query) => {
-                if let Some(palette) = &mut self.command_palette {
-                    palette.query = query;
-                    palette.reset();
+            // --- The type-to-narrow panels, which differ in what fills them and
+            // not in how they are driven ---
+            Message::PanelInput(panel, query) => {
+                if let Some(state) = self.panel_state(panel) {
+                    state.query = query;
+                    state.reset();
+                }
+                return self.panel_preview(panel);
+            }
+            Message::PanelNav(panel, nav) => {
+                // Resolved before the state is borrowed to move within it: the
+                // match count reads the rest of `self`.
+                let len = self.panel_len(panel);
+                let scroll = match self.panel_state(panel) {
+                    Some(state) => picker::navigate(state, nav, len, panel.list_id()),
+                    None => return Task::none(),
+                };
+                return Task::batch([scroll, self.panel_preview(panel)]);
+            }
+            Message::PanelScrolled(panel, offset) => {
+                if let Some(state) = self.panel_state(panel) {
+                    state.offset = offset;
                 }
             }
-            Message::CommandPaletteNav(nav) => {
-                if let Some(palette) = &mut self.command_palette {
-                    let len = command::filtered(&palette.query).len();
-                    return picker::navigate(palette, nav, len, &command::COMMAND_LIST);
-                }
-            }
-            Message::CommandPaletteScrolled(offset) => {
-                if let Some(palette) = &mut self.command_palette {
-                    palette.offset = offset;
-                }
-            }
+            Message::ClosePanel(panel) => return self.close_panel(panel),
+
             Message::RunCommand(id) => return self.run_command(id),
             Message::RunSelectedCommand => {
                 let id = self
@@ -1183,121 +1171,20 @@ impl App {
             // --- Vault browser ---
             // --- Theme picker ---
             Message::OpenThemePicker => return self.open_theme_picker(),
-            Message::CloseThemePicker => return self.cancel_theme_picker(),
-            Message::ThemePickerInput(query) => {
-                if let Some(picker) = &mut self.theme_picker {
-                    picker.state.query = query;
-                    picker.state.reset();
-                }
-                return self.preview_highlighted();
-            }
-            Message::ThemePickerNav(nav) => {
-                let len = match &self.theme_picker {
-                    Some(picker) => self.theme_matches(&picker.state.query).len(),
-                    None => return Task::none(),
-                };
-                let scroll = match &mut self.theme_picker {
-                    Some(picker) => {
-                        picker::navigate(&mut picker.state, nav, len, &theme_picker::THEME_LIST)
-                    }
-                    None => Task::none(),
-                };
-                return Task::batch([scroll, self.preview_highlighted()]);
-            }
-            Message::ThemePickerScrolled(offset) => {
-                if let Some(picker) = &mut self.theme_picker {
-                    picker.state.offset = offset;
-                }
-            }
             Message::CommitTheme => return self.commit_theme(),
             Message::PickTheme(name) => return self.pick_theme(&name),
 
             Message::OpenFontPicker => return self.open_font_picker(),
-            Message::CloseFontPicker => return self.cancel_font_picker(),
-            Message::FontPickerInput(query) => {
-                if let Some(picker) = &mut self.font_picker {
-                    picker.state.query = query;
-                    picker.state.reset();
-                }
-                return self.preview_highlighted_font();
-            }
-            Message::FontPickerNav(nav) => {
-                let len = match &self.font_picker {
-                    Some(picker) => self.font_matches(&picker.state.query).len(),
-                    None => return Task::none(),
-                };
-                let scroll = match &mut self.font_picker {
-                    Some(picker) => {
-                        picker::navigate(&mut picker.state, nav, len, &font_picker::FONT_LIST)
-                    }
-                    None => Task::none(),
-                };
-                return Task::batch([scroll, self.preview_highlighted_font()]);
-            }
-            Message::FontPickerScrolled(offset) => {
-                if let Some(picker) = &mut self.font_picker {
-                    picker.state.offset = offset;
-                }
-            }
             Message::CommitFont => return self.commit_font(),
             Message::PickFont(name) => return self.pick_font(&name),
 
             Message::OpenModelPicker => return self.open_model_picker(),
-            Message::CloseModelPicker => self.model_picker = None,
-            Message::ModelPickerInput(query) => {
-                if let Some(picker) = &mut self.model_picker {
-                    picker.state.query = query;
-                    picker.state.reset();
-                }
-            }
-            Message::ModelPickerNav(nav) => {
-                let len = match &self.model_picker {
-                    Some(picker) => self.model_matches(&picker.state.query).len(),
-                    None => return Task::none(),
-                };
-                if let Some(picker) = &mut self.model_picker {
-                    return picker::navigate(
-                        &mut picker.state,
-                        nav,
-                        len,
-                        &model_picker::MODEL_LIST,
-                    );
-                }
-            }
-            Message::ModelPickerScrolled(offset) => {
-                if let Some(picker) = &mut self.model_picker {
-                    picker.state.offset = offset;
-                }
-            }
             Message::ModelsFetched(url, models) => self.models_fetched(url, models),
             Message::CommitModel => return self.commit_model(),
             Message::PickModel(id) => return self.pick_model(&id),
 
             Message::SwitchCanvas => return self.switch_canvas(),
             Message::OpenVaultBrowser => return self.open_vault_browser(),
-            Message::CloseVaultBrowser => self.vault_browser = None,
-            Message::VaultBrowserInput(query) => {
-                if let Some(browser) = &mut self.vault_browser {
-                    browser.query = query;
-                    browser.reset();
-                }
-            }
-            Message::VaultBrowserNav(nav) => {
-                // Resolved before the browser is borrowed to move within it:
-                // the match count reads the canvas list on the same `self`.
-                let len = match &self.vault_browser {
-                    Some(browser) => self.vault_matches(&browser.query).len(),
-                    None => return Task::none(),
-                };
-                if let Some(browser) = &mut self.vault_browser {
-                    return picker::navigate(browser, nav, len, &vault::VAULT_LIST);
-                }
-            }
-            Message::VaultBrowserScrolled(offset) => {
-                if let Some(browser) = &mut self.vault_browser {
-                    browser.offset = offset;
-                }
-            }
             Message::VaultScanned(entries, truncated) => self.vault_scanned(entries, truncated),
             Message::OpenVaultCanvas(path) => {
                 self.vault_browser = None;
@@ -1425,6 +1312,99 @@ impl App {
     fn install_theme(&mut self, theme: crate::theme::Theme) {
         self.theme = theme;
         iced_graphics::text::set_font_features(theme.font_features);
+    }
+
+    /// Drops everything that baked the old typography or colours in, so the
+    /// board redraws from the theme as it stands now.
+    ///
+    /// Five callers wanted exactly this and wrote it out; the sixth wrote three
+    /// of the four lines. The shaping caches are the one that gets forgotten:
+    /// they are keyed by text and size but *not* by the face or the features
+    /// those were measured with, so leaving them is how a new theme gets laid
+    /// out to the old one's metrics.
+    fn drop_text_bitmaps(&mut self) {
+        crate::canvas::text_raster::clear_caches();
+        self.rasters.clear();
+        self.clusters.snapshots.clear();
+        self.cache.clear();
+    }
+
+    /// The open panel's shared state, if `panel` is the one that's open.
+    fn panel_state(&mut self, panel: picker::Panel) -> Option<&mut picker::State> {
+        use picker::Panel;
+        match panel {
+            Panel::Command => self.command_palette.as_mut(),
+            Panel::Vault => self.vault_browser.as_mut(),
+            Panel::Theme => self.theme_picker.as_mut().map(|p| &mut p.state),
+            Panel::Font => self.font_picker.as_mut().map(|p| &mut p.state),
+            Panel::Model => self.model_picker.as_mut().map(|p| &mut p.state),
+        }
+    }
+
+    /// How many rows the panel is showing, which is what bounds a keyboard move.
+    fn panel_len(&self, panel: picker::Panel) -> usize {
+        use picker::Panel;
+        let query = |state: Option<&picker::State>| state.map(|s| s.query.clone()).unwrap_or_default();
+        match panel {
+            Panel::Command => command::filtered(&query(self.command_palette.as_ref())).len(),
+            Panel::Vault => self.vault_matches(&query(self.vault_browser.as_ref())).len(),
+            Panel::Theme => {
+                self.theme_matches(&query(self.theme_picker.as_ref().map(|p| &p.state))).len()
+            }
+            Panel::Font => {
+                self.font_matches(&query(self.font_picker.as_ref().map(|p| &p.state))).len()
+            }
+            Panel::Model => {
+                self.model_matches(&query(self.model_picker.as_ref().map(|p| &p.state))).len()
+            }
+        }
+    }
+
+    /// Shows whatever the highlight is on, for the two panels that preview.
+    ///
+    /// A theme and a font are chosen by *seeing* them, so moving the highlight
+    /// applies one. The other three panels pick a value and have nothing to
+    /// show until they are committed.
+    fn panel_preview(&mut self, panel: picker::Panel) -> Task<Message> {
+        use picker::Panel;
+        match panel {
+            Panel::Theme => self.preview_highlighted(),
+            Panel::Font => self.preview_highlighted_font(),
+            Panel::Command | Panel::Vault | Panel::Model => Task::none(),
+        }
+    }
+
+    /// Dismisses `panel`, putting back anything it was previewing.
+    fn close_panel(&mut self, panel: picker::Panel) -> Task<Message> {
+        use picker::Panel;
+        match panel {
+            Panel::Command => self.command_palette = None,
+            Panel::Vault => self.vault_browser = None,
+            Panel::Model => self.model_picker = None,
+            // These two preview as you scroll them, so dismissing has to undo
+            // that rather than just drop the panel.
+            Panel::Theme => return self.cancel_theme_picker(),
+            Panel::Font => return self.cancel_font_picker(),
+        }
+        Task::none()
+    }
+
+    /// Clears the way for a panel to open, and focuses its input.
+    ///
+    /// **Every opener goes through this.** Each used to name the panels it
+    /// displaced, which is a list that has to be revised whenever one is added
+    /// — and wasn't: the font picker and the model picker could be open at once,
+    /// with the font preview left applied over a config that disagreed.
+    fn open_panel(&mut self, panel: picker::Panel) -> Task<Message> {
+        // The find bar is mutually exclusive with the panels but isn't one of
+        // them: `dismiss_panels` leaves it be, so that re-summoning the find bar
+        // doesn't empty the query it already holds.
+        self.search = None;
+        let dismissed = self.dismiss_panels();
+        let focus = iced::advanced::widget::operate(
+            iced::advanced::widget::operation::focusable::focus(panel.input_id()),
+        );
+        Task::batch([dismissed, focus])
     }
 
     /// Closes whichever type-to-narrow panel is open, because only one is ever

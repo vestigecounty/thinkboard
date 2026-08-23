@@ -300,36 +300,15 @@ fn union_bounds(members: &[usize], nodes: &[CanvasNode]) -> Bounds {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serde_json::Map;
+    use crate::fixtures;
+    use crate::fixtures::edge;
 
     fn node(id: &str, kind: &str, x: f32, y: f32, w: f32, h: f32) -> CanvasNode {
-        CanvasNode {
-            id: id.to_owned(),
-            kind: kind.to_owned(),
-            text: Some(format!("node {id}")),
-            file: None,
-            x,
-            y,
-            width: w,
-            height: h,
-            color: None,
-            extra: Map::new(),
-        }
+        CanvasNode { kind: kind.to_owned(), x, y, width: w, height: h, ..fixtures::node(id) }
     }
 
     fn text_node(id: &str, x: f32, y: f32, w: f32, h: f32) -> CanvasNode {
         node(id, "text", x, y, w, h)
-    }
-
-    fn edge(from: &str, to: &str) -> CanvasEdge {
-        CanvasEdge {
-            id: format!("{from}->{to}"),
-            from_node: from.to_owned(),
-            from_side: "right".to_owned(),
-            to_node: to.to_owned(),
-            to_side: "left".to_owned(),
-            extra: Map::new(),
-        }
     }
 
     /// The group that contains the given node index.

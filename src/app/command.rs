@@ -8,18 +8,12 @@
 
 use std::sync::LazyLock;
 
-use iced::advanced::widget::Id;
 use iced::Element;
 
 use super::App;
-use super::picker::{self, Row, Shell};
+use super::picker::{self, Panel, Row, Shell};
 use super::settings::Field;
 use crate::Message;
-
-/// Focus target for the palette's text input.
-pub(crate) static COMMAND_INPUT: LazyLock<Id> = LazyLock::new(|| Id::new("command-palette"));
-/// The scrollable command list, for keyboard scrolling.
-pub(crate) static COMMAND_LIST: LazyLock<Id> = LazyLock::new(|| Id::new("command-palette-list"));
 
 /// Every action reachable from the palette. Dispatch is in `App::run_command`;
 /// a `Field` toggle flips the corresponding boolean setting.
@@ -154,18 +148,13 @@ static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
 
 /// Commands matching `query`, best first (empty query = registry order).
 pub(crate) fn filtered(query: &str) -> Vec<&'static Command> {
-    let mut scored: Vec<(&Command, i32)> = COMMANDS
-        .iter()
-        .filter_map(|c| {
-            // Prefer a title match; fall back to keywords at a small penalty.
-            let score = thinkboard_core::fuzzy::score(query, c.title)
-                .or_else(|| thinkboard_core::fuzzy::score(query, c.keywords).map(|s| s - 4))?;
-            Some((c, score))
-        })
-        .collect();
-    // Stable sort (highest score first) keeps registry order for equal scores.
-    scored.sort_by_key(|&(_, score)| std::cmp::Reverse(score));
-    scored.into_iter().map(|(c, _)| c).collect()
+    // Title first, keywords behind it — the shape every panel here ranks by.
+    thinkboard_core::fuzzy::rank(&COMMANDS, |c| {
+        thinkboard_core::fuzzy::score_alias(query, c.title, Some(c.keywords))
+    })
+    .into_iter()
+    .filter_map(|i| COMMANDS.get(i))
+    .collect()
 }
 
 /// Keyboard nav while the palette is open (subscribed like `search_key_event`).
@@ -175,15 +164,7 @@ pub(crate) fn key_event(
     _status: iced::event::Status,
     _window: iced::window::Id,
 ) -> Option<Message> {
-    use iced::keyboard::key::{Key, Named};
-    if let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-        key: Key::Named(Named::Escape),
-        ..
-    }) = event
-    {
-        return Some(Message::CloseCommandPalette);
-    }
-    picker::nav_key(&event).map(Message::CommandPaletteNav)
+    picker::panel_key(&event, Panel::Command)
 }
 
 /// The palette panel: a focused input over a scrollable, fuzzy-filtered command
@@ -204,13 +185,9 @@ pub(super) fn view<'a>(app: &'a App, state: &'a picker::State) -> Element<'a, Me
         app,
         state,
         Shell {
+            panel: Panel::Command,
             placeholder: "Run a command…",
-            input: COMMAND_INPUT.clone(),
-            list: COMMAND_LIST.clone(),
-            on_input: Message::CommandPaletteInput,
             on_submit: Message::RunSelectedCommand,
-            on_scroll: Message::CommandPaletteScrolled,
-            on_close: Message::CloseCommandPalette,
             empty: "No matching command".into(),
         },
         rows,

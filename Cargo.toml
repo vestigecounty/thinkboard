@@ -51,6 +51,9 @@ bench = false
 # `cargo_bench_support` alone is what `cargo bench` actually needs.
 [dev-dependencies]
 criterion = { version = "0.5", default-features = false, features = ["cargo_bench_support"] }
+# The same crate as above, with its test-only node/edge builders switched on —
+# so both crates' tests share one set rather than growing their own.
+thinkboard-core = { path = "crates/core", features = ["fixtures"] }
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 tray-icon = "0.19"

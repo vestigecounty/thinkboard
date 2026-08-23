@@ -196,22 +196,12 @@ fn fit_font_size(text: &str, bounds: Rectangle, theme: &Theme) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{CanvasEdge, CanvasNode};
+    use thinkboard_core::fixtures::{self, edge};
 
     fn text_node(id: &str, x: f32, y: f32, w: f32, h: f32) -> CanvasNode {
-        CanvasNode {
-            id: id.to_owned(),
-            kind: "text".to_owned(),
-            text: Some(format!("node {id}")),
-            file: None,
-            x,
-            y,
-            width: w,
-            height: h,
-            color: None,
-            extra: Default::default(),
-        }
+        CanvasNode { x, y, width: w, height: h, ..fixtures::node(id) }
     }
+    use crate::model::CanvasNode;
 
     fn file_node(id: &str, x: f32, y: f32, w: f32, h: f32) -> CanvasNode {
         CanvasNode {
@@ -224,17 +214,6 @@ mod tests {
             width: w,
             height: h,
             color: None,
-            extra: Default::default(),
-        }
-    }
-
-    fn edge(from: &str, to: &str) -> CanvasEdge {
-        CanvasEdge {
-            id: format!("{from}->{to}"),
-            from_node: from.to_owned(),
-            from_side: "right".to_owned(),
-            to_node: to.to_owned(),
-            to_side: "left".to_owned(),
             extra: Default::default(),
         }
     }

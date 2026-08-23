@@ -10,17 +10,11 @@
 //! row rather than as a dialog, so the panel opens instantly either way and the
 //! answer arrives underneath the query you were already typing.
 
-use std::sync::LazyLock;
-
-use iced::advanced::widget::Id;
 use iced::{Element, Task};
 
-use super::picker::{self, Row, Shell};
+use super::picker::{self, Panel, Row, Shell};
 use super::{App, Message};
 use thinkboard_core::ai::Model;
-
-pub(crate) static MODEL_INPUT: LazyLock<Id> = LazyLock::new(|| Id::new("model-picker"));
-pub(crate) static MODEL_LIST: LazyLock<Id> = LazyLock::new(|| Id::new("model-picker-list"));
 
 /// The open picker: the query and highlight, and what the endpoint said.
 pub(crate) struct ModelPicker {
@@ -42,15 +36,7 @@ pub(crate) fn key_event(
     _status: iced::event::Status,
     _window: iced::window::Id,
 ) -> Option<Message> {
-    use iced::keyboard::key::{Key, Named};
-    if let iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
-        key: Key::Named(Named::Escape),
-        ..
-    }) = event
-    {
-        return Some(Message::CloseModelPicker);
-    }
-    picker::nav_key(&event).map(Message::ModelPickerNav)
+    picker::panel_key(&event, Panel::Model)
 }
 
 /// A context window as it reads in a list: `200k`, `1M`.
@@ -64,15 +50,13 @@ fn context(tokens: u64) -> String {
 
 impl App {
     pub(super) fn open_model_picker(&mut self) -> Task<Message> {
-        self.search = None; // mutually exclusive with the other panels
-        self.command_palette = None;
-        self.vault_browser = None;
+        let opened = self.open_panel(Panel::Model);
 
         let url = self.config.ai_url.trim().to_owned();
         // Whatever the last fetch for this endpoint found, shown at once — the
         // same reason the vault browser keeps its last scan. A different
         // endpoint starts empty rather than showing the old provider's models.
-        let cached = self.ai.models.iter().any(|(cached, _)| *cached == url);
+        let cached = self.ai.models.as_ref().is_some_and(|(cached, _)| *cached == url);
         self.model_picker = Some(ModelPicker {
             state: picker::State::default(),
             url: url.clone(),
@@ -81,15 +65,12 @@ impl App {
             before: self.config.ai_model.trim().to_owned(),
         });
 
-        let focus = iced::advanced::widget::operate(
-            iced::advanced::widget::operation::focusable::focus(MODEL_INPUT.clone()),
-        );
         if url.is_empty() {
             if let Some(picker) = &mut self.model_picker {
                 picker.loading = false;
                 picker.error = Some("No API URL is set — choose a provider in settings".into());
             }
-            return focus;
+            return opened;
         }
         // Refetched even when cached: a list is cheap, and a stale one is how
         // you end up picking a model the provider has since retired.
@@ -101,7 +82,7 @@ impl App {
             },
             |(url, models)| Message::ModelsFetched(url, models.map_err(|e| e.to_string())),
         );
-        Task::batch([focus, fetch])
+        Task::batch([opened, fetch])
     }
 
     /// A finished fetch. Kept against the endpoint it was for, so switching
@@ -109,14 +90,7 @@ impl App {
     pub(super) fn models_fetched(&mut self, url: String, models: Result<Vec<Model>, String>) {
         match models {
             Ok(models) => {
-                self.ai.models.retain(|(cached, _)| *cached != url);
-                self.ai.models.push((url.clone(), models));
-                // One provider's list at a time; these are a few hundred small
-                // strings and there's no reason to accumulate every endpoint
-                // ever opened.
-                if self.ai.models.len() > 1 {
-                    let _ = self.ai.models.remove(0);
-                }
+                self.ai.models = Some((url.clone(), models));
                 if let Some(picker) = self.model_picker.as_mut().filter(|p| p.url == url) {
                     picker.loading = false;
                     picker.error = None;
@@ -139,30 +113,18 @@ impl App {
         };
         self.ai
             .models
-            .iter()
-            .find(|(url, _)| *url == picker.url)
+            .as_ref()
+            .filter(|(url, _)| *url == picker.url)
             .map_or(&[], |(_, models)| models.as_slice())
     }
 
     /// The models matching what's been typed, best first.
     pub(super) fn model_matches(&self, query: &str) -> Vec<usize> {
-        let mut scored: Vec<(usize, i32)> = self
-            .models()
-            .iter()
-            .enumerate()
-            .filter_map(|(i, model)| {
-                // The id first — it's what gets sent, and what a half-remembered
-                // name is usually a fragment of. The display name is matched at
-                // a penalty, so "sonnet" finds the model whose id says sonnet
-                // ahead of one that only mentions it in prose.
-                let score = thinkboard_core::fuzzy::score(query, &model.id).or_else(|| {
-                    thinkboard_core::fuzzy::score(query, model.name.as_deref()?).map(|s| s - 4)
-                })?;
-                Some((i, score))
-            })
-            .collect();
-        scored.sort_by_key(|&(_, score)| std::cmp::Reverse(score));
-        scored.into_iter().map(|(i, _)| i).collect()
+        // The id first — it's what gets sent, and what a half-remembered name is
+        // usually a fragment of; the display name is the hidden term behind it.
+        thinkboard_core::fuzzy::rank(self.models(), |model| {
+            thinkboard_core::fuzzy::score_alias(query, &model.id, model.name.as_deref())
+        })
     }
 
     /// The id the highlight is on.
@@ -222,13 +184,9 @@ impl App {
             self,
             &picker.state,
             Shell {
+                panel: Panel::Model,
                 placeholder: "Model…",
-                input: MODEL_INPUT.clone(),
-                list: MODEL_LIST.clone(),
-                on_input: Message::ModelPickerInput,
                 on_submit: Message::CommitModel,
-                on_scroll: Message::ModelPickerScrolled,
-                on_close: Message::CloseModelPicker,
                 // The three reasons a list can be empty read differently, and
                 // only one of them is the user's to fix.
                 empty: match (&picker.error, picker.loading) {

@@ -5,6 +5,10 @@
 //! root `thinkboard` crate) and a future mobile front-end. New code that
 //! doesn't need the UI belongs here.
 
+// Test helpers, shared with the desktop crate's tests through the `fixtures`
+// feature — off in any real build, so the iOS app links none of it.
+#[cfg(any(test, feature = "fixtures"))]
+pub mod fixtures;
 pub mod ai;
 pub mod cluster;
 pub mod color;
