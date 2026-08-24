@@ -154,6 +154,25 @@ pub struct Config {
     /// Auto-layout flow direction: "LR" (left-to-right) or "TD" (top-down).
     pub auto_layout_direction: String,
 
+    /// Draw links the way Mermaid does rather than the way Obsidian does.
+    ///
+    /// Off by default: a board is an Obsidian document, and its links should
+    /// look like Obsidian's unless someone asks otherwise.
+    ///
+    /// Obsidian's control points reach out by 0.4x the distance between the two
+    /// ports, so a curve scales with its span — a link across 1800 px bulges
+    /// 720 px out before it turns. Mermaid routes a polyline instead, smoothed
+    /// by the basis spline d3 draws its flowcharts with: a fixed step out of
+    /// the port whatever the span, a rounded turn, a near-straight run, and a
+    /// step in. Routed rather than organic, and steadier across a board whose
+    /// links vary a lot in length.
+    ///
+    /// It does **not** thin out a crowded fan, which is what it was first tried
+    /// for. Measured on five siblings across a 400 px gap it is *looser* than
+    /// the bezier through the range that matters — 72 px apart at 80 px out
+    /// against 39 px. Sharing leading waypoints fixes only the opening
+    /// segment's control points, not its endpoint, so siblings part at once.
+    pub mermaid_links: bool,
     /// When true, dragging/resizing a node snaps it to a world-space grid.
     /// Toggled from the canvas context menu; persisted here.
     pub snap_to_grid: bool,
@@ -247,6 +266,7 @@ impl Default for Config {
             auto_layout: false,
             auto_layout_direction: "LR".to_owned(),
 
+            mermaid_links: false,
             snap_to_grid: false,
             snap_grid_size: 20.0,
 

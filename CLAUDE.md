@@ -434,6 +434,35 @@ Failures are phrased as something to act on rather than a status code: a 401 is
 "the API key was rejected", a 404 is "this endpoint has no model list", which is
 the ordinary answer from a local runtime rather than a fault.
 
+## Link routing
+
+Two routings, chosen by `config.mermaid_links` (off by default — a board is an
+Obsidian document and should look like one).
+
+Obsidian's is a single bezier whose control points reach out **0.4x the distance
+between the ports**, so the shape scales with the span: a link across 1800 px
+bulges 720 px before it turns. Mermaid's is a *polyline* — dagre emits waypoints
+and d3's `curveBasis` smooths them — which steps a fixed distance out of the
+port whatever the span. A basis spline approximates its interior points rather
+than passing through them, so the corners of a waypoint route round themselves
+and no radius has to be chosen.
+
+**`Board::link_segments` is the one place that chooses**, and it returns cubic
+pieces rather than a path, because six things have to agree about where a link
+is: the line, its hover and selection rings, the drag preview, ghost links, the
+AI shimmer, the hit test, and the caption's midpoint. Anything drawing its own
+bezier would quietly disagree with the routing under it — which the preview and
+the shimmer both did until they were brought across.
+
+**Mermaid's routing does not thin out a crowded fan**, whatever it looks like it
+should do. Siblings share their leading waypoints, but that fixes only the
+opening segment's control points, not its endpoint — measured on five children
+across a 400 px gap it is *looser* than the bezier through the first 150 px
+(72 px apart at 80 px out, against 39). Nor does Mermaid itself avoid nodes:
+dagre has no collision test anywhere in it, and gets away with that because it
+*owns* the positions and reserves gaps with dummy nodes. Our positions come from
+the file. Don't reach for either as a fix for crowding.
+
 ## Obsidian compatibility
 
 `.canvas` files are Obsidian's, and round-tripping must not damage them:

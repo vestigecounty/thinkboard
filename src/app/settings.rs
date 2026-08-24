@@ -56,6 +56,7 @@ pub(crate) enum Field {
     CenterNodeText,
     RasterizeText,
     NodeScrollbars,
+    MermaidLinks,
     NewNodeMinWidth,
     NewNodeMinHeight,
     MaxNodeWidth,
@@ -183,6 +184,11 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         "Center node text",
         toggle(Field::CenterNodeText, c.center_node_text),
         "Center plain text; richer formatting (headings, code, lists) stays left-aligned.",
+    ));
+    items.push(setting(
+        "Mermaid-style links",
+        toggle(Field::MermaidLinks, c.mermaid_links),
+        "Route links as Mermaid does — a fixed step out of the port, then a near-straight run — instead of Obsidian's curve, whose bulge grows with the distance it spans.",
     ));
     items.push(setting(
         "Node scrollbars",
@@ -693,6 +699,7 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
         (Field::CenterNodeText, Value::Bool(b)) => config.center_node_text = b,
         (Field::RasterizeText, Value::Bool(b)) => config.rasterize_text = b,
         (Field::NodeScrollbars, Value::Bool(b)) => config.node_scrollbars = b,
+        (Field::MermaidLinks, Value::Bool(b)) => config.mermaid_links = b,
         (Field::AutoLayout, Value::Bool(b)) => config.auto_layout = b,
         (Field::AiCompletions, Value::Bool(b)) => config.ai_completions = b,
         (Field::AiThinking, Value::Bool(b)) => config.ai_thinking = b,

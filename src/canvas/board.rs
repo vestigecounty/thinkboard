@@ -2806,12 +2806,11 @@ impl Board<'_> {
             let Some(geometry) = self.edge_geometry(edge) else {
                 continue;
             };
-            // Reject on the curve's hull box before sampling it; on a board
-            // with many links almost every edge stops here.
-            if !within_reach(point, &geometry, threshold) {
+            // Rejects on the hull box before sampling; on a board with many
+            // links almost every edge stops there.
+            let Some(distance) = self.link_distance(point, &geometry, threshold) else {
                 continue;
-            }
-            let distance = bezier_distance(point, &geometry);
+            };
             if distance < threshold && best.is_none_or(|(_, best)| distance < best) {
                 best = Some((index, distance));
             }
@@ -2863,7 +2862,7 @@ impl Board<'_> {
         };
 
         let size = EDGE_LABEL_SIZE * zoom;
-        let center = cubic_bezier(&g, 0.5);
+        let center = self.link_midpoint(&g);
         // ~0.55em per character is a reasonable average for the UI font; the
         // chip is padded either way, so a little slack is harmless.
         let width = label.chars().count() as f32 * size * 0.55 + size;
@@ -2897,7 +2896,7 @@ impl Board<'_> {
         };
         let zoom = self.camera.zoom;
         frame.stroke(
-            &bezier_path(&g),
+            &self.link_path(&g),
             Stroke {
                 // Butt (not round) so the line stops at the tip rather than
                 // poking a half-width past the arrowhead.
@@ -2929,7 +2928,7 @@ impl Board<'_> {
         };
         let zoom = self.camera.zoom;
         frame.stroke(
-            &bezier_path(&g),
+            &self.link_path(&g),
             Stroke {
                 // Butt (not round) so the line stops at the tip rather than
                 // poking a half-width past the arrowhead.
@@ -2937,7 +2936,7 @@ impl Board<'_> {
                 line_join: stroke::LineJoin::Round,
                 ..Stroke::default()
                     .with_color(fade(color, g.alpha))
-                    .with_width(2.5 * zoom)
+                    .with_width(EDGE_LINE_WIDTH * zoom)
             },
         );
         // Obsidian records an arrow at the target and none at the source
@@ -3015,7 +3014,7 @@ impl Board<'_> {
                     .with_width(GHOST_STROKE * zoom)
             };
             if let Some(g) = self.ghost_link(ghost) {
-                frame.stroke(&bezier_path(&g), dashed(0.4));
+                frame.stroke(&self.link_path(&g), dashed(0.4));
             }
             let rect = self.camera.rect_to_screen(ghost.rect);
             let card = rounded_path(rect, self.card_radius());
@@ -3136,7 +3135,7 @@ impl Board<'_> {
         let line_glow = band(0.85);
         for g in &lines {
             frame.stroke(
-                &bezier_path(g),
+                &self.link_path(g),
                 Stroke {
                     style: Style::Gradient(line_glow.into()),
                     line_cap: stroke::LineCap::Round,
@@ -3292,18 +3291,16 @@ impl Board<'_> {
             None => end + outward(opposite_side(side)) * reach,
         };
 
-        let path = Path::new(|builder| {
-            builder.move_to(start);
-            builder.bezier_curve_to(control1, control2, end);
-        });
+        // Routed as the link it will become, so releasing the drag doesn't
+        // change the shape under the cursor.
         frame.stroke(
-            &path,
+            &self.link_path(&EdgeGeometry { start, control1, control2, end, alpha: 1.0 }),
             Stroke {
                 line_cap: stroke::LineCap::Round,
                 line_join: stroke::LineJoin::Round,
                 ..Stroke::default()
                     .with_color(EDGE_COLOR)
-                    .with_width(2.5 * self.camera.zoom)
+                    .with_width(EDGE_LINE_WIDTH * self.camera.zoom)
             },
         );
         if let (Some(to_side), true) = (end_side, strength > 0.0) {
@@ -3386,12 +3383,8 @@ impl Board<'_> {
             let control1 = start + outward(from_side) * reach;
             let control2 = end + outward(to_side) * reach;
 
-            let path = Path::new(|builder| {
-                builder.move_to(start);
-                builder.bezier_curve_to(control1, control2, end);
-            });
             frame.stroke(
-                &path,
+                &self.link_path(&EdgeGeometry { start, control1, control2, end, alpha: 1.0 }),
                 Stroke {
                     line_cap: stroke::LineCap::Round,
                     line_join: stroke::LineJoin::Round,
@@ -3459,11 +3452,150 @@ fn strictly_inside(rect: Rectangle, p: Point) -> bool {
     p.x > rect.x && p.x < rect.x + rect.width && p.y > rect.y && p.y < rect.y + rect.height
 }
 
-fn bezier_path(g: &EdgeGeometry) -> Path {
-    Path::new(|builder| {
-        builder.move_to(g.start);
-        builder.bezier_curve_to(g.control1, g.control2, g.end);
-    })
+impl Board<'_> {
+    /// A link as the cubic pieces it is drawn from, under the configured
+    /// routing.
+    ///
+    /// **Everything a link is goes through here** — the line, its hover and
+    /// selection rings, the drag preview, ghost links, the AI shimmer, and the
+    /// hit test and caption that have to agree with what was drawn. One routing
+    /// to switch, and nothing left behind on the other.
+    fn link_segments(&self, g: &EdgeGeometry) -> Vec<EdgeGeometry> {
+        if self.config.mermaid_links {
+            mermaid_route(g)
+        } else {
+            vec![*g]
+        }
+    }
+
+    /// A link's drawn path.
+    fn link_path(&self, g: &EdgeGeometry) -> Path {
+        let segments = self.link_segments(g);
+        Path::new(|builder| {
+            let Some(first) = segments.first() else {
+                return;
+            };
+            builder.move_to(first.start);
+            for piece in &segments {
+                builder.line_to(piece.start);
+                builder.bezier_curve_to(piece.control1, piece.control2, piece.end);
+            }
+        })
+    }
+
+    /// How far `point` is from the link as drawn, and the box to reject on
+    /// before measuring.
+    fn link_distance(&self, point: Point, g: &EdgeGeometry, threshold: f32) -> Option<f32> {
+        let segments = self.link_segments(g);
+        if !segments.iter().any(|piece| within_reach(point, piece, threshold)) {
+            return None;
+        }
+        segments
+            .iter()
+            .map(|piece| bezier_distance(point, piece))
+            .fold(None, |best: Option<f32>, d| Some(best.map_or(d, |b| b.min(d))))
+    }
+
+    /// The middle of the link as drawn, where its caption sits.
+    fn link_midpoint(&self, g: &EdgeGeometry) -> Point {
+        let segments = self.link_segments(g);
+        match segments.len() {
+            0 => g.start,
+            n => cubic_bezier(&segments[n / 2], 0.5),
+        }
+    }
+}
+
+/// A link's drawn path, routed the way Mermaid routes one.
+///
+/// **Waypoints, smoothed by a B-spline** — not a bezier between the two ends.
+/// Mermaid's flowcharts come out of dagre (a port of the layered algorithm
+/// GraphViz's `dot` implements) as a *polyline*, and are drawn with d3's
+/// `curveBasis`, which approximates its interior points rather than passing
+/// through them. Corners round themselves, so a waypoint route needs no radius
+/// of its own.
+///
+/// What this changes against [`bezier_path`] is the *ends*. Obsidian reaches
+/// out by 0.4x the distance between the ports, so the curve scales with the
+/// span — 720 px out on an 1800 px link. This steps a fixed [`EDGE_GUTTER`]
+/// whatever the span and runs nearly straight between.
+///
+/// It does **not** bundle a crowded fan. Siblings share their leading
+/// waypoints, which fixes the opening segment's control points but not its
+/// endpoint — that already depends on the target — so they part at once, and
+/// measurably wider than the bezier does through the first 150 px.
+fn mermaid_route(g: &EdgeGeometry) -> Vec<EdgeGeometry> {
+    let unit = |v: Vector| {
+        let len = (v.x * v.x + v.y * v.y).sqrt();
+        if len > f32::EPSILON { v * (1.0 / len) } else { Vector::new(0.0, 0.0) }
+    };
+    let from = unit(g.control1 - g.start);
+    let to = unit(g.control2 - g.end);
+    // How far the step out of a port runs. Shared by every link leaving it, so
+    // their leading waypoints coincide — capped on the room available, since a
+    // step past the target would route the line backwards.
+    let along = (g.end.x - g.start.x) * from.x + (g.end.y - g.start.y) * from.y;
+    let gutter = EDGE_GUTTER.min(along.abs() * 0.4).max(0.0);
+    let waypoints = [g.start, g.start + from * gutter, g.end + to * gutter, g.end];
+    let (opening, segments) = basis_segments(&waypoints);
+    let mut start = opening.unwrap_or(g.start);
+    let mut pieces = Vec::with_capacity(segments.len() + 1);
+    // The short straight run d3 opens with, as a degenerate cubic so the whole
+    // route is one kind of thing.
+    pieces.push(EdgeGeometry { start: g.start, control1: g.start, control2: start, end: start, ..*g });
+    for (control1, control2, end) in segments {
+        pieces.push(EdgeGeometry { start, control1, control2, end, ..*g });
+        start = end;
+    }
+    pieces
+}
+
+/// Stroke width of a link, in world units — the line, its preview and the
+/// shimmer that traces it are one line, so they are drawn at one width.
+const EDGE_LINE_WIDTH: f32 = 2.5;
+
+/// How far a link steps straight out of its port before turning, in screen
+/// units. Mermaid's is half the rank separation; here there are no ranks, so
+/// it is a constant capped on the gap the link has to cross.
+const EDGE_GUTTER: f32 = 60.0;
+
+/// The spline's cubic segments, and the short straight run d3 opens with.
+///
+/// Split out from the drawing so the shape can be checked without a canvas.
+fn basis_segments(points: &[Point]) -> (Option<Point>, Vec<(Point, Point, Point)>) {
+    let [first, rest @ ..] = points else {
+        return (None, Vec::new());
+    };
+    let Some(&second) = rest.first() else {
+        return (None, Vec::new());
+    };
+    let between = |a: Point, b: Point, wa: f32, wb: f32| {
+        Point::new((a.x * wa + b.x * wb) / (wa + wb), (a.y * wa + b.y * wb) / (wa + wb))
+    };
+    // d3 opens a sixth of the way into the first span, where the spline begins.
+    let opening = between(*first, second, 5.0, 1.0);
+
+    let mut segments = Vec::with_capacity(rest.len());
+    let (mut previous, mut current) = (*first, second);
+    let push = |previous: Point, current: Point, end: Point| {
+        (
+            between(previous, current, 2.0, 1.0),
+            between(previous, current, 1.0, 2.0),
+            end,
+        )
+    };
+    for &next in &rest[1..] {
+        let end = Point::new(
+            (previous.x + 4.0 * current.x + next.x) / 6.0,
+            (previous.y + 4.0 * current.y + next.y) / 6.0,
+        );
+        segments.push(push(previous, current, end));
+        previous = current;
+        current = next;
+    }
+    // …and closes onto the last point, so the arrowhead lands on the node.
+    segments.push(push(previous, current, current));
+    (Some(opening), segments)
 }
 
 const RING_RADIUS: f32 = 30.0;
@@ -3888,6 +4020,131 @@ mod chord_tests {
     fn a_letter_the_board_does_not_claim_is_left_alone() {
         for letter in ['a', 'x', 's', 'q', 'w'] {
             assert_eq!(chord(letter, false, true), None, "Cmd+{letter} is not ours");
+        }
+    }
+}
+
+#[cfg(test)]
+mod basis_tests {
+    use super::basis_segments;
+    use iced::Point;
+
+    #[test]
+    fn the_curve_begins_and_ends_on_its_outer_points() {
+        // The arrowhead lands on the node and the line leaves the port; the
+        // interior waypoints are the only ones the spline merely approaches.
+        let points = [
+            Point::new(0.0, 0.0),
+            Point::new(60.0, 0.0),
+            Point::new(140.0, 200.0),
+            Point::new(200.0, 200.0),
+        ];
+        let (opening, segments) = basis_segments(&points);
+        let opening = opening.expect("an opening run");
+        assert!(opening.x < 20.0 && opening.y.abs() < 0.01, "starts along the first span");
+        let last = segments.last().expect("segments").2;
+        assert_eq!((last.x, last.y), (200.0, 200.0), "and ends on the final point");
+    }
+
+    #[test]
+    fn a_corner_is_rounded_rather_than_reached() {
+        // The property the route depends on: a basis spline is pulled toward an
+        // interior waypoint without arriving at it, so an orthogonal route needs
+        // no corner radius of its own.
+        let corner = Point::new(100.0, 0.0);
+        let points = [Point::new(0.0, 0.0), corner, Point::new(100.0, 100.0)];
+        let (_, segments) = basis_segments(&points);
+        let reached = segments
+            .iter()
+            .map(|&(_, _, end)| end.x)
+            .fold(f32::MIN, f32::max);
+        assert!(reached <= corner.x, "the spline never reaches the corner");
+        assert!(
+            segments.iter().any(|&(_, _, end)| end.x < corner.x && end.y > 0.0),
+            "it turns before it, which is what rounds it",
+        );
+    }
+
+    #[test]
+    fn siblings_sharing_their_first_waypoints_share_their_first_segment() {
+        // Why a fan needs no spine of its own: links out of one port share the
+        // port and the step out of it, so they are one line until they part.
+        let port = Point::new(0.0, 0.0);
+        let step = Point::new(60.0, 0.0);
+        let (open_a, a) = basis_segments(&[port, step, Point::new(200.0, 300.0)]);
+        let (open_b, b) = basis_segments(&[port, step, Point::new(200.0, -300.0)]);
+        assert_eq!(open_a, open_b);
+        assert_eq!(a[0].0, b[0].0, "same first control point");
+        assert_eq!(a[0].1, b[0].1, "and the same second");
+    }
+
+    #[test]
+    fn degenerate_routes_do_not_panic() {
+        assert!(basis_segments(&[]).1.is_empty());
+        assert!(basis_segments(&[Point::new(1.0, 2.0)]).1.is_empty());
+        assert_eq!(basis_segments(&[Point::new(0.0, 0.0), Point::new(10.0, 10.0)]).1.len(), 1);
+    }
+}
+
+#[cfg(test)]
+mod route_tests {
+    use super::{EdgeGeometry, mermaid_route};
+    use iced::Point;
+
+    fn link(from: (f32, f32), reach_out: f32, to: (f32, f32), reach_in: f32) -> EdgeGeometry {
+        EdgeGeometry {
+            start: Point::new(from.0, from.1),
+            control1: Point::new(from.0 + reach_out, from.1),
+            control2: Point::new(to.0 - reach_in, to.1),
+            end: Point::new(to.0, to.1),
+            alpha: 1.0,
+        }
+    }
+
+    #[test]
+    fn the_route_starts_and_ends_where_the_link_does() {
+        // The pieces are what everything else measures against — the hit test,
+        // the caption's midpoint, the arrowhead's anchor — so the route has to
+        // begin at the port and land on the node.
+        let g = link((0.0, 0.0), 160.0, (400.0, 300.0), 160.0);
+        let pieces = mermaid_route(&g);
+        assert_eq!(pieces.first().expect("pieces").start, g.start);
+        assert_eq!(pieces.last().expect("pieces").end, g.end);
+    }
+
+    #[test]
+    fn the_pieces_join_end_to_end() {
+        // A gap between two of them would show as a break in the line and as a
+        // dead spot in the hit test.
+        let g = link((0.0, 0.0), 160.0, (400.0, 300.0), 160.0);
+        for pair in mermaid_route(&g).windows(2) {
+            assert_eq!(pair[0].end, pair[1].start, "the route must be continuous");
+        }
+    }
+
+    #[test]
+    fn the_step_out_of_the_port_does_not_grow_with_the_span() {
+        // The difference from Obsidian's curve, whose reach is 0.4x the distance
+        // and so bulges further the further it goes.
+        let short = mermaid_route(&link((0.0, 0.0), 60.0, (150.0, 0.0), 60.0));
+        let long = mermaid_route(&link((0.0, 0.0), 720.0, (1800.0, 0.0), 720.0));
+        let step = |pieces: &[EdgeGeometry]| pieces[1].control1.x;
+        assert!(
+            (step(&short) - step(&long)).abs() < 1.0,
+            "a fixed step: {} vs {}",
+            step(&short),
+            step(&long),
+        );
+    }
+
+    #[test]
+    fn a_short_link_steps_out_less_than_it_spans() {
+        // Or the route would turn back on itself between two close nodes.
+        let g = link((0.0, 0.0), 20.0, (50.0, 0.0), 20.0);
+        for piece in mermaid_route(&g) {
+            for p in [piece.start, piece.control1, piece.control2, piece.end] {
+                assert!(p.x >= -0.01 && p.x <= 50.01, "{p:?} is outside the span");
+            }
         }
     }
 }

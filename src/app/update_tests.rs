@@ -1729,3 +1729,16 @@ fn a_raster_in_flight_cannot_un_highlight_a_search_hit() {
     assert!(app.rasters.text.contains_key(&0));
 }
 
+#[test]
+fn links_are_drawn_obsidians_way_unless_asked_otherwise() {
+    // A board is an Obsidian document; its links should look like Obsidian's
+    // out of the box.
+    let mut app = app_with(two_nodes(), Vec::new());
+    assert!(!app.config.mermaid_links);
+
+    send(
+        &mut app,
+        Message::Settings(settings::Msg::Toggle(settings::Field::MermaidLinks, true)),
+    );
+    assert!(app.config.mermaid_links, "and the setting switches it live");
+}

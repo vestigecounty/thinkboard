@@ -27,6 +27,7 @@
   "font": "",
   "overlay_dim": 0.55,
   "center_node_text": true,
+  "mermaid_links": false,
   "rasterize_text": true,
 
   "new_node_min_width": 250.0,
