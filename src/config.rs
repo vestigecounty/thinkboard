@@ -154,25 +154,11 @@ pub struct Config {
     /// Auto-layout flow direction: "LR" (left-to-right) or "TD" (top-down).
     pub auto_layout_direction: String,
 
-    /// Draw links the way Mermaid does rather than the way Obsidian does.
+    /// How links are drawn between nodes — see [`LinkStyle`].
     ///
-    /// Off by default: a board is an Obsidian document, and its links should
-    /// look like Obsidian's unless someone asks otherwise.
-    ///
-    /// Obsidian's control points reach out by 0.4x the distance between the two
-    /// ports, so a curve scales with its span — a link across 1800 px bulges
-    /// 720 px out before it turns. Mermaid routes a polyline instead, smoothed
-    /// by the basis spline d3 draws its flowcharts with: a fixed step out of
-    /// the port whatever the span, a rounded turn, a near-straight run, and a
-    /// step in. Routed rather than organic, and steadier across a board whose
-    /// links vary a lot in length.
-    ///
-    /// It does **not** thin out a crowded fan, which is what it was first tried
-    /// for. Measured on five siblings across a 400 px gap it is *looser* than
-    /// the bezier through the range that matters — 72 px apart at 80 px out
-    /// against 39 px. Sharing leading waypoints fixes only the opening
-    /// segment's control points, not its endpoint, so siblings part at once.
-    pub mermaid_links: bool,
+    /// Stored by name so the file stays readable and an unknown value degrades
+    /// to the default rather than failing to parse.
+    pub link_style: String,
     /// When true, dragging/resizing a node snaps it to a world-space grid.
     /// Toggled from the canvas context menu; persisted here.
     pub snap_to_grid: bool,
@@ -266,7 +252,7 @@ impl Default for Config {
             auto_layout: false,
             auto_layout_direction: "LR".to_owned(),
 
-            mermaid_links: false,
+            link_style: LinkStyle::default().as_str().to_owned(),
             snap_to_grid: false,
             snap_grid_size: 20.0,
 
@@ -289,6 +275,63 @@ impl Default for Config {
 /// same endpoint rather than two entries with one key between them.
 fn endpoint_key(url: &str) -> &str {
     url.trim().trim_end_matches('/')
+}
+
+/// How links are drawn between nodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LinkStyle {
+    /// One bezier between the two ports, its control points reaching out 0.4x
+    /// the distance between them — so the curve scales with its span. What
+    /// Obsidian draws, and what a board should look like unless asked
+    /// otherwise.
+    #[default]
+    Obsidian,
+    /// A polyline smoothed by the basis spline d3 draws Mermaid's flowcharts
+    /// with: a fixed step out of the port whatever the span, a rounded turn, a
+    /// near-straight run, a step in. Steadier across links that vary a lot in
+    /// length; routed rather than organic.
+    Mermaid,
+    /// Straight runs meeting at square corners. Links leaving one port share
+    /// the trunk they branch from, so a parent reads as one stem — a circuit
+    /// diagram rather than a drawing.
+    Square,
+}
+
+impl LinkStyle {
+    /// In the order they are offered.
+    pub const ALL: [LinkStyle; 3] = [LinkStyle::Obsidian, LinkStyle::Mermaid, LinkStyle::Square];
+
+    /// What the config file holds.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            LinkStyle::Obsidian => "obsidian",
+            LinkStyle::Mermaid => "mermaid",
+            LinkStyle::Square => "square",
+        }
+    }
+
+    /// What the settings form shows.
+    pub fn label(self) -> &'static str {
+        match self {
+            LinkStyle::Obsidian => "Obsidian",
+            LinkStyle::Mermaid => "Mermaid",
+            LinkStyle::Square => "Square",
+        }
+    }
+
+    /// Reads a config value, case-insensitively. Anything unrecognised is the
+    /// default — a hand-edited typo shouldn't stop the board drawing.
+    pub fn parse(value: &str) -> LinkStyle {
+        LinkStyle::ALL
+            .into_iter()
+            .find(|style| style.as_str().eq_ignore_ascii_case(value.trim()))
+            .unwrap_or_default()
+    }
+
+    /// The style named in a config, ready to draw with.
+    pub fn of(config: &Config) -> LinkStyle {
+        LinkStyle::parse(&config.link_style)
+    }
 }
 
 impl Config {
@@ -809,6 +852,40 @@ mod tests {
         let fresh = Config::default();
         assert_eq!(fresh.summon_gesture, cfg!(target_os = "macos"));
         assert_eq!(fresh.summon_hotkey, "Pause");
+    }
+
+
+    #[test]
+    fn a_link_style_survives_the_round_trip_through_the_file() {
+        for style in LinkStyle::ALL {
+            assert_eq!(LinkStyle::parse(style.as_str()), style);
+        }
+    }
+
+    #[test]
+    fn an_unrecognised_link_style_draws_the_default_rather_than_nothing() {
+        // The file is hand-editable, and a typo in it shouldn't stop the board
+        // drawing — nor should a name from a later version.
+        for value in ["", "  ", "curly", "Obsidian-ish", "SQUARES"] {
+            assert_eq!(LinkStyle::parse(value), LinkStyle::Obsidian, "{value:?}");
+        }
+        // Case and stray spaces are forgiven, though.
+        assert_eq!(LinkStyle::parse("  Square "), LinkStyle::Square);
+        assert_eq!(LinkStyle::parse("MERMAID"), LinkStyle::Mermaid);
+    }
+
+    #[test]
+    fn every_style_is_offered_and_labelled_distinctly() {
+        // The form matches a picked label back to a style by name, so two
+        // sharing one would silently pick the first.
+        let labels: Vec<&str> = LinkStyle::ALL.iter().map(|s| s.label()).collect();
+        let names: Vec<&str> = LinkStyle::ALL.iter().map(|s| s.as_str()).collect();
+        for set in [&labels, &names] {
+            let mut sorted = set.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(sorted.len(), set.len(), "{set:?} has a duplicate");
+        }
     }
 
 }

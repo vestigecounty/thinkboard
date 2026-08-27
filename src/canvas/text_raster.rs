@@ -1378,6 +1378,9 @@ mod measure_tests {
         assert_eq!(nearest_weight(&[face(500, false)], REGULAR), 500);
     }
 
+    /// Deliberately reads the machine's own font database, unlike the tests
+    /// above it: what it checks is that the two routes *into* that database
+    /// agree, which there is no synthesising. Vacuous where none are installed.
     #[test]
     fn every_offered_family_resolves_to_the_weight_it_was_listed_with() {
         // `families` and `family_weights` read the same database by different

@@ -13,7 +13,7 @@ use iced::widget::{
 };
 use iced::{Alignment, Color, Element, Fill, Font, Padding, Task};
 
-use crate::config::Config;
+use crate::config::{Config, LinkStyle};
 
 use super::{App, Message};
 
@@ -56,7 +56,7 @@ pub(crate) enum Field {
     CenterNodeText,
     RasterizeText,
     NodeScrollbars,
-    MermaidLinks,
+    LinkStyle,
     NewNodeMinWidth,
     NewNodeMinHeight,
     MaxNodeWidth,
@@ -186,9 +186,13 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         "Center plain text; richer formatting (headings, code, lists) stays left-aligned.",
     ));
     items.push(setting(
-        "Mermaid-style links",
-        toggle(Field::MermaidLinks, c.mermaid_links),
-        "Route links as Mermaid does — a fixed step out of the port, then a near-straight run — instead of Obsidian's curve, whose bulge grows with the distance it spans.",
+        "Link style",
+        choices(
+            Field::LinkStyle,
+            LinkStyle::ALL.iter().map(|s| s.label().to_owned()).collect(),
+            LinkStyle::of(c).label().to_owned(),
+        ),
+        "How links are drawn. Obsidian curves them, with the bulge growing over the distance spanned. Mermaid routes them — a fixed step out of the port, then a near-straight run. Square drops the curve entirely: straight runs meeting at right angles, links off one port sharing the trunk they branch from.",
     ));
     items.push(setting(
         "Node scrollbars",
@@ -699,7 +703,15 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
         (Field::CenterNodeText, Value::Bool(b)) => config.center_node_text = b,
         (Field::RasterizeText, Value::Bool(b)) => config.rasterize_text = b,
         (Field::NodeScrollbars, Value::Bool(b)) => config.node_scrollbars = b,
-        (Field::MermaidLinks, Value::Bool(b)) => config.mermaid_links = b,
+        // Stored by name, and matched back from the label the form shows.
+        (Field::LinkStyle, Value::Text(label)) => {
+            config.link_style = LinkStyle::ALL
+                .into_iter()
+                .find(|style| style.label() == label)
+                .unwrap_or_default()
+                .as_str()
+                .to_owned();
+        }
         (Field::AutoLayout, Value::Bool(b)) => config.auto_layout = b,
         (Field::AiCompletions, Value::Bool(b)) => config.ai_completions = b,
         (Field::AiThinking, Value::Bool(b)) => config.ai_thinking = b,

@@ -436,34 +436,43 @@ the ordinary answer from a local runtime rather than a fault.
 
 ## Link routing
 
-Two routings, chosen by `config.mermaid_links` (off by default — a board is an
-Obsidian document and should look like one).
+Three styles, named by `config.link_style` and dispatched in exactly one place,
+`Board::link_segments`:
 
-Obsidian's is a single bezier whose control points reach out **0.4x the distance
-between the ports**, so the shape scales with the span: a link across 1800 px
-bulges 720 px before it turns. Mermaid's is a *polyline* — dagre emits waypoints
-and d3's `curveBasis` smooths them — which steps a fixed distance out of the
-port whatever the span. A basis spline approximates its interior points rather
-than passing through them, so the corners of a waypoint route round themselves
-and no radius has to be chosen.
+- **`obsidian`** (default) — one bezier whose control points reach out 0.4x the
+  distance between the ports, so the shape scales with its span: a link across
+  1800 px bulges 720 px before it turns. A board is an Obsidian document and
+  should look like one until someone asks otherwise.
+- **`mermaid`** — a polyline smoothed by the basis spline d3 draws Mermaid's
+  flowcharts with. A basis spline *approximates* its interior waypoints instead
+  of passing through them, so the corners of a route round themselves and no
+  radius has to be chosen anywhere.
+- **`square`** — straight runs meeting at right angles, no curve in it at all.
 
-**`Board::link_segments` is the one place that chooses**, and it returns cubic
-pieces rather than a path, because six things have to agree about where a link
-is: the line, its hover and selection rings, the drag preview, ghost links, the
-AI shimmer, the hit test, and the caption's midpoint. Anything drawing its own
-bezier would quietly disagree with the routing under it — which the preview and
-the shimmer both did until they were brought across.
+`link_segments` returns cubic **pieces** rather than a path, because seven
+things have to agree about where a link is: the line, its hover and selection
+rings, the drag preview, ghost links, the AI shimmer, the hit test, and the
+caption's midpoint. The last two measured against the old bezier whatever was
+drawn, and the preview and shimmer built their own — all four disagreed with the
+routing under them until they were brought across. Anything new that draws a
+link goes through here.
 
-**Mermaid's routing does not thin out a crowded fan**, whatever it looks like it
-should do. Siblings share their leading waypoints, but that fixes only the
-opening segment's control points, not its endpoint — measured on five children
-across a 400 px gap it is *looser* than the bezier through the first 150 px
-(72 px apart at 80 px out, against 39). Nor does Mermaid itself avoid nodes:
-dagre has no collision test anywhere in it, and gets away with that because it
-*owns* the positions and reserves gaps with dummy nodes. Our positions come from
-the file. Don't reach for either as a fix for crowding.
+**The trunk belongs to the port, not the link** (`Board::trunk`, off the
+per-frame `Board::ports` map). Capped per link it is capped by that link's own
+span, so siblings at different indents step out by different amounts and stand
+on trunks a few pixels apart — four links on three lines, never merging into the
+stem the square style is for. Measured across the whole port they land on one.
 
-## Obsidian compatibility
+Two things none of this does, both measured, so neither is retried on the
+strength of how it sounds. Mermaid's routing does **not** thin out a crowded
+fan: siblings share their leading waypoints, but that fixes the opening
+segment's control points and not its endpoint — across a 400 px gap it is
+*looser* than the bezier through the first 150 px, 72 px apart at 80 px out
+against 39. And Mermaid does **not** avoid nodes: dagre has no collision test in
+it anywhere, and gets away with that because it owns the positions and reserves
+gaps with dummy nodes. Ours come from the file.
+
+## Obsidian compatibility## Obsidian compatibility
 
 `.canvas` files are Obsidian's, and round-tripping must not damage them:
 

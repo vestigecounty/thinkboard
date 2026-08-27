@@ -1570,17 +1570,29 @@ fn the_command_is_greyed_without_an_endpoint() {
 
 // --- The font picker ---
 
-/// A family the font database is certain to have, whatever machine this runs
-/// on: the picker lists what the rasterizer can draw with, so anything in it
-/// qualifies.
-fn some_family() -> String {
-    text_raster::families().first().map(|f| f.name.clone()).expect("the system has fonts")
+/// A family name that is nobody's font.
+///
+/// Most of what these tests check is bookkeeping — what the config holds, what
+/// the picker restores — and none of it needs a face that exists. A made-up
+/// name keeps them the same on every machine; `use_font` simply finds no
+/// weights for it and leaves the theme's alone.
+const MADE_UP_FAMILY: &str = "Nonesuch Grotesk";
+
+/// A family the running machine actually has, for the one test that needs the
+/// picker's list to contain it. `None` where the font database is empty.
+fn installed_family() -> Option<String> {
+    text_raster::families().first().map(|f| f.name.clone())
 }
 
 #[test]
 fn the_font_picker_opens_on_the_font_in_use() {
+    // The one font test that has to consult the real database: the highlight
+    // can only open on a family the picker is listing, and the picker lists
+    // what the rasterizer can draw with.
+    let Some(family) = installed_family() else {
+        return; // no fonts installed: nothing to open on
+    };
     let mut app = app_with(two_nodes(), Vec::new());
-    let family = some_family();
     app.config.font = family.clone();
     send(&mut app, Message::OpenFontPicker);
     assert_eq!(app.highlighted_font().as_deref(), Some(family.as_str()));
@@ -1616,7 +1628,7 @@ fn scrolling_the_font_picker_previews_on_the_board() {
 #[test]
 fn dismissing_the_font_picker_puts_the_old_font_back() {
     let mut app = app_with(two_nodes(), Vec::new());
-    let family = some_family();
+    let family = MADE_UP_FAMILY.to_owned();
     app.config.font = family.clone();
     let _ = app.apply_theme_css();
     let before = app.theme.font_text;
@@ -1648,7 +1660,7 @@ fn the_first_row_clears_a_font_back_to_the_theme_s() {
     // The way back. Without it a font could be set but never unset, since the
     // list is otherwise all families.
     let mut app = app_with(two_nodes(), Vec::new());
-    let family = some_family();
+    let family = MADE_UP_FAMILY.to_owned();
     app.config.font = family;
     let _ = app.apply_theme_css();
     assert!(app.theme.font_text.is_some());
@@ -1664,7 +1676,7 @@ fn a_font_survives_changing_the_theme() {
     // The point of keeping it in the config rather than in the theme: adopting
     // a theme takes its colours, not its typeface.
     let mut app = app_with(two_nodes(), Vec::new());
-    let family = some_family();
+    let family = MADE_UP_FAMILY.to_owned();
     app.config.font = family.clone();
     let _ = app.apply_theme_css();
 
@@ -1734,11 +1746,19 @@ fn links_are_drawn_obsidians_way_unless_asked_otherwise() {
     // A board is an Obsidian document; its links should look like Obsidian's
     // out of the box.
     let mut app = app_with(two_nodes(), Vec::new());
-    assert!(!app.config.mermaid_links);
+    assert_eq!(crate::config::LinkStyle::of(&app.config), crate::config::LinkStyle::Obsidian);
 
-    send(
-        &mut app,
-        Message::Settings(settings::Msg::Toggle(settings::Field::MermaidLinks, true)),
-    );
-    assert!(app.config.mermaid_links, "and the setting switches it live");
+    // The form offers labels and the file keeps names, so picking one has to
+    // survive the round trip between them.
+    for style in crate::config::LinkStyle::ALL {
+        send(
+            &mut app,
+            Message::Settings(settings::Msg::Pick(
+                settings::Field::LinkStyle,
+                style.label().to_owned(),
+            )),
+        );
+        assert_eq!(app.config.link_style, style.as_str());
+        assert_eq!(crate::config::LinkStyle::of(&app.config), style);
+    }
 }

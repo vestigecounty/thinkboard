@@ -267,6 +267,10 @@ pub struct Board<'a> {
     /// Node id → index, built once per frame so edge endpoint lookups are
     /// O(1) rather than a linear scan per edge (draw + hit-testing).
     pub node_index: HashMap<&'a str, usize>,
+    /// Link indices grouped by the port they leave, built once per frame beside
+    /// [`Board::node_index`] — what a shared trunk needs to know, since where it
+    /// stands belongs to the port and not to any one link.
+    pub ports: HashMap<(&'a str, &'a str), Vec<usize>>,
     pub edges: &'a [CanvasEdge],
     pub images: &'a HashMap<String, image::Handle>,
     /// Body text of the file nodes that embed a Markdown note, keyed by node id.
@@ -2808,7 +2812,7 @@ impl Board<'_> {
             };
             // Rejects on the hull box before sampling; on a board with many
             // links almost every edge stops there.
-            let Some(distance) = self.link_distance(point, &geometry, threshold) else {
+            let Some(distance) = self.link_distance(point, edge, &geometry, threshold) else {
                 continue;
             };
             if distance < threshold && best.is_none_or(|(_, best)| distance < best) {
@@ -2862,7 +2866,7 @@ impl Board<'_> {
         };
 
         let size = EDGE_LABEL_SIZE * zoom;
-        let center = self.link_midpoint(&g);
+        let center = self.link_midpoint(edge, &g);
         // ~0.55em per character is a reasonable average for the UI font; the
         // chip is padded either way, so a little slack is harmless.
         let width = label.chars().count() as f32 * size * 0.55 + size;
@@ -2896,7 +2900,7 @@ impl Board<'_> {
         };
         let zoom = self.camera.zoom;
         frame.stroke(
-            &self.link_path(&g),
+            &self.link_path(Some(edge), &g),
             Stroke {
                 // Butt (not round) so the line stops at the tip rather than
                 // poking a half-width past the arrowhead.
@@ -2928,7 +2932,7 @@ impl Board<'_> {
         };
         let zoom = self.camera.zoom;
         frame.stroke(
-            &self.link_path(&g),
+            &self.link_path(Some(edge), &g),
             Stroke {
                 // Butt (not round) so the line stops at the tip rather than
                 // poking a half-width past the arrowhead.
@@ -3014,7 +3018,7 @@ impl Board<'_> {
                     .with_width(GHOST_STROKE * zoom)
             };
             if let Some(g) = self.ghost_link(ghost) {
-                frame.stroke(&self.link_path(&g), dashed(0.4));
+                frame.stroke(&self.link_path(None, &g), dashed(0.4));
             }
             let rect = self.camera.rect_to_screen(ghost.rect);
             let card = rounded_path(rect, self.card_radius());
@@ -3135,7 +3139,7 @@ impl Board<'_> {
         let line_glow = band(0.85);
         for g in &lines {
             frame.stroke(
-                &self.link_path(g),
+                &self.link_path(None, g),
                 Stroke {
                     style: Style::Gradient(line_glow.into()),
                     line_cap: stroke::LineCap::Round,
@@ -3294,7 +3298,7 @@ impl Board<'_> {
         // Routed as the link it will become, so releasing the drag doesn't
         // change the shape under the cursor.
         frame.stroke(
-            &self.link_path(&EdgeGeometry { start, control1, control2, end, alpha: 1.0 }),
+            &self.link_path(None, &EdgeGeometry { start, control1, control2, end, alpha: 1.0 }),
             Stroke {
                 line_cap: stroke::LineCap::Round,
                 line_join: stroke::LineJoin::Round,
@@ -3384,7 +3388,7 @@ impl Board<'_> {
             let control2 = end + outward(to_side) * reach;
 
             frame.stroke(
-                &self.link_path(&EdgeGeometry { start, control1, control2, end, alpha: 1.0 }),
+                &self.link_path(None, &EdgeGeometry { start, control1, control2, end, alpha: 1.0 }),
                 Stroke {
                     line_cap: stroke::LineCap::Round,
                     line_join: stroke::LineJoin::Round,
@@ -3460,17 +3464,59 @@ impl Board<'_> {
     /// selection rings, the drag preview, ghost links, the AI shimmer, and the
     /// hit test and caption that have to agree with what was drawn. One routing
     /// to switch, and nothing left behind on the other.
-    fn link_segments(&self, g: &EdgeGeometry) -> Vec<EdgeGeometry> {
-        if self.config.mermaid_links {
-            mermaid_route(g)
-        } else {
-            vec![*g]
+    fn link_segments(&self, edge: Option<&CanvasEdge>, g: &EdgeGeometry) -> Vec<EdgeGeometry> {
+        match crate::config::LinkStyle::of(self.config) {
+            crate::config::LinkStyle::Square => orthogonal_route(g, self.trunk(edge, g)),
+            crate::config::LinkStyle::Mermaid => mermaid_route(g, self.trunk(edge, g)),
+            crate::config::LinkStyle::Obsidian => vec![*g],
         }
     }
 
+    /// How far out of its port a link steps before turning.
+    ///
+    /// **Taken from the port, not the link.** Capped per link it is capped by
+    /// whichever target is nearest, so siblings at different indents step out by
+    /// different amounts and their trunks stand a few pixels apart — four links
+    /// on three lines, never merging into one stem. Measured across the whole
+    /// port they land on the same line and draw as one.
+    ///
+    /// A link with no siblings to consult — a preview, a ghost — falls back to
+    /// its own span, which is the same answer for a port of one.
+    fn trunk(&self, edge: Option<&CanvasEdge>, g: &EdgeGeometry) -> f32 {
+        let axis = unit(g.control1 - g.start);
+        let reach = |anchor: Point| (anchor.x - g.start.x) * axis.x + (anchor.y - g.start.y) * axis.y;
+        let nearest = edge
+            .and_then(|edge| self.ports.get(&(edge.from_node.as_str(), edge.from_side.as_str())))
+            .map(|siblings| {
+                siblings.iter().fold(f32::MAX, |lo, &index| {
+                    let Some(sibling) = self.edges.get(index) else {
+                        return lo;
+                    };
+                    let Some(&to) = self.node_index.get(sibling.to_node.as_str()) else {
+                        return lo;
+                    };
+                    let anchor = side_anchor(
+                        self.node_screen_rect(to, &self.nodes[to]),
+                        &sibling.to_side,
+                    );
+                    let ahead = reach(anchor);
+                    // **Only what lies ahead may shorten the step.** A target
+                    // level with the port is no distance ahead at all and used
+                    // to collapse the trunk onto the node's own edge, taking
+                    // every sibling's with it; one *behind* the port can't be
+                    // reached by stepping forward, and read through an `abs`
+                    // it set a step from a distance in the wrong direction.
+                    if ahead > 0.0 { lo.min(ahead) } else { lo }
+                })
+            })
+            .filter(|nearest| nearest.is_finite())
+            .unwrap_or_else(|| reach(g.end).max(0.0));
+        trunk_gutter(nearest, self.camera.zoom)
+    }
+
     /// A link's drawn path.
-    fn link_path(&self, g: &EdgeGeometry) -> Path {
-        let segments = self.link_segments(g);
+    fn link_path(&self, edge: Option<&CanvasEdge>, g: &EdgeGeometry) -> Path {
+        let segments = self.link_segments(edge, g);
         Path::new(|builder| {
             let Some(first) = segments.first() else {
                 return;
@@ -3485,8 +3531,14 @@ impl Board<'_> {
 
     /// How far `point` is from the link as drawn, and the box to reject on
     /// before measuring.
-    fn link_distance(&self, point: Point, g: &EdgeGeometry, threshold: f32) -> Option<f32> {
-        let segments = self.link_segments(g);
+    fn link_distance(
+        &self,
+        point: Point,
+        edge: &CanvasEdge,
+        g: &EdgeGeometry,
+        threshold: f32,
+    ) -> Option<f32> {
+        let segments = self.link_segments(Some(edge), g);
         if !segments.iter().any(|piece| within_reach(point, piece, threshold)) {
             return None;
         }
@@ -3497,8 +3549,8 @@ impl Board<'_> {
     }
 
     /// The middle of the link as drawn, where its caption sits.
-    fn link_midpoint(&self, g: &EdgeGeometry) -> Point {
-        let segments = self.link_segments(g);
+    fn link_midpoint(&self, edge: &CanvasEdge, g: &EdgeGeometry) -> Point {
+        let segments = self.link_segments(Some(edge), g);
         match segments.len() {
             0 => g.start,
             n => cubic_bezier(&segments[n / 2], 0.5),
@@ -3524,18 +3576,12 @@ impl Board<'_> {
 /// waypoints, which fixes the opening segment's control points but not its
 /// endpoint — that already depends on the target — so they part at once, and
 /// measurably wider than the bezier does through the first 150 px.
-fn mermaid_route(g: &EdgeGeometry) -> Vec<EdgeGeometry> {
-    let unit = |v: Vector| {
-        let len = (v.x * v.x + v.y * v.y).sqrt();
-        if len > f32::EPSILON { v * (1.0 / len) } else { Vector::new(0.0, 0.0) }
-    };
+fn mermaid_route(g: &EdgeGeometry, gutter: f32) -> Vec<EdgeGeometry> {
     let from = unit(g.control1 - g.start);
     let to = unit(g.control2 - g.end);
     // How far the step out of a port runs. Shared by every link leaving it, so
     // their leading waypoints coincide — capped on the room available, since a
     // step past the target would route the line backwards.
-    let along = (g.end.x - g.start.x) * from.x + (g.end.y - g.start.y) * from.y;
-    let gutter = EDGE_GUTTER.min(along.abs() * 0.4).max(0.0);
     let waypoints = [g.start, g.start + from * gutter, g.end + to * gutter, g.end];
     let (opening, segments) = basis_segments(&waypoints);
     let mut start = opening.unwrap_or(g.start);
@@ -3554,10 +3600,98 @@ fn mermaid_route(g: &EdgeGeometry) -> Vec<EdgeGeometry> {
 /// shimmer that traces it are one line, so they are drawn at one width.
 const EDGE_LINE_WIDTH: f32 = 2.5;
 
-/// How far a link steps straight out of its port before turning, in screen
-/// units. Mermaid's is half the rank separation; here there are no ranks, so
-/// it is a constant capped on the gap the link has to cross.
+/// A link as straight runs meeting at square corners, sharing a trunk.
+///
+/// The third style, and the only one with no curve in it: out of the port along
+/// its own normal, a long run, and in along the target's. Because the step out
+/// is the port's rather than each link's, the long runs of everything leaving
+/// one port land on the same line and draw on top of each other — one stem with
+/// square branches, the way a circuit or an org chart is drawn.
+///
+/// **Both normals matter.** Routed off the source's alone, a link out of a
+/// bottom port went down a little, across to its target's column, and then ran
+/// the long way *down that column* — a bar flush against the left edge of every
+/// node in it. Continuing along the source's normal first and turning in along
+/// the target's puts the long run at the port's own coordinate, where it is a
+/// trunk, and leaves only a short stub at the far end.
+///
+/// The corners are deliberately sharp. Rounding them is what the other two
+/// routings are for; this is here to be told apart from them at a glance.
+fn orthogonal_route(g: &EdgeGeometry, gutter: f32) -> Vec<EdgeGeometry> {
+    let from = unit(g.control1 - g.start);
+    let to = unit(g.control2 - g.end);
+    // A step off each end along its own normal, and the turn between them: down
+    // (or out) the source's line as far as the target's stub, then across to it.
+    let out = g.start + from * gutter;
+    let stub = g.end + to * gutter;
+    let turn = Point::new(out.x, stub.y);
+    runs(&[g.start, out, turn, stub, g.end], g)
+}
+
+/// Straight runs through `points`, as cubic pieces.
+///
+/// Points that add nothing are dropped first — a repeat, or one that lies on
+/// the line between its neighbours — so a link with nothing to avoid is one run
+/// rather than several laid end to end pretending to bend.
+fn runs(points: &[Point], g: &EdgeGeometry) -> Vec<EdgeGeometry> {
+    let mut corners: Vec<Point> = Vec::with_capacity(points.len());
+    for &point in points {
+        if corners.last().is_some_and(|last: &Point| last.distance(point) < 0.5) {
+            continue;
+        }
+        // Straight through the previous corner: it isn't one.
+        if let [.., before, at] = corners.as_slice() {
+            let (a, b) = (*at - *before, point - *at);
+            if (a.x * b.y - a.y * b.x).abs() < 0.5 && a.x * b.x + a.y * b.y > 0.0 {
+                corners.pop();
+            }
+        }
+        corners.push(point);
+    }
+    corners
+        .windows(2)
+        .map(|run| EdgeGeometry {
+            start: run[0],
+            // Control points on the line: a cubic whose handles lie along it
+            // *is* the segment, and keeps every piece the same kind of thing.
+            control1: lerp(run[0], run[1], 1.0 / 3.0),
+            control2: lerp(run[0], run[1], 2.0 / 3.0),
+            end: run[1],
+            ..*g
+        })
+        .collect()
+}
+
+/// How far a link steps straight out of its port before turning, in **world**
+/// units. Mermaid's is half the rank separation; here there are no ranks, so it
+/// is a constant, capped on the room the port's nearest target leaves.
+///
+/// World units against the zoom, so a board keeps its shape as the camera moves
+/// over it. Held in screen units the step shrank in world terms as you zoomed
+/// in, walking the trunk toward the node it came out of.
 const EDGE_GUTTER: f32 = 60.0;
+
+/// The least a trunk may stand off the node it leaves, in world units — enough
+/// to read as clear of it.
+const MIN_TRUNK_GUTTER: f32 = 14.0;
+
+/// Where a port's trunk stands, given the room its nearest target leaves.
+///
+/// Between two bounds that can conflict: short of the nearest target, so the
+/// step never overshoots what it is stepping toward, and clear of the node it
+/// leaves. Where there isn't room for both — a target closer than the minimum
+/// clearance — it splits the difference, which is the best either can have.
+///
+/// Nothing ahead is *no cap*, not a cap of nothing. A port whose targets all
+/// lie level with it or behind it has nothing to overshoot, so it takes the
+/// full step; reading that as zero room was what stood the trunk on the node.
+fn trunk_gutter(nearest_ahead: f32, zoom: f32) -> f32 {
+    let (gutter, minimum) = (EDGE_GUTTER * zoom, MIN_TRUNK_GUTTER * zoom);
+    if nearest_ahead <= 0.0 {
+        return gutter;
+    }
+    gutter.min(nearest_ahead * 0.4).max(minimum.min(nearest_ahead * 0.5))
+}
 
 /// The spline's cubic segments, and the short straight run d3 opens with.
 ///
@@ -3690,6 +3824,12 @@ fn outward(side: &str) -> Vector {
         "bottom" => Vector::new(0.0, 1.0),
         _ => Vector::new(1.0, 0.0),
     }
+}
+
+/// A vector of length one, or zero where there is no direction to take.
+fn unit(v: Vector) -> Vector {
+    let len = (v.x * v.x + v.y * v.y).sqrt();
+    if len > f32::EPSILON { v * (1.0 / len) } else { Vector::new(0.0, 0.0) }
 }
 
 fn lerp(a: Point, b: Point, t: f32) -> Point {
@@ -4089,6 +4229,10 @@ mod basis_tests {
 #[cfg(test)]
 mod route_tests {
     use super::{EdgeGeometry, mermaid_route};
+
+    /// The step out of a port, which a board measures from the port's own
+    /// links. Fixed here so the route is the only thing under test.
+    const GUTTER: f32 = 60.0;
     use iced::Point;
 
     fn link(from: (f32, f32), reach_out: f32, to: (f32, f32), reach_in: f32) -> EdgeGeometry {
@@ -4107,7 +4251,7 @@ mod route_tests {
         // the caption's midpoint, the arrowhead's anchor — so the route has to
         // begin at the port and land on the node.
         let g = link((0.0, 0.0), 160.0, (400.0, 300.0), 160.0);
-        let pieces = mermaid_route(&g);
+        let pieces = mermaid_route(&g, GUTTER);
         assert_eq!(pieces.first().expect("pieces").start, g.start);
         assert_eq!(pieces.last().expect("pieces").end, g.end);
     }
@@ -4117,7 +4261,7 @@ mod route_tests {
         // A gap between two of them would show as a break in the line and as a
         // dead spot in the hit test.
         let g = link((0.0, 0.0), 160.0, (400.0, 300.0), 160.0);
-        for pair in mermaid_route(&g).windows(2) {
+        for pair in mermaid_route(&g, GUTTER).windows(2) {
             assert_eq!(pair[0].end, pair[1].start, "the route must be continuous");
         }
     }
@@ -4126,8 +4270,8 @@ mod route_tests {
     fn the_step_out_of_the_port_does_not_grow_with_the_span() {
         // The difference from Obsidian's curve, whose reach is 0.4x the distance
         // and so bulges further the further it goes.
-        let short = mermaid_route(&link((0.0, 0.0), 60.0, (150.0, 0.0), 60.0));
-        let long = mermaid_route(&link((0.0, 0.0), 720.0, (1800.0, 0.0), 720.0));
+        let short = mermaid_route(&link((0.0, 0.0), 60.0, (150.0, 0.0), 60.0), GUTTER);
+        let long = mermaid_route(&link((0.0, 0.0), 720.0, (1800.0, 0.0), 720.0), GUTTER);
         let step = |pieces: &[EdgeGeometry]| pieces[1].control1.x;
         assert!(
             (step(&short) - step(&long)).abs() < 1.0,
@@ -4141,10 +4285,160 @@ mod route_tests {
     fn a_short_link_steps_out_less_than_it_spans() {
         // Or the route would turn back on itself between two close nodes.
         let g = link((0.0, 0.0), 20.0, (50.0, 0.0), 20.0);
-        for piece in mermaid_route(&g) {
+        for piece in mermaid_route(&g, GUTTER) {
             for p in [piece.start, piece.control1, piece.control2, piece.end] {
                 assert!(p.x >= -0.01 && p.x <= 50.01, "{p:?} is outside the span");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod orthogonal_tests {
+    use super::{EdgeGeometry, orthogonal_route};
+    use iced::Point;
+
+    /// The step out of a port, which a board measures from the port's own
+    /// links. Fixed here so the route is the only thing under test.
+    const GUTTER: f32 = 60.0;
+
+    /// A link between two ports, each named by the way it faces.
+    fn link(from: (f32, f32), facing: (f32, f32), to: (f32, f32), entering: (f32, f32)) -> EdgeGeometry {
+        let (start, end) = (Point::new(from.0, from.1), Point::new(to.0, to.1));
+        EdgeGeometry {
+            start,
+            control1: start + iced::Vector::new(facing.0, facing.1) * 100.0,
+            control2: end + iced::Vector::new(entering.0, entering.1) * 100.0,
+            end,
+            alpha: 1.0,
+        }
+    }
+
+    const RIGHT: (f32, f32) = (1.0, 0.0);
+    const DOWN: (f32, f32) = (0.0, 1.0);
+    const LEFT: (f32, f32) = (-1.0, 0.0);
+
+    #[test]
+    fn every_run_is_square_to_the_last() {
+        // The point of the style: no diagonals anywhere.
+        for piece in orthogonal_route(&link((0.0, 0.0), RIGHT, (400.0, 300.0), LEFT), GUTTER) {
+            let (dx, dy) = (piece.end.x - piece.start.x, piece.end.y - piece.start.y);
+            assert!(dx.abs() < 0.01 || dy.abs() < 0.01, "not level or plumb: {dx} x {dy}");
+        }
+    }
+
+    #[test]
+    fn the_route_joins_up_between_its_ports() {
+        let g = link((0.0, 0.0), RIGHT, (400.0, 300.0), LEFT);
+        let pieces = orthogonal_route(&g, GUTTER);
+        assert_eq!(pieces.first().expect("pieces").start, g.start);
+        assert_eq!(pieces.last().expect("pieces").end, g.end);
+        for pair in pieces.windows(2) {
+            assert_eq!(pair[0].end, pair[1].start, "the route must be continuous");
+        }
+    }
+
+    #[test]
+    fn the_long_run_stands_off_the_source_not_across_its_targets() {
+        // The bug: routed off the source's normal alone, a link out of a bottom
+        // port went down a little, across to its target's column, then ran the
+        // long way *down that column* — flush against every node in it.
+        let column = 1113.0;
+        let g = link((605.0, 415.0), DOWN, (column, 1053.0), LEFT);
+        let longest = orthogonal_route(&g, GUTTER)
+            .into_iter()
+            .max_by(|a, b| a.start.distance(a.end).total_cmp(&b.start.distance(b.end)))
+            .expect("a run");
+        assert!((longest.start.x - longest.end.x).abs() < 0.01, "the long run is the vertical");
+        assert!(
+            (longest.start.x - column).abs() > GUTTER,
+            "it must not graze the column it feeds: {} against {column}",
+            longest.start.x,
+        );
+        assert!((longest.start.x - 605.0).abs() < 0.01, "it stands on the port's own line");
+    }
+
+    #[test]
+    fn siblings_share_the_trunk_they_branch_from() {
+        // Why it reads as one stem: the step is the port's, not the link's, so
+        // links to targets at different indents turn on the same line.
+        let near = orthogonal_route(&link((0.0, 0.0), RIGHT, (200.0, -300.0), LEFT), GUTTER);
+        let far = orthogonal_route(&link((0.0, 0.0), RIGHT, (600.0, 300.0), LEFT), GUTTER);
+        assert_eq!(near[0].end, far[0].end, "one trunk, whatever the target");
+        assert_eq!(near[0].end.x, GUTTER, "standing where the port says");
+    }
+
+    #[test]
+    fn a_target_dead_ahead_is_one_run_with_no_kink_in_it() {
+        // Corners that bend through nothing are dropped, so a link with nothing
+        // to avoid is a straight line rather than three runs pretending.
+        let pieces = orthogonal_route(&link((0.0, 0.0), RIGHT, (400.0, 0.0), LEFT), GUTTER);
+        assert_eq!(pieces.len(), 1);
+        assert_eq!(pieces[0].start, Point::new(0.0, 0.0));
+        assert_eq!(pieces[0].end, Point::new(400.0, 0.0));
+    }
+
+    #[test]
+    fn a_link_into_a_top_port_arrives_plumb() {
+        // The final stub follows the target's normal, so it enters the way the
+        // port faces rather than sideways through the node's edge.
+        const UP: (f32, f32) = (0.0, -1.0);
+        let g = link((0.0, 0.0), RIGHT, (400.0, 300.0), UP);
+        let last = orthogonal_route(&g, GUTTER).pop().expect("a run");
+        assert!((last.start.x - last.end.x).abs() < 0.01, "arrives vertically");
+        assert!(last.start.y < last.end.y, "and from above");
+    }
+}
+
+
+#[cfg(test)]
+mod trunk_tests {
+    use super::{EDGE_GUTTER, MIN_TRUNK_GUTTER, trunk_gutter};
+
+    #[test]
+    fn a_trunk_never_stands_on_the_node_it_leaves() {
+        // The bug: a sibling whose target is level with the port is no distance
+        // ahead, which collapsed the step to nothing and put the vertical bar
+        // flat against the parent's edge — and took every sibling's with it,
+        // since the step belongs to the port.
+        for ahead in [0.0, 1.0, 5.0, 20.0, 60.0, 400.0] {
+            assert!(
+                trunk_gutter(ahead, 1.0) > 0.0,
+                "{ahead} ahead put the trunk on the node",
+            );
+        }
+        // Nothing ahead is no cap at all, not a cap of nothing: there is
+        // nothing to overshoot, so the step is the full one.
+        assert_eq!(trunk_gutter(0.0, 1.0), EDGE_GUTTER);
+        assert_eq!(trunk_gutter(-200.0, 1.0), EDGE_GUTTER, "nor does anything behind");
+        assert!(trunk_gutter(1.0, 1.0) >= MIN_TRUNK_GUTTER.min(0.5));
+    }
+
+    #[test]
+    fn a_trunk_never_oversteps_the_target_it_heads_for() {
+        // The other bound. Where the two can't both be had — a target closer
+        // than the minimum clearance — it splits the difference.
+        for ahead in [1.0, 4.0, 10.0, 25.0, 300.0] {
+            assert!(
+                trunk_gutter(ahead, 1.0) < ahead,
+                "{ahead} ahead overshot",
+            );
+        }
+    }
+
+    #[test]
+    fn the_step_is_the_same_distance_on_the_board_at_any_zoom() {
+        // Held in screen units it shrank in world terms as you zoomed in,
+        // walking the trunk toward the node it came out of.
+        for zoom in [0.25_f32, 1.0, 4.0] {
+            let world = trunk_gutter(1000.0 * zoom, zoom) / zoom;
+            assert!((world - EDGE_GUTTER).abs() < 0.01, "{zoom}x gave {world}");
+        }
+    }
+
+    #[test]
+    fn a_close_target_still_pulls_the_trunk_in() {
+        // It is a cap, not a fixed distance: a near target has to leave room.
+        assert!(trunk_gutter(60.0, 1.0) < trunk_gutter(600.0, 1.0));
     }
 }

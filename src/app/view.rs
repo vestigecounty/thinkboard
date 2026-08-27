@@ -180,6 +180,18 @@ impl App {
                 .map(|(index, node)| (node.id.as_str(), index))
                 .collect(),
             edges: &self.edges,
+            // Links grouped by the port they leave, so the ones sharing a port
+            // can share a trunk.
+            ports: self.edges.iter().enumerate().fold(
+                std::collections::HashMap::new(),
+                |mut ports, (index, edge)| {
+                    ports
+                        .entry((edge.from_node.as_str(), edge.from_side.as_str()))
+                        .or_insert_with(Vec::new)
+                        .push(index);
+                    ports
+                },
+            ),
             images: &self.images,
             notes: &self.notes,
             clusters: &self.clusters.list,
