@@ -395,6 +395,9 @@ fn with_raster<R>(f: impl FnOnce(&mut Raster) -> R) -> R {
         for path in crate::platform::UI_FONT_FILES {
             let _ = db.load_font_file(path);
         }
+        // "Via the weight axis" only once the axis has a face to be asked
+        // through — see `register_variable_weights`.
+        register_variable_weights(&mut db, crate::platform::UI_FONT_NAME);
         // Always pull in installed system fonts: they're the raster db's only
         // source of glyph fallback, so scripts the UI font lacks (CJK, emoji,
         // symbols) resolve to an installed face instead of rendering as tofu.
@@ -413,6 +416,53 @@ fn with_raster<R>(f: impl FnOnce(&mut Raster) -> R) -> R {
         }
     });
     f(raster)
+}
+
+/// Weights a variable face is registered at besides its own: the CSS steps a
+/// theme's `weight_bold` lands on, and 700, which the editor and the settings
+/// headings ask for by name.
+const VARIABLE_WEIGHTS: &[u16] = &[500, 600, 700, 800];
+
+/// Registers every variable face of `family` again at each weight in
+/// [`VARIABLE_WEIGHTS`] its `wght` axis reaches — the same bytes under a second
+/// face record, so it costs no memory.
+///
+/// **Without this, bold in the system font is SF Mono.** A variable font is
+/// registered once, at its default weight, and the shaper matches weight
+/// exactly: asked for `.SF NS` at 700 it finds no such face and falls back to
+/// whichever system face has one — on macOS a monospace one. Every bold run
+/// and heading on the built-in theme rendered that way, in bitmaps and in the
+/// editor alike; a theme with embedded fonts was spared only because
+/// `synth_weight_faces` already stamps those. cosmic-text instances a face at
+/// the *requested* weight through its `wght` axis, so the alias is a real bold,
+/// not a faux one — the stamped copies rely on the same thing.
+///
+/// Used on both font databases: this one, and iced's (`startup::load_ui_fonts`).
+pub fn register_variable_weights(db: &mut fontdb::Database, family: &str) {
+    let in_family =
+        |face: &fontdb::FaceInfo| face.families.iter().any(|(name, _)| name == family);
+    let faces: Vec<fontdb::FaceInfo> = db.faces().filter(|face| in_family(face)).cloned().collect();
+    for face in faces {
+        let reached: Vec<u16> = db
+            .with_face_data(face.id, |data, _| {
+                VARIABLE_WEIGHTS
+                    .iter()
+                    .copied()
+                    .filter(|&weight| crate::theme::wght_axis_reaches(data, weight))
+                    .collect()
+            })
+            .unwrap_or_default();
+        for weight in reached {
+            // The system font directory holds the same file again, so a second
+            // pass over the family would otherwise alias it twice.
+            let taken = db.faces().any(|other| {
+                in_family(other) && other.style == face.style && other.weight.0 == weight
+            });
+            if !taken {
+                db.push_face_info(fontdb::FaceInfo { weight: fontdb::Weight(weight), ..face.clone() });
+            }
+        }
+    }
 }
 
 /// Loads the font database up-front so the first zoom gesture doesn't pay
@@ -1399,6 +1449,20 @@ mod measure_tests {
         }
     }
 
+    /// The built-in theme's bold is the system font's, not SF Mono's. Like the
+    /// test above it reads the machine's own database — the file it is about
+    /// is the one macOS ships — and only there.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn the_system_font_has_a_bold_of_its_own() {
+        // Registered once at 400, a 700 asked of it found no face and fell back
+        // to whichever system face had one. `register_variable_weights` gives
+        // its weight axis a face at each step to be asked through.
+        assert_eq!(
+            family_weights(crate::platform::UI_FONT_NAME),
+            Some((REGULAR, BOLD)),
+        );
+    }
 
     #[test]
     fn the_themes_features_reach_the_shaper() {

@@ -537,7 +537,7 @@ fn sfnt_table(font: &[u8], tag: &[u8; 4]) -> Option<(usize, usize)> {
 
 /// Whether the font has an `fvar` `wght` variation axis whose range covers
 /// `weight`, i.e. it can be instanced to that weight.
-fn wght_axis_reaches(font: &[u8], weight: u16) -> bool {
+pub(crate) fn wght_axis_reaches(font: &[u8], weight: u16) -> bool {
     let target = f32::from(weight);
     let read_fixed = |b: &[u8]| i32::from_be_bytes(b.try_into().unwrap()) as f32 / 65536.0;
     let Some((off, len)) = sfnt_table(font, b"fvar") else {

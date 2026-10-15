@@ -166,11 +166,7 @@ pub(crate) fn run() -> iced::Result {
         App::update,
         daemon_view,
     );
-    // Give iced's font system the same faces the raster path loads, so the live
-    // text path resolves the italic/mono faces (not a generic fallback).
-    for file in crate::platform::UI_FONT_FILES {
-        app = app.font(std::fs::read(file).unwrap_or_default());
-    }
+    load_ui_fonts();
     // The theme's embedded fonts, registered via the builder rather than
     // `iced::font::load`: the builder's fonts are loaded when the compositor is
     // created, whereas a `LoadFont` task in the boot can run *before* the window
@@ -196,6 +192,28 @@ pub(crate) fn run() -> iced::Result {
         .antialiasing(true)
         .title(daemon_title)
         .run()
+}
+
+/// Gives iced's font system the same system UI faces the raster path loads, so
+/// the live text path resolves the italic/mono faces (not a generic fallback)
+/// and a bold that isn't SF Mono (`text_raster::register_variable_weights`).
+///
+/// Written straight into the global font system rather than handed to the
+/// builder like the theme's fonts below, because the weight aliases have to be
+/// added *after* the faces they alias — and a builder font isn't loaded until
+/// the compositor exists, past any point we could add them. Nothing has shaped
+/// text yet, so there is no cache for this to leave stale.
+pub(super) fn load_ui_fonts() {
+    let mut fonts = iced_graphics::text::font_system().write().expect("font system");
+    for file in crate::platform::UI_FONT_FILES {
+        if let Ok(bytes) = std::fs::read(file) {
+            fonts.load_font(bytes.into());
+        }
+    }
+    crate::text_raster::register_variable_weights(
+        fonts.raw().db_mut(),
+        crate::platform::UI_FONT_NAME,
+    );
 }
 
 /// `daemon` renders per window: the main window shows the board, the settings

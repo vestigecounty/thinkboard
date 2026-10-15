@@ -77,16 +77,12 @@ impl Tour {
         let _ = std::fs::remove_dir_all(&out);
         std::fs::create_dir_all(&out).expect("tour output directory");
 
-        // The faces `startup::run` hands the iced builder, which loads them
-        // into this same font system once its compositor exists: the system
-        // UI faces, then whatever the theme embeds.
+        // The faces `startup::run` gives iced: the system UI faces, then
+        // whatever the theme embeds (which it hands the builder, and the
+        // builder loads into this same font system once a compositor exists).
+        startup::load_ui_fonts();
         {
             let mut fonts = iced_graphics::text::font_system().write().expect("font system");
-            for file in platform::UI_FONT_FILES {
-                if let Ok(bytes) = std::fs::read(file) {
-                    fonts.load_font(bytes.into());
-                }
-            }
             for data in theme_store::resolve_base(&app.config).1 {
                 fonts.load_font(data.into());
             }
