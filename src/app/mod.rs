@@ -695,7 +695,7 @@ impl App {
                 (document, path, base_path, file_mtime, false)
             }
             startup::Boot::Scratch => {
-                let document = canvas_file::scratch_document();
+                let document = canvas_file::scratch_document(&theme);
                 let base_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
                 (document, PathBuf::new(), base_path, None, true)
             }

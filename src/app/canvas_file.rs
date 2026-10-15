@@ -17,14 +17,35 @@ use crate::model::{CanvasEdge, CanvasDocument, CanvasNode, NodeKind};
 /// button nodes (carrying a `tb_action` field) create or open a real board.
 const SCRATCH_CANVAS: &str = include_str!("welcome.canvas");
 
-/// Parses the embedded scratch board and finishes it for this machine. It's
-/// compiled in and validated by a unit test, so a parse failure is a build-time
-/// bug, not a runtime condition.
-pub(super) fn scratch_document() -> CanvasDocument {
+/// Parses the embedded scratch board and finishes it for this machine and
+/// `theme`. It's compiled in and validated by a unit test, so a parse failure
+/// is a build-time bug, not a runtime condition.
+pub(super) fn scratch_document(theme: &crate::theme::Theme) -> CanvasDocument {
     let mut document: CanvasDocument =
         serde_json::from_str(SCRATCH_CANVAS).expect("embedded scratch canvas is valid");
     finish_welcome(&mut document, &thinkboard_core::obsidian::vaults());
+    fit_welcome(&mut document, theme);
     document
+}
+
+/// Grows each welcome card tall enough for its text in `theme`.
+///
+/// The file sizes its cards for one font and one wording, and neither holds:
+/// `finish_welcome` writes the summon tip per platform — on macOS two
+/// paragraphs into a card sized for one, cut off mid-sentence on the first
+/// screen anyone sees — and a theme with a larger face overflows the rest.
+/// Height only, and downward: widths and top edges are the layout, and a card
+/// the file already gave room keeps it.
+fn fit_welcome(document: &mut CanvasDocument, theme: &crate::theme::Theme) {
+    use crate::text_raster;
+    for node in document.nodes.iter_mut().filter(|node| node.is_text()) {
+        let Some(text) = node.text.as_deref() else {
+            continue;
+        };
+        let wrap = text_raster::card_text_wrap(node.width);
+        let (_, height) = text_raster::measure_markdown(text, wrap, super::FONT_SIZE, theme);
+        node.height = node.height.max((height + text_raster::NODE_PAD_Y).ceil());
+    }
 }
 
 /// Fills in the parts of the welcome board that depend on where it's running:
@@ -485,9 +506,24 @@ mod tests {
     fn the_embedded_scratch_board_parses() {
         // A parse failure here means the checked-in welcome.canvas is broken —
         // caught at test time rather than panicking on launch.
-        let document = scratch_document();
+        let document = scratch_document(&crate::theme::Theme::default());
         assert!(!document.nodes.is_empty());
         assert!(!document.edges.is_empty());
+    }
+
+    #[test]
+    fn no_welcome_card_cuts_its_text_off() {
+        // The summon tip is written per platform after the file is read, and
+        // on macOS it ran two paragraphs into a card sized for one.
+        let theme = crate::theme::Theme::default();
+        for node in scratch_document(&theme).nodes.iter().filter(|node| node.is_text()) {
+            let text = node.text.as_deref().unwrap_or_default();
+            let wrap = crate::text_raster::card_text_wrap(node.width);
+            let (_, height) =
+                crate::text_raster::measure_markdown(text, wrap, super::super::FONT_SIZE, &theme);
+            let needs = height + crate::text_raster::NODE_PAD_Y;
+            assert!(needs <= node.height, "{} needs {needs} and has {}", node.id, node.height);
+        }
     }
 
     /// The welcome board as it parses, before it is finished for a machine.

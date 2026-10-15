@@ -419,9 +419,10 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 }
 
 /// An app as a first launch builds it — default config, the theme that config
-/// resolves to, nothing written to disk — showing `document`. Resolved in
-/// `App::new`'s order: the theme's fonts before `use_font` reads the database.
-fn first_launch(document: CanvasDocument) -> App {
+/// resolves to, nothing written to disk — showing the board `document` makes
+/// for that theme. Resolved in `App::new`'s order: the theme's fonts before
+/// `use_font` reads the database.
+fn first_launch(document: impl FnOnce(&ColorTheme) -> CanvasDocument) -> App {
     let config = config::Config::default();
     let (mut theme, embedded_fonts) = theme_store::resolve_base(&config);
     if !embedded_fonts.is_empty() {
@@ -429,6 +430,7 @@ fn first_launch(document: CanvasDocument) -> App {
     }
     theme.use_font(&config.font);
     text_raster::warm_up();
+    let document = document(&theme);
     App::build(Init {
         config,
         theme,
@@ -443,7 +445,7 @@ fn first_launch(document: CanvasDocument) -> App {
     })
 }
 
-fn empty_document() -> CanvasDocument {
+fn empty_document(_: &ColorTheme) -> CanvasDocument {
     CanvasDocument { nodes: Vec::new(), edges: Vec::new(), extra: serde_json::Map::new() }
 }
 
@@ -452,7 +454,7 @@ fn empty_document() -> CanvasDocument {
 /// Launch with nothing configured: the welcome board, then the first things a
 /// newcomer tries on it.
 fn first_run() {
-    let mut tour = Tour::new("first_run", first_launch(canvas_file::scratch_document()));
+    let mut tour = Tour::new("first_run", first_launch(canvas_file::scratch_document));
     tour.shot("welcome");
 
     let tip = tour.find("**Double-click**");
@@ -474,7 +476,7 @@ fn first_run() {
 /// A newcomer's first board: empty, then built up by hand — notes, an edit, a
 /// link dragged from a port, a second link, a frame around a pair.
 fn build_a_board() {
-    let mut tour = Tour::new("build_a_board", first_launch(empty_document()));
+    let mut tour = Tour::new("build_a_board", first_launch(empty_document));
     tour.shot("empty-board");
 
     // Where most people try first.
