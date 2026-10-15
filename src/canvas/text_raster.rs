@@ -799,9 +799,12 @@ pub fn snapshot_markdown(
         let mut buffer = Buffer::new(font_system, Metrics::new(font_px, line_px));
         buffer.set_size(font_system, Some(wrap_px), None);
 
+        // Tagged with their span, so a laid-out line can be traced back to a
+        // quote and given its bar.
         let rich: Vec<(&str, Attrs)> = spans
             .iter()
-            .map(|span| (span.text.as_str(), span_attrs(span, font_px, &theme)))
+            .enumerate()
+            .map(|(i, span)| (span.text.as_str(), span_attrs(span, font_px, &theme).metadata(i)))
             .collect();
         let default = base_attrs(&theme);
         let base = if centered { Align::Center } else { Align::Left };
@@ -825,7 +828,7 @@ pub fn snapshot_markdown(
         let offset_x = (pixel_width as f32 - wrap_px) / 2.0;
         let offset_y = ((pixel_height as f32 - text_height) / 2.0).max(0.0);
 
-        let pixels = blit_buffer(
+        let mut pixels = blit_buffer(
             raster,
             &buffer,
             pixel_width,
@@ -834,6 +837,19 @@ pub fn snapshot_markdown(
             offset_y as i32,
             to_cosmic(theme.text),
         );
+        let bar = quote_bar_color(&theme);
+        for line in buffer.layout_runs() {
+            if line.glyphs.iter().any(|g| spans.get(g.metadata).is_some_and(|s| s.quote)) {
+                let x = offset_x - QUOTE_BAR_INSET * k;
+                let y = offset_y + line.line_top;
+                fill_premultiplied(
+                    &mut pixels,
+                    pixel_width,
+                    (x, y, QUOTE_BAR_WIDTH * k, line.line_height),
+                    bar,
+                );
+            }
+        }
 
         Some(Snapshot {
             handle: image::Handle::from_rgba(pixel_width, pixel_height, pixels),
@@ -851,6 +867,17 @@ fn to_cosmic(color: Color) -> CosmicColor {
 
 fn from_cosmic(color: CosmicColor) -> Color {
     Color::from_rgb8(color.r(), color.g(), color.b())
+}
+
+/// A quote's bar: how far left of the text column it stands and how wide it
+/// is, in logical px. In the card's margin rather than an indent, so it runs
+/// unbroken down a quote's wrapped lines without the text having to make room.
+pub const QUOTE_BAR_INSET: f32 = 8.0;
+pub const QUOTE_BAR_WIDTH: f32 = 3.0;
+
+/// The quote bar's colour: the accent, softened, as Obsidian draws its own.
+pub fn quote_bar_color(theme: &Theme) -> Color {
+    Color { a: 0.6, ..theme.accent }
 }
 
 /// A positioned, styled run of Markdown text for the live (non-rasterized)
@@ -875,6 +902,8 @@ pub struct TextRun {
     pub mono: bool,
     /// The link destination when this run is part of a link, else `None`.
     pub link: Option<String>,
+    /// Inside a blockquote: its line gets a bar.
+    pub quote: bool,
 }
 
 #[derive(PartialEq, Eq, Hash)]
@@ -1058,6 +1087,7 @@ fn shape_markdown_logical(
                         italic: span.is_some_and(|s| s.italic),
                         mono: span.is_some_and(|s| s.code),
                         link: span.and_then(|s| s.url.clone()),
+                        quote: span.is_some_and(|s| s.quote),
                     });
                 }
                 i = j;
@@ -1190,6 +1220,9 @@ fn span_attrs(span: &markdown::Span, body_px: f32, theme: &Theme) -> Attrs<'stat
         // Highlighted tokens use the fixed code palette; plain code keeps the
         // theme's inline-code color.
         Some(syntax_color(span.syntax).unwrap_or(theme.code))
+    } else if span.muted {
+        // A quote, a finished task: set back from the body.
+        Some(theme.text_muted)
     } else if span.bold {
         Some(theme.bold)
     } else if span.italic {
@@ -1206,6 +1239,24 @@ fn span_attrs(span: &markdown::Span, body_px: f32, theme: &Theme) -> Attrs<'stat
 /// Composites a shaped buffer onto a fresh transparent RGBA bitmap at the
 /// given offset, with straight-alpha src-over. `default` colors glyphs whose
 /// span sets no explicit color.
+/// Fills `(x, y, width, height)` of a premultiplied RGBA buffer with `color`,
+/// over what's there — the bitmap's own convention (see [`blit_buffer`]).
+fn fill_premultiplied(pixels: &mut [u8], width: u32, (x, y, w, h): (f32, f32, f32, f32), color: Color) {
+    let height = pixels.len() as u32 / 4 / width;
+    let a = color.a.clamp(0.0, 1.0);
+    let src = [color.r * a, color.g * a, color.b * a, a].map(|c| c * 255.0);
+    let (x0, y0) = (x.round().max(0.0) as u32, y.round().max(0.0) as u32);
+    let (x1, y1) = (((x + w).round() as u32).min(width), ((y + h).round() as u32).min(height));
+    for py in y0..y1 {
+        for px in x0..x1 {
+            let i = ((py * width + px) * 4) as usize;
+            for c in 0..4 {
+                pixels[i + c] = (src[c] + pixels[i + c] as f32 * (1.0 - a)).round().min(255.0) as u8;
+            }
+        }
+    }
+}
+
 fn blit_buffer(
     raster: &mut Raster,
     buffer: &Buffer,
@@ -1578,6 +1629,7 @@ mod measure_tests {
             italic: false,
             mono: false,
             link: None,
+            quote: false,
         };
         assert!(run_advance("Think", &run(true), &theme) > run_advance("Think", &run(false), &theme) + 1.0);
     }
@@ -1609,6 +1661,8 @@ mod measure_tests {
             link: false,
             url: None,
             syntax: Syntax::Plain,
+            quote: false,
+            muted: false,
         };
         let (prose, code) = (span(false), span(true));
         assert_eq!(span_attrs(&prose, 17.0, &theme).font_features.features, SINGLE_STOREY_A);
@@ -1616,4 +1670,5 @@ mod measure_tests {
     }
 
 }
+
 

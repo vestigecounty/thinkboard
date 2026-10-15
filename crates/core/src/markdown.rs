@@ -7,7 +7,7 @@
 //! or block backgrounds yet — those come later.
 
 use crate::syntax::{self, Syntax};
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Parser, Tag, TagEnd};
+use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
 
 /// A run of text sharing one style.
 #[derive(Debug, Clone, PartialEq)]
@@ -26,10 +26,16 @@ pub struct Span {
     pub url: Option<String>,
     /// Syntax class within a highlighted code block (`Plain` elsewhere).
     pub syntax: Syntax,
+    /// Inside a blockquote — drawn muted, beside a bar.
+    pub quote: bool,
+    /// Set back from the body text: a finished task, a quote.
+    pub muted: bool,
 }
 
 /// Parses `source` into styled spans. Block breaks are encoded as spans of
-/// `"\n\n"`; list items get a `"• "` prefix and a trailing newline.
+/// `"\n\n"`; list items get a `"• "` prefix and a trailing newline — a task
+/// item a `"□ "` or `"☑ "` in its place, as Obsidian draws a checkbox rather
+/// than a bullet. A finished task's text, and a quote's, are `muted`.
 pub fn parse(source: &str) -> Vec<Span> {
     let mut out: Vec<Span> = Vec::new();
     let mut bold = 0u32;
@@ -40,6 +46,9 @@ pub fn parse(source: &str) -> Vec<Span> {
     let mut link_url: Option<String> = None;
     let mut heading = 0u8;
     let mut list_depth = 0usize;
+    let mut quote_depth = 0usize;
+    // Inside a ticked task item, whose text is set back like a quote's.
+    let mut task_done = false;
     // Fenced code is buffered across text events, then tokenized as a whole so
     // multi-line strings and block comments highlight correctly.
     let mut code_block: Option<CodeLang> = None;
@@ -54,14 +63,26 @@ pub fn parse(source: &str) -> Vec<Span> {
             link: url.is_some(),
             url,
             syntax: Syntax::Plain,
+            quote: false,
+            muted: false,
         };
-    let mut push = |span: Span| {
+    // Quote and done-task styling is a property of where a span falls, so it
+    // is stamped on here rather than threaded through every constructor. A
+    // macro, not a closure: a closure would hold `out` for the whole loop, and
+    // a task marker has to reach back into it.
+    fn add(out: &mut Vec<Span>, span: Span, quote: bool, muted: bool) {
         if !span.text.is_empty() {
-            out.push(span);
+            out.push(Span { quote, muted: span.muted || muted, ..span });
         }
-    };
+    }
 
-    for event in Parser::new(source) {
+    for event in Parser::new_ext(source, Options::ENABLE_TASKLISTS) {
+        let (quoted, set_back) = (quote_depth > 0, quote_depth > 0 || task_done);
+        macro_rules! push {
+            ($span:expr) => {
+                add(&mut out, $span, quoted, set_back)
+            };
+        }
         match event {
             Event::Start(tag) => match tag {
                 Tag::Heading { level, .. } => heading = heading_level(level),
@@ -73,16 +94,17 @@ pub fn parse(source: &str) -> Vec<Span> {
                 }
                 Tag::CodeBlock(kind) => code_block = Some(CodeLang::new(&kind)),
                 Tag::List(_) => list_depth += 1,
+                Tag::BlockQuote(_) => quote_depth += 1,
                 Tag::Item => {
                     let indent = "    ".repeat(list_depth.saturating_sub(1));
-                    push(plain(&format!("{indent}\u{2022} "), false, false, false, 0, None));
+                    push!(plain(&format!("{indent}\u{2022} "), false, false, false, 0, None));
                 }
                 _ => {}
             },
             Event::End(tag) => match tag {
                 TagEnd::Heading(_) => {
                     heading = 0;
-                    push(plain("\n\n", false, false, false, 0, None));
+                    push!(plain("\n\n", false, false, false, 0, None));
                 }
                 TagEnd::Strong => bold = bold.saturating_sub(1),
                 TagEnd::Emphasis => italic = italic.saturating_sub(1),
@@ -95,7 +117,7 @@ pub fn parse(source: &str) -> Vec<Span> {
                 TagEnd::CodeBlock => {
                     if let Some(block) = code_block.take() {
                         for (text, syntax) in block.highlight() {
-                            push(Span {
+                            push!(Span {
                                 text,
                                 bold: false,
                                 italic: false,
@@ -104,32 +126,51 @@ pub fn parse(source: &str) -> Vec<Span> {
                                 link: false,
                                 url: None,
                                 syntax,
+                                quote: false,
+                                muted: false,
                             });
                         }
                     }
-                    push(plain("\n\n", false, false, false, 0, None));
+                    push!(plain("\n\n", false, false, false, 0, None));
                 }
-                TagEnd::Item => push(plain("\n", false, false, false, 0, None)),
+                TagEnd::Item => {
+                    task_done = false;
+                    push!(plain("\n", false, false, false, 0, None));
+                }
+                TagEnd::BlockQuote(_) => quote_depth = quote_depth.saturating_sub(1),
                 TagEnd::List(_) => {
                     list_depth = list_depth.saturating_sub(1);
-                    push(plain("\n", false, false, false, 0, None));
+                    push!(plain("\n", false, false, false, 0, None));
                 }
-                TagEnd::Paragraph => push(plain("\n\n", false, false, false, 0, None)),
+                TagEnd::Paragraph => push!(plain("\n\n", false, false, false, 0, None)),
                 _ => {}
             },
             Event::Text(text) => match &mut code_block {
                 Some(block) => block.source.push_str(&text),
-                None => push(plain(&text, false, bold > 0, italic > 0, heading, link_url.clone())),
+                None => push!(plain(&text, false, bold > 0, italic > 0, heading, link_url.clone())),
             },
-            Event::Code(text) => push(plain(&text, true, bold > 0, italic > 0, heading, None)),
+            Event::Code(text) => push!(plain(&text, true, bold > 0, italic > 0, heading, None)),
             // Obsidian's default renders a single newline as a line break
             // (not a re-flowed space), so preserve it.
             Event::SoftBreak => {
-                push(plain("\n", false, bold > 0, italic > 0, heading, link_url.clone()))
+                push!(plain("\n", false, bold > 0, italic > 0, heading, link_url.clone()))
             }
-            Event::HardBreak => push(plain("\n", false, false, false, heading, None)),
+            Event::HardBreak => push!(plain("\n", false, false, false, heading, None)),
             Event::Rule => {
-                push(plain("\u{2014}\u{2014}\u{2014}\n\n", false, false, false, 0, None))
+                push!(plain("\u{2014}\u{2014}\u{2014}\n\n", false, false, false, 0, None))
+            }
+            // Arrives just after its item opened, so the bullet that item
+            // pushed is the last span: a box goes in its place.
+            Event::TaskListMarker(checked) => {
+                if let Some(bullet) = out.last_mut().filter(|s| s.text.ends_with("\u{2022} ")) {
+                    let indent = bullet.text.trim_end_matches("\u{2022} ").to_owned();
+                    // □ and ☑ rather than the ☐ that pairs with ☑ by name:
+                    // the system UI face has □ and ☑ at one size, and no ☐ —
+                    // which fell back to Menlo, a size smaller and lighter.
+                    bullet.text = format!("{indent}{} ", if checked { '\u{2611}' } else { '\u{25A1}' });
+                    bullet.muted = checked;
+                }
+                task_done = checked;
             }
             _ => {}
         }
@@ -330,6 +371,30 @@ mod tests {
         let spans = parse("- one\n- two");
         assert!(text_of(&spans).contains("\u{2022} one"));
         assert!(text_of(&spans).contains("\u{2022} two"));
+    }
+
+    #[test]
+    fn task_items_get_a_box_in_place_of_the_bullet() {
+        let spans = parse("- [ ] to do\n- [x] done\n- plain");
+        let text = text_of(&spans);
+        assert!(text.contains("\u{25A1} to do"), "{text:?}");
+        assert!(text.contains("\u{2611} done"), "{text:?}");
+        assert!(text.contains("\u{2022} plain"), "an ordinary item keeps its bullet");
+        assert!(!text.contains("[ ]") && !text.contains("[x]"));
+
+        let done = spans.iter().find(|s| s.text == "done").unwrap();
+        let open = spans.iter().find(|s| s.text == "to do").unwrap();
+        assert!(done.muted && !open.muted, "a finished task is set back, an open one isn't");
+    }
+
+    #[test]
+    fn a_quote_is_marked_and_set_back() {
+        let spans = parse("before\n\n> said *quietly*\n\nafter");
+        let said = spans.iter().find(|s| s.text.starts_with("said")).unwrap();
+        let quietly = spans.iter().find(|s| s.text == "quietly").unwrap();
+        let after = spans.iter().find(|s| s.text == "after").unwrap();
+        assert!(said.quote && said.muted && quietly.quote && quietly.italic);
+        assert!(!after.quote && !after.muted);
     }
 
     #[test]

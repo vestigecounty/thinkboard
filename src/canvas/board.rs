@@ -2436,6 +2436,7 @@ impl Board<'_> {
                     self.draw_search_hits(
                         frame, scrolled_rect, text, FONT_SIZE, wrap, alpha, highlight,
                     );
+                    self.draw_quote_bars(frame, scrolled_rect, rect, text, FONT_SIZE, wrap, alpha);
                     frame.with_clip(rect, |clipped| {
                         // Top-align (height 0 zeroes the layout's vertical centering)
                         // and start half the padding below the top; the same padding
@@ -2478,6 +2479,7 @@ impl Board<'_> {
                         // Before the clip: a clipped frame's fills end up
                         // beneath the card's own. See `draw_search_hits`.
                         self.draw_search_hits(frame, rect, text, FONT_SIZE, wrap, alpha, highlight);
+                        self.draw_quote_bars(frame, rect, rect, text, FONT_SIZE, wrap, alpha);
                         // Clip to the card so text that overflows a manually-undersized
                         // node doesn't spill past its border (the raster path is already
                         // node-sized, so it clips on its own).
@@ -2918,6 +2920,53 @@ impl Board<'_> {
                     for hit in self.match_hits(run, query) {
                         self.fill_hit(frame, rect, run, &hit, current == Some(ordinal), alpha);
                         ordinal += 1;
+                    }
+                }
+            },
+        );
+    }
+
+    /// Draws the bar beside each line of a quote, for the live path — the
+    /// bitmap path paints its own (`text_raster::snapshot_markdown`).
+    ///
+    /// Before the clip, like the search hits and for the same reason, so it's
+    /// clipped to `card` by arithmetic instead: a scrolled card lays its text
+    /// out above and below itself.
+    #[allow(clippy::too_many_arguments)] // mirrors `draw_markdown_live`'s
+    fn draw_quote_bars(
+        &self,
+        frame: &mut Frame,
+        rect: Rectangle,
+        card: Rectangle,
+        text: &str,
+        font_size: f32,
+        wrap_width: f32,
+        alpha: f32,
+    ) {
+        use crate::text_raster::{LINE_HEIGHT, MD_PADDING, QUOTE_BAR_INSET, QUOTE_BAR_WIDTH};
+        if !text.contains('>') {
+            return; // no quote, no layout to fetch
+        }
+        let zoom = self.camera.zoom;
+        let color = crate::text_raster::quote_bar_color(self.theme);
+        crate::text_raster::with_markdown_layout(
+            text,
+            rect.width / zoom,
+            rect.height / zoom,
+            wrap_width,
+            font_size,
+            *self.theme,
+            self.config.center_node_text,
+            |runs| {
+                // The text column's left edge, as the layout placed it.
+                let column = (rect.width / zoom - (wrap_width - 2.0 * MD_PADDING).max(1.0)) / 2.0;
+                for run in runs.iter().filter(|run| run.quote) {
+                    let bar = Rectangle::new(
+                        Point::new(rect.x + (column - QUOTE_BAR_INSET) * zoom, rect.y + run.y * zoom),
+                        Size::new(QUOTE_BAR_WIDTH * zoom, run.size * LINE_HEIGHT * zoom),
+                    );
+                    if let Some(bar) = bar.intersection(&card) {
+                        frame.fill_rectangle(bar.position(), bar.size(), Color { a: color.a * alpha, ..color });
                     }
                 }
             },
