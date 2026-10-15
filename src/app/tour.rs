@@ -306,22 +306,6 @@ impl Tour {
         }
     }
 
-    /// Lets `time` pass as a window would: tasks run, timers fire, and every
-    /// frame is drawn — the ghosts' countdown included, which is what a wait
-    /// is usually for.
-    fn wait(&mut self, time: Duration) {
-        let until = Instant::now() + time;
-        while Instant::now() < until {
-            self.pump();
-            self.timers();
-            if self.app.animating() {
-                self.send(Message::Tick(Instant::now()));
-                let _ = self.render();
-            }
-            std::thread::sleep(Duration::from_millis(16));
-        }
-    }
-
     /// The redraw the runtime sends before each frame.
     fn redraw(&mut self) {
         self.feed(vec![Event::Window(window::Event::RedrawRequested(Instant::now()))]);
@@ -841,8 +825,6 @@ struct Script {
     /// Streamed answers, each under a cue: a request gets the one whose cue
     /// comes latest in its prompt, which ends with the note asked about.
     answers: &'static [(&'static str, &'static str)],
-    /// The same for suggestions — one per line, as `ai::suggest` asks.
-    suggestions: &'static [(&'static str, &'static str)],
     /// Refuse every request as an unrecognised key.
     reject_key: bool,
 }
@@ -852,7 +834,7 @@ struct Script {
 const FIRST_WORD: Duration = Duration::from_millis(1200);
 /// Between words, about a fast local model's pace.
 const NEXT_WORD: Duration = Duration::from_millis(35);
-/// How long suggestions and the model list take to come back.
+/// How long the model list takes to come back.
 const LOOKUP: Duration = Duration::from_millis(700);
 
 impl Provider {
@@ -899,11 +881,6 @@ fn serve(mut stream: TcpStream, script: &Script) {
         return respond(&mut stream, "404 Not Found", &serde_json::json!({ "error": { "message": error, "code": "model_not_found" } }));
     }
     let prompt = request.pointer("/messages/1/content").and_then(|c| c.as_str()).unwrap_or_default();
-    if request["stream"] != true {
-        std::thread::sleep(LOOKUP);
-        let content = cued(script.suggestions, prompt);
-        return respond(&mut stream, "200 OK", &serde_json::json!({ "choices": [{ "message": { "content": content } }] }));
-    }
     // Server-sent events, a word to an event; no length, so the body ends
     // where the connection does.
     let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
@@ -1657,12 +1634,11 @@ static TRIP: Script = Script {
         ("eat", "**Cervejaria Ramiro** — seafood, worth the queue; go early on a weekday.\n---\n**Taberna da Rua das Flores** — small plates and no bookings, so arrive by seven.\n---\n**Time Out Market** — a quick lunch, half the city's kitchens under one roof."),
         ("Sintra", "Take the train from **Rossio**: about 40 minutes, every 20 or so. Go early — by eleven the queue for *Pena Palace* is long, and the 434 bus up the hill fills fast.\n\nA full day covers Pena, the Moorish Castle and *Quinta da Regaleira*. Book Pena's tickets online the day before."),
     ],
-    suggestions: &[("Lisbon", "Tram 28 before the crowds\nFado night in Alfama\nLX Factory on a Sunday")],
     reject_key: false,
 };
 
 /// A provider that refuses the key it's given.
-static REJECTING: Script = Script { models: MODELS, answers: &[], suggestions: &[], reject_key: true };
+static REJECTING: Script = Script { models: MODELS, answers: &[], reject_key: true };
 
 /// A trip being planned: the trip, and two questions about it.
 fn trip_board(_: &ColorTheme) -> CanvasDocument {
@@ -1702,16 +1678,6 @@ fn frame_trip(tour: &mut Tour) {
 fn configure(tour: &mut Tour, url: &str) {
     tour.app.config.ai_url = url.to_owned();
     tour.app.config.ai_model = "qwen/qwen3-30b-a3b".to_owned();
-}
-
-/// A note dragged out of `parent`'s right-hand port, written, and finished.
-fn branch(tour: &mut Tour, parent: usize, offset: (f32, f32), text: &str) {
-    let node = &tour.app.nodes[parent];
-    let port = tour.app.camera.to_screen(Point::new(node.x + node.width, node.y + node.height / 2.0));
-    tour.move_to(Point::new(port.x - 10.0, port.y));
-    tour.drag(port, Point::new(port.x + offset.0, port.y + offset.1));
-    tour.type_text(text);
-    tour.named(key::Named::Escape);
 }
 
 /// Asks about the note `index` from its menu.
@@ -1799,46 +1765,8 @@ fn ai_answers() {
     tour.shot("deselected");
 }
 
-/// Suggestions: switched on from the board's menu, asked for by branching a
-/// note, then watched — fading while ignored, back on hover, one taken. And a
-/// second batch left alone until it goes.
-fn ai_suggestions() {
-    let provider = Provider::start(&TRIP);
-    let mut tour = Tour::new("ai_suggestions", first_launch(trip_board));
-    configure(&mut tour, &provider.url);
-    frame_trip(&mut tour);
-    let empty = Point::new(1100.0, 780.0);
-    tour.right_click(empty);
-    tour.click_label("AI suggestions");
-    tour.shot("switched-on");
-    tour.named(key::Named::Escape);
-
-    let trip = tour.find("# Trip to Lisbon");
-    branch(&mut tour, trip, (260.0, 260.0), "Pastéis de nata at Manteigaria");
-    tour.shot("asking-for-ideas");
-    tour.settle_until(|app| app.ghosts.cards.iter().any(|g| !g.placeholder));
-    tour.shot("ideas");
-    tour.wait(Duration::from_secs(6));
-    tour.shot("ideas-fading");
-    let second = tour.app.camera.to_screen(tour.app.ghosts.cards[1].rect.center());
-    tour.move_to(second);
-    tour.shot("hovering-an-idea");
-    tour.click(second);
-    tour.shot("one-taken");
-    tour.move_to(empty);
-    tour.wait(Duration::from_secs(11));
-    tour.shot("the-rest-stay");
-
-    branch(&mut tour, trip, (260.0, -330.0), "Book the *Alfama* flat");
-    tour.settle_until(|app| app.ghosts.cards.iter().any(|g| !g.placeholder));
-    tour.shot("second-batch");
-    tour.wait(Duration::from_secs(11));
-    tour.shot("left-alone");
-}
-
 /// When asking fails: nothing listening at the URL (a local runtime not
-/// started yet), a key the provider refuses, and suggestions asked of an
-/// endpoint that isn't there.
+/// started yet), and a key the provider refuses.
 fn ai_errors() {
     let mut tour = Tour::new("ai_errors", first_launch(trip_board));
     configure(&mut tour, &Provider::absent());
@@ -1858,14 +1786,6 @@ fn ai_errors() {
     tour.settle_until(|app| app.model_picker.as_ref().is_some_and(|p| !p.loading));
     tour.shot("model-list-key-rejected");
     tour.named(key::Named::Escape);
-
-    configure(&mut tour, &Provider::absent());
-    tour.app.config.ai_completions = true;
-    let trip = tour.find("# Trip to Lisbon");
-    branch(&mut tour, trip, (260.0, 330.0), "Pastéis de nata");
-    tour.shot("ideas-asked");
-    tour.settle_until(|app| app.ghosts.cards.is_empty());
-    tour.shot("ideas-failed");
 }
 
 const SCENES: &[(&str, fn())] = &[
@@ -1887,7 +1807,6 @@ const SCENES: &[(&str, fn())] = &[
     ("arranging", arranging),
     ("ai_setup", ai_setup),
     ("ai_answers", ai_answers),
-    ("ai_suggestions", ai_suggestions),
     ("ai_errors", ai_errors),
 ];
 

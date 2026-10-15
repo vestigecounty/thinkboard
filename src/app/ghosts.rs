@@ -5,6 +5,12 @@
 //! drag, or ignore. Ignored ones fade out and auto-dismiss, so a suggestion
 //! that missed never has to be dealt with. Engaging any of them (accepting,
 //! moving, dismissing one) pins the batch and cancels the countdown.
+//!
+//! **Shelved.** It was an experiment that never earned its place: nothing in
+//! the UI offers it any more — no menu item, setting or palette command — and
+//! [`OFFERED`] keeps an old config's `ai_completions: true` from switching it
+//! on behind the user's back. The feature itself is kept whole, drawing and
+//! all, so bringing it back is the switch and a way to turn it on.
 
 use std::time::{Duration, Instant};
 
@@ -15,6 +21,9 @@ use super::{App, Message};
 use crate::ai;
 use crate::canvas::board;
 use crate::model::{self, CanvasEdge, CanvasNode};
+
+/// Whether suggestions are offered at all — see the module docs.
+const OFFERED: bool = false;
 
 /// How long ignored ghost suggestions linger before auto-dismissing.
 const TTL: Duration = Duration::from_secs(10);
@@ -154,9 +163,10 @@ impl App {
     }
 
     /// Whether a note just finished being created should get suggestions: the
-    /// feature is on, an endpoint is configured, and the note has a parent.
+    /// feature is offered and on, an endpoint is configured, and the note has a
+    /// parent.
     pub(super) fn completion_anchor(&self, index: usize) -> Option<String> {
-        if !self.config.ai_completions || !self.config.ai_enabled() {
+        if !OFFERED || !self.config.ai_completions || !self.config.ai_enabled() {
             return None;
         }
         if self.fresh_node != Some(index) {

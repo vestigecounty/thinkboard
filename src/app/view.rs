@@ -458,13 +458,6 @@ impl App {
                 item(Some(self.config.auto_layout), "Auto-layout", Message::ToggleAutoLayout),
                 sep(),
                 item(Some(self.config.snap_to_grid), "Snap to grid", Message::ToggleSnap),
-
-                sep(),
-                item(
-                    Some(self.config.ai_completions),
-                    "AI suggestions",
-                    Message::ToggleAiCompletions,
-                ),
                 sep(),
                 item(None, "Paste", Message::Paste { world }),
             ]

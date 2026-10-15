@@ -96,7 +96,7 @@ rasterizer) stays desktop-side.
 | `view` | everything drawn — board scene, menus, find bar, settings modal |
 | `history` | document undo/redo snapshots and the deletions that record them |
 | `raster` | text bitmaps and semantic-zoom clusters (both computed off-thread) |
-| `ai` / `ghosts` | streamed answers; Copilot-style suggestion cards |
+| `ai` / `ghosts` | streamed answers; Copilot-style suggestion cards (shelved — nothing offers them; `ghosts::OFFERED`) |
 | `canvas_file` | opening, autosaving, reloading the `.canvas` file; vault roots |
 | `picker` | the panel shell shared by the palette, vault browser and the pickers |
 | `theme_picker` / `font_picker` / `model_picker` | what fills that shell besides the palette |

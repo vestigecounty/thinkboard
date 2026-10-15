@@ -72,7 +72,6 @@ pub(crate) enum Field {
     MaxAiNodes,
     AiTriggerColor,
     AiNodeColor,
-    AiCompletions,
     AiThinking,
 }
 
@@ -244,7 +243,7 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         if provider {
             "Fills the endpoint URL for a known provider. Pick Custom to enter your own."
         } else {
-            "Off: Ask AI and suggestions stay hidden. Pick a provider to turn them on — a local one like LM Studio needs no key."
+            "Off: Ask AI stays hidden. Pick a provider to turn them on — a local one like LM Studio needs no key."
         },
     ));
     if provider {
@@ -400,11 +399,6 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
             "Response color",
             choices(Field::AiNodeColor, color_options(), c.ai_node_color.clone()),
             "Obsidian color given to AI-generated response nodes (0 = none).",
-        ));
-        items.push(setting(
-            "AI completions",
-            toggle(Field::AiCompletions, c.ai_completions),
-            "After adding a connected node, offer a few \"ghost\" sibling suggestions.",
         ));
         items.push(setting(
             "AI thinking",
@@ -752,7 +746,6 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
                 .to_owned();
         }
         (Field::AutoLayout, Value::Bool(b)) => config.auto_layout = b,
-        (Field::AiCompletions, Value::Bool(b)) => config.ai_completions = b,
         (Field::AiThinking, Value::Bool(b)) => config.ai_thinking = b,
 
         (Field::MinZoom, Value::Num(v)) => config.min_zoom = v,
@@ -975,7 +968,6 @@ impl App {
             Field::TrayIconMonochrome => c.tray_icon_monochrome,
             Field::RasterizeText => c.rasterize_text,
             Field::NodeScrollbars => c.node_scrollbars,
-            Field::AiCompletions => c.ai_completions,
             Field::AiThinking => c.ai_thinking,
             _ => false,
         }

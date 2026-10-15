@@ -12,6 +12,7 @@
 //! - [`history`] — document undo/redo and the deletions that record it
 //! - [`raster`] — text bitmaps and semantic-zoom clusters
 //! - [`ai`] / [`ghosts`] — streamed answers and Copilot-style suggestions
+//!   (shelved: see [`ghosts`])
 //! - [`canvas_file`] — opening, autosaving and reloading the `.canvas` file
 //! - [`vault`] — the Obsidian vault: finding its boards and switching between
 //!   them, over the [`picker`] shell the command palette also uses
@@ -267,8 +268,6 @@ pub(crate) enum Message {
     ToggleAutoLayout,
     /// Toggles snap-to-grid (persisted to config).
     ToggleSnap,
-    /// Toggles the AI completions ("ghost" suggestions) setting (persisted).
-    ToggleAiCompletions,
     /// Suggestion texts arrived for the node `anchor`; show them as ghosts
     /// branching off `parent`. `generation` is discarded if it's no longer current
     /// (the request was dismissed or superseded).
@@ -1070,13 +1069,6 @@ impl App {
                 self.config.snap_to_grid = !self.config.snap_to_grid;
                 self.persist_config();
                 self.cache.clear();
-            }
-            Message::ToggleAiCompletions => {
-                self.config.ai_completions = !self.config.ai_completions;
-                self.persist_config();
-                if !self.config.ai_completions {
-                    self.dismiss_ghosts();
-                }
             }
 
             // --- AI ---

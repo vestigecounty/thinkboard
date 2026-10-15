@@ -206,7 +206,9 @@ pub struct Config {
     /// leaves them uncolored.
     pub ai_node_color: String,
     /// Copilot-style suggestions: after adding a connected node, the AI offers
-    /// a few "ghost" sibling nodes you can accept. Toggled from the canvas menu.
+    /// a few "ghost" sibling nodes you can accept. Shelved, so nothing sets it
+    /// and nothing acts on it (see `app::ghosts`); kept so a config that has it
+    /// still round-trips, and so the feature can come back whole.
     pub ai_completions: bool,
     /// Whether to let a reasoning model "think" before answering. Off by
     /// default — for short node generation the reasoning tokens are wasteful.

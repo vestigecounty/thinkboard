@@ -138,7 +138,6 @@ static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
         cmd(ToggleSetting(Field::NodeScrollbars), "Toggle node scrollbars", "setting scroll resize", ""),
         cmd(ToggleSetting(Field::RasterizeText), "Toggle rasterize text", "setting", ""),
         cmd(ToggleSetting(Field::OverlayTransparent), "Toggle transparent overlay", "setting", ""),
-        cmd(ToggleSetting(Field::AiCompletions), "Toggle AI completions", "setting", ""),
         cmd(ToggleSetting(Field::AiThinking), "Toggle AI thinking", "setting reasoning", ""),
         cmd(
             ToggleSetting(Field::DismissOnBackgroundClick),
