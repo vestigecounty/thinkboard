@@ -264,7 +264,7 @@ impl App {
         if let Some(browser) = &self.vault_browser {
             layers = layers.push(self.vault_browser_view(browser));
         }
-        if let Some(picker) = &self.model_picker {
+        if let Some(picker) = self.model_picker.as_ref().filter(|picker| !picker.over_settings) {
             layers = layers.push(self.model_picker_view(picker));
         }
         if let Some(picker) = &self.font_picker {
@@ -275,6 +275,10 @@ impl App {
         }
         if self.settings_overlay {
             layers = layers.push(self.settings_overlay_view());
+            // Chosen from the form, the model picker belongs above it.
+            if let Some(picker) = self.model_picker.as_ref().filter(|picker| picker.over_settings) {
+                layers = layers.push(self.model_picker_view(picker));
+            }
         }
 
         layers.into()

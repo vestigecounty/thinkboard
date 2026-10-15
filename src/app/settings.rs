@@ -89,6 +89,8 @@ pub(crate) enum Msg {
     Paste(Field),
     /// Apply a provider preset by name, filling the endpoint URL + model.
     PickPreset(String),
+    /// Choose the model from the endpoint's own list (the model row's button).
+    ChooseModel,
     /// Expand/collapse the "Advanced" section (a UI-only toggle, not a config
     /// edit).
     ToggleAdvanced,
@@ -254,8 +256,8 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         ));
         items.push(setting(
             "Model",
-            line(Field::AiModel, app.draft(Field::AiModel), ""),
-            "Model name sent to the endpoint. Cmd/Ctrl+Shift+P → \"Change AI model\" lists what the endpoint serves, so you needn't type one exactly.",
+            model_line(app.draft(Field::AiModel)),
+            "The model the endpoint answers with. Choose lists the ones it serves, so you needn't type a name exactly.",
         ));
         items.push(setting(
             "API key",
@@ -578,6 +580,38 @@ fn key_line<'a>(field: Field, value: &'a str) -> Element<'a, Message> {
     .into()
 }
 
+/// The model field, with a button that lists what the endpoint serves.
+fn model_line(value: &str) -> Element<'_, Message> {
+    row![
+        text_input("", value)
+            .on_input(|s| Message::Settings(Msg::Edit(Field::AiModel, s)))
+            .on_submit(Message::Settings(Msg::Commit))
+            .size(EDITOR_SIZE)
+            .width(INPUT_WIDTH),
+        button(text("Choose…").size(EDITOR_SIZE))
+            .padding([5, 12])
+            .on_press(Message::Settings(Msg::ChooseModel)),
+    ]
+    .spacing(8)
+    .align_y(Alignment::Center)
+    .into()
+}
+
+/// Whether the configured endpoint can list its models yet: a key is stored
+/// for it, or it's on this machine, where a runtime asks for none. A hosted
+/// provider picked before its key is pasted would only answer the list with
+/// a refusal.
+fn ready_to_list(config: &crate::config::Config) -> bool {
+    !config.ai_key().is_empty() || is_local(&config.ai_url)
+}
+
+/// Whether `url` points at this machine.
+fn is_local(url: &str) -> bool {
+    let rest = url.trim().split_once("://").map_or(url.trim(), |(_, rest)| rest);
+    let host = rest.split(['/', ':']).next().unwrap_or_default();
+    matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0") || rest.starts_with("[::1]")
+}
+
 /// The "no endpoint" provider — AI disabled. Represented by an empty `ai_url`.
 pub(super) const PROVIDER_OFF: &str = "Off";
 
@@ -849,7 +883,12 @@ impl App {
                     self.config.sanitize();
                     self.settings_drafts.insert(field, text);
                     self.persist_config();
-                    return self.after_setting_change(field);
+                    let changed = self.after_setting_change(field);
+                    // A hosted provider's key is what its model list waited on.
+                    if field == Field::AiApiKey && self.config.ai_enabled() && ready_to_list(&self.config) {
+                        return Task::batch([changed, self.open_model_picker_over_settings()]);
+                    }
+                    return changed;
                 }
                 Task::none()
             }
@@ -874,8 +913,16 @@ impl App {
                     .insert(Field::AiUrl, self.config.ai_url.clone());
                 self.settings_drafts
                     .insert(Field::AiApiKey, self.config.ai_key().to_owned());
+                // The model next, while the provider is fresh in mind — a new
+                // config's names a local runtime's, which the next one is
+                // unlikely to serve. Not for a hosted one with no key yet: its
+                // list would only be a refusal, so the key's paste opens it.
+                if self.config.ai_enabled() && ready_to_list(&self.config) {
+                    return self.open_model_picker_over_settings();
+                }
                 Task::none()
             }
+            Msg::ChooseModel => self.open_model_picker_over_settings(),
             Msg::ToggleAdvanced => {
                 self.settings_advanced_open = !self.settings_advanced_open;
                 Task::none()
@@ -994,6 +1041,7 @@ impl App {
         self.settings_window = None;
         self.settings_drafts.clear();
         self.settings_advanced_open = false;
+        self.close_settings_model_picker();
     }
 }
 

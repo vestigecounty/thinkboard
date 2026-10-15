@@ -1716,6 +1716,65 @@ fn custom_is_remembered_before_its_url_is_typed() {
 }
 
 #[test]
+fn picking_a_provider_that_can_answer_asks_for_the_model_next() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url.clear();
+    send(&mut app, Message::OpenSettingsOverlay);
+
+    // A local runtime needs no key, so its list comes up at once — over the
+    // form it was chosen in, not hidden under it on the board.
+    send(&mut app, Message::Settings(settings::Msg::PickPreset("LM Studio".to_owned())));
+    assert!(app.model_picker.as_ref().is_some_and(|picker| picker.over_settings));
+
+    // A hosted one with no key would only list a refusal: the form stays put.
+    send(&mut app, Message::ClosePanel(picker::Panel::Model));
+    send(&mut app, Message::Settings(settings::Msg::PickPreset("OpenAI".to_owned())));
+    assert!(app.model_picker.is_none());
+    // With its key in place, it's ready.
+    app.config.set_ai_key("sk-1");
+    send(&mut app, Message::Settings(settings::Msg::PickPreset("OpenAI".to_owned())));
+    assert!(app.model_picker.is_some());
+
+    // And the button beside the field, whenever.
+    send(&mut app, Message::ClosePanel(picker::Panel::Model));
+    send(&mut app, Message::Settings(settings::Msg::ChooseModel));
+    assert!(app.model_picker.as_ref().is_some_and(|picker| picker.over_settings));
+}
+
+#[test]
+fn esc_over_the_settings_closes_only_the_picker() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "http://localhost:1234/v1".to_owned();
+    send(&mut app, Message::OpenSettingsOverlay);
+    send(&mut app, Message::Settings(settings::Msg::ChooseModel));
+    let esc = iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
+        key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+        modified_key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
+        physical_key: iced::keyboard::key::Physical::Unidentified(iced::keyboard::key::NativeCode::Unidentified),
+        location: iced::keyboard::Location::Standard,
+        modifiers: iced::keyboard::Modifiers::empty(),
+        text: None,
+        repeat: false,
+    });
+    let replies: Vec<Message> = app
+        .event_listeners()
+        .iter()
+        .filter_map(|listen| listen(esc.clone(), iced::event::Status::Ignored, window::Id::unique()))
+        .collect();
+    assert_eq!(replies.len(), 1, "one Esc, one thing closed");
+    for reply in replies {
+        send(&mut app, reply);
+    }
+    assert!(app.model_picker.is_none());
+    assert!(app.settings_overlay, "the form it was chosen from stays");
+
+    // Closing the form takes a picker opened from it along.
+    send(&mut app, Message::Settings(settings::Msg::ChooseModel));
+    send(&mut app, Message::CloseSettingsOverlay);
+    assert!(app.model_picker.is_none(), "left open, it would block the board unseen");
+}
+
+#[test]
 fn a_greyed_command_says_what_would_let_it_run() {
     use command::CommandId::AskAi;
     let mut app = app_with(two_nodes(), Vec::new());

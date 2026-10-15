@@ -466,6 +466,18 @@ OpenRouter), but neither needed its own code path. Fields past `id` are
 extensions: OpenRouter gives a display name and a context window, a plain
 endpoint gives neither, and both are read only when present.
 
+**The model is chosen where the provider is.** A new config names a local
+runtime's model, which no hosted provider serves, so picking a provider and
+asking failed on the very first question. The settings form's model row has a
+"Choose…" button, and picking a provider that can answer opens the picker by
+itself — one on this machine, or a hosted one whose key is already stored; for
+a hosted one without, pasting the key does. Opened from the form, the picker
+is drawn **over the form** (`ModelPicker::over_settings`), in whichever place
+the form is: the board's panel layer sits under the in-board modal, and the
+settings window doesn't have one. It closes with the form — left open behind
+it, it would hold the board modal with nothing visible — and while it's open,
+Esc is the picker's alone.
+
 It's the one panel that **fetches**, so it has two states the others don't —
 in flight and failed — and both are shown in the list's own empty row, so the
 panel is up on the keystroke that asked for it either way. A finished fetch

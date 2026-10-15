@@ -1252,6 +1252,7 @@ impl App {
             }
             Message::CloseSettingsOverlay => {
                 self.settings_overlay = false;
+                self.close_settings_model_picker();
                 self.cache.clear();
             }
             Message::OpenSettings => {
@@ -2240,8 +2241,9 @@ impl App {
         if self.theme_picker.is_some() {
             listeners.push(theme_picker::key_event);
         }
-        // Esc closes the in-board settings modal.
-        if self.settings_overlay {
+        // Esc closes the in-board settings modal — unless the model picker
+        // is open over it, whose own Esc would otherwise close both.
+        if self.settings_overlay && self.model_picker.is_none() {
             listeners.push(settings_key_event);
         }
         // Drag a `.canvas` onto the window to open it.

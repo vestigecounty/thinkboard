@@ -26,6 +26,9 @@ pub(crate) struct ModelPicker {
     /// flight — which is different from an empty list, and reads differently.
     pub error: Option<String>,
     pub loading: bool,
+    /// Opened from the settings form, and drawn over it rather than over the
+    /// board — see [`App::open_model_picker_over_settings`].
+    pub over_settings: bool,
     /// The model in use when the panel opened, for marking its row.
     before: String,
 }
@@ -62,6 +65,7 @@ impl App {
             url: url.clone(),
             error: None,
             loading: !cached,
+            over_settings: false,
             before: self.config.ai_model.trim().to_owned(),
         });
 
@@ -83,6 +87,30 @@ impl App {
             |(url, models)| Message::ModelsFetched(url, models.map_err(|e| e.to_string())),
         );
         Task::batch([opened, fetch])
+    }
+
+    /// The picker over the settings form, where the model is chosen alongside
+    /// the provider — from the form's "Choose…", or by itself once a provider
+    /// is picked that can answer.
+    ///
+    /// A new config names a local runtime's model, which no hosted provider
+    /// serves, so picking one and asking used to fail on the first question.
+    /// Drawn wherever the form is: the board's own panel layer sits beneath
+    /// the in-board modal, and isn't in the settings window at all.
+    pub(super) fn open_model_picker_over_settings(&mut self) -> Task<Message> {
+        let opened = self.open_model_picker();
+        if let Some(picker) = &mut self.model_picker {
+            picker.over_settings = true;
+        }
+        opened
+    }
+
+    /// Closes a picker opened over the settings form, with the form: left
+    /// open, it would hold the board modal behind a panel nobody can see.
+    pub(super) fn close_settings_model_picker(&mut self) {
+        if self.model_picker.as_ref().is_some_and(|picker| picker.over_settings) {
+            self.model_picker = None;
+        }
     }
 
     /// A finished fetch. Kept against the endpoint it was for, so switching

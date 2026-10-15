@@ -220,7 +220,12 @@ pub(super) fn load_ui_fonts() {
 /// infers one fixed lifetime and iced rejects it as "not general enough".
 fn daemon_view(state: &App, window: window::Id) -> iced::Element<'_, Message> {
     if Some(window) == state.settings_window {
-        super::settings::view(state)
+        let form = super::settings::view(state);
+        // The model picker, when it was opened from this form, over it.
+        match state.model_picker.as_ref().filter(|picker| picker.over_settings) {
+            Some(picker) => iced::widget::stack![form, state.model_picker_view(picker)].into(),
+            None => form,
+        }
     } else {
         state.view()
     }

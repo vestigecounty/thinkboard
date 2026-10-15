@@ -630,18 +630,38 @@ impl Tour {
         struct Find<'a> {
             label: &'a str,
             found: Option<Rectangle>,
+            /// How far the scrollables around the current widget are scrolled.
+            /// A scrollable lays its content out unscrolled and reports the
+            /// offset separately, just before visiting it — so a label in a
+            /// scrolled form is found where it would be at the top.
+            scrolled: Vector,
+            /// The offset a scrollable just reported, for the visit after it.
+            next: Vector,
         }
         impl Operation for Find<'_> {
+            fn scrollable(
+                &mut self,
+                _id: Option<&iced::widget::Id>,
+                _bounds: Rectangle,
+                _content: Rectangle,
+                translation: Vector,
+                _state: &mut dyn iced_runtime::core::widget::operation::Scrollable,
+            ) {
+                self.next = translation;
+            }
             fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                let outer = self.scrolled;
+                self.scrolled += std::mem::take(&mut self.next);
                 operate(self);
+                self.scrolled = outer;
             }
             fn text(&mut self, _id: Option<&iced::widget::Id>, bounds: Rectangle, text: &str) {
                 if text == self.label {
-                    self.found = Some(bounds);
+                    self.found = Some(bounds - self.scrolled);
                 }
             }
         }
-        let mut find = Find { label, found: None };
+        let mut find = Find { label, found: None, scrolled: Vector::ZERO, next: Vector::ZERO };
         let Self { app, renderer, cache, .. } = self;
         let mut ui = UserInterface::build(app.view(), VIEWPORT, cache.take().unwrap_or_default(), renderer);
         ui.operate(renderer, &mut find);
@@ -1686,9 +1706,8 @@ fn ask(tour: &mut Tour, index: usize) {
     tour.click_label("Ask AI");
 }
 
-/// Asking for the first time: no provider yet, then one chosen in settings —
-/// still naming the model a new config ships with, which it doesn't serve —
-/// and the model picked from the provider's own list.
+/// Asking for the first time: no provider yet, then one chosen in settings
+/// and its model chosen beside it, from the provider's own list.
 fn ai_setup() {
     let provider = Provider::start(&TRIP);
     let mut tour = Tour::new("ai_setup", first_launch(trip_board));
@@ -1700,10 +1719,6 @@ fn ai_setup() {
     tour.chord(Modifiers::COMMAND | Modifiers::SHIFT, "p");
     tour.type_text("ask");
     tour.shot("no-provider-palette");
-    tour.named(key::Named::Escape);
-    let empty = Point::new(1100.0, 780.0);
-    tour.right_click(empty);
-    tour.shot("no-provider-board-menu");
     tour.named(key::Named::Escape);
 
     // Settings, AI, "Custom", and the URL typed in. The pick list is set by
@@ -1718,22 +1733,20 @@ fn ai_setup() {
     // The fields the choice revealed, below where it was made.
     tour.swipe(Point::new(720.0, 500.0), 0.0, -300.0);
     tour.shot("provider-chosen");
-    tour.named(key::Named::Escape);
 
-    tour.right_click(tour.node_center(eat));
-    tour.shot("note-menu");
-    tour.click_label("Ask AI");
-    tour.settle_until(|app| app.ai.streams.is_empty());
-    tour.shot("model-not-served");
-
-    tour.palette("model");
+    tour.click_label("Choose…");
     tour.shot("model-picker-fetching");
     tour.settle_until(|app| app.model_picker.as_ref().is_some_and(|p| !p.loading));
     tour.shot("model-picker");
     tour.type_text("qwen");
     tour.shot("model-picker-filtered");
     tour.named(key::Named::Enter);
-    ask(&mut tour, eat);
+    tour.shot("model-chosen");
+    tour.named(key::Named::Escape);
+
+    tour.right_click(tour.node_center(eat));
+    tour.shot("note-menu");
+    tour.click_label("Ask AI");
     tour.settle_until(|app| app.ai.streams.is_empty());
     tour.shot("answered");
 }
@@ -1765,27 +1778,36 @@ fn ai_answers() {
     tour.shot("deselected");
 }
 
-/// When asking fails: nothing listening at the URL (a local runtime not
-/// started yet), no key where one is wanted, and a key the provider refuses.
+/// When asking fails: a model the provider doesn't serve (the one a new
+/// config names, kept by someone who never chose), nothing listening at the
+/// URL (a local runtime not started yet), no key where one is wanted, and a
+/// key the provider refuses.
 fn ai_errors() {
+    let provider = Provider::start(&TRIP);
     let mut tour = Tour::new("ai_errors", first_launch(trip_board));
-    configure(&mut tour, &Provider::absent());
+    configure(&mut tour, &provider.url);
+    tour.app.config.ai_model = config::Config::default().ai_model;
     frame_trip(&mut tour);
     let eat = tour.find("Where should");
     ask(&mut tour, eat);
+    tour.settle_until(|app| app.ai.streams.is_empty());
+    tour.shot("model-not-served");
+
+    configure(&mut tour, &Provider::absent());
+    let sintra = tour.find("How do we get");
+    ask(&mut tour, sintra);
     tour.settle_until(|app| app.ai.streams.is_empty());
     tour.shot("nothing-listening");
 
     // A hosted provider asked with no key, then with one it refuses.
     let rejecting = Provider::start(&REJECTING);
     configure(&mut tour, &rejecting.url);
-    let sintra = tour.find("How do we get");
-    ask(&mut tour, sintra);
+    let trip = tour.find("# Trip to Lisbon");
+    ask(&mut tour, trip);
     tour.settle_until(|app| app.ai.streams.is_empty());
     tour.shot("no-key");
     tour.app.config.set_ai_key("sk-not-a-real-key");
-    let trip = tour.find("# Trip to Lisbon");
-    ask(&mut tour, trip);
+    ask(&mut tour, sintra);
     tour.settle_until(|app| app.ai.streams.is_empty());
     tour.shot("key-rejected");
     tour.palette("model");
