@@ -47,19 +47,36 @@ impl CommandId {
     /// Whether the command can run in the current app state (else it's shown
     /// greyed and isn't clickable).
     pub(super) fn is_enabled(self, app: &App) -> bool {
+        self.unavailable(app).is_none()
+    }
+
+    /// Why the command can't run right now, phrased as what would let it — or
+    /// `None` when it can.
+    ///
+    /// The palette prints this where an enabled row prints its shortcut. A row
+    /// that is merely grey says *no* and nothing else: "Ask AI" sat dimmed
+    /// with no hint that it was waiting on a provider, and the provider is the
+    /// part nobody guesses.
+    pub(super) fn unavailable(self, app: &App) -> Option<&'static str> {
+        // Nothing to ask without an endpoint — "API URL" in settings is what
+        // turns these on.
+        const NO_PROVIDER: &str = "Needs an AI provider — Settings → AI";
         match self {
-            CommandId::AskAi => !app.selected.is_empty() && app.config.ai_enabled(),
-            CommandId::Copy | CommandId::DeleteSelected | CommandId::Distribute => {
-                !app.selected.is_empty()
+            CommandId::AskAi if !app.config.ai_enabled() => Some(NO_PROVIDER),
+            CommandId::ChooseModel if !app.config.ai_enabled() => Some(NO_PROVIDER),
+            CommandId::AskAi if app.selected.is_empty() => Some("Select a note to ask about"),
+            CommandId::Copy | CommandId::DeleteSelected | CommandId::Distribute
+                if app.selected.is_empty() =>
+            {
+                Some("Select a note first")
             }
-            CommandId::GroupSelection => app.groupable_selection(),
+            CommandId::GroupSelection if !app.groupable_selection() => {
+                Some("Select two or more notes")
+            }
             // Nothing to browse until a vault has been picked — "Open vault…"
             // sits right above it.
-            CommandId::SwitchCanvas => app.has_vault(),
-            // Nothing to ask for a list without an endpoint — "API URL" in
-            // settings is what turns this on.
-            CommandId::ChooseModel => app.config.ai_enabled(),
-            _ => true,
+            CommandId::SwitchCanvas if !app.has_vault() => Some("Open a vault first"),
+            _ => None,
         }
     }
 }
@@ -172,12 +189,17 @@ pub(crate) fn key_event(
 pub(super) fn view<'a>(app: &'a App, state: &'a picker::State) -> Element<'a, Message> {
     let rows = filtered(&state.query)
         .into_iter()
-        .map(|command| Row {
-            title: command.title.into(),
-            detail: command.shortcut.into(),
-            enabled: command.id.is_enabled(app),
-            font: None,
-            press: Message::RunCommand(command.id),
+        .map(|command| {
+            let unavailable = command.id.unavailable(app);
+            Row {
+                title: command.title.into(),
+                // The reason replaces the shortcut: a chord for something that
+                // can't run is the one thing on the row with no use.
+                detail: unavailable.unwrap_or(command.shortcut).into(),
+                enabled: unavailable.is_none(),
+                font: None,
+                press: Message::RunCommand(command.id),
+            }
         })
         .collect();
 

@@ -1568,6 +1568,24 @@ fn the_command_is_greyed_without_an_endpoint() {
     assert!(command::CommandId::ChooseModel.is_enabled(&app));
 }
 
+#[test]
+fn a_greyed_command_says_what_would_let_it_run() {
+    use command::CommandId::AskAi;
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url.clear();
+    send(&mut app, Message::SelectNode(Some(0)));
+    // The missing provider is the reason that matters even with a note
+    // selected: selecting one more won't help.
+    assert!(AskAi.unavailable(&app).is_some_and(|why| why.contains("AI provider")));
+
+    app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
+    send(&mut app, Message::SelectNode(None));
+    assert_eq!(AskAi.unavailable(&app), Some("Select a note to ask about"));
+
+    send(&mut app, Message::SelectNode(Some(0)));
+    assert_eq!(AskAi.unavailable(&app), None);
+}
+
 // --- The font picker ---
 
 /// A family name that is nobody's font.

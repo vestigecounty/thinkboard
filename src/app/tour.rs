@@ -479,6 +479,10 @@ fn build_a_board() {
     let mut tour = Tour::new("build_a_board", first_launch(empty_document));
     tour.shot("empty-board");
 
+    tour.chord(Modifiers::COMMAND | Modifiers::SHIFT, "p");
+    tour.shot("palette-nothing-selected");
+    tour.named(key::Named::Escape);
+
     // Where most people try first.
     tour.double_click(Point::new(560.0, 380.0));
     tour.shot("double-click-empty");
@@ -518,6 +522,9 @@ fn build_a_board() {
     tour.click(tour.node_center(2));
     tour.hold(Modifiers::empty());
     tour.shot("two-selected");
+    tour.chord(Modifiers::COMMAND | Modifiers::SHIFT, "p");
+    tour.shot("palette-two-selected");
+    tour.named(key::Named::Escape);
     tour.right_click(tour.node_center(2));
     tour.shot("node-menu");
     tour.named(key::Named::Escape);

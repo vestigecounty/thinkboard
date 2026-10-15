@@ -73,6 +73,12 @@ const SEARCH_HIT_CURRENT: Color = Color::from_rgb(1.0, 0.882, 0.302);
 /// starts reading as a smudge on the card.
 const SEARCH_HIT: Color = Color::from_rgb(0.55, 0.485, 0.166);
 const SEARCH_INK: Color = Color::BLACK;
+
+/// The command palette's chord, as the empty board's hint prints it.
+#[cfg(target_os = "macos")]
+const PALETTE_CHORD: &str = "⌘⇧P";
+#[cfg(not(target_os = "macos"))]
+const PALETTE_CHORD: &str = "Ctrl+Shift+P";
 /// What a Cmd/Ctrl chord does. Separated from the event so the table can be
 /// read — and tested — without a live board: which chords take Shift, and which
 /// need something selected, is the part that is easy to get subtly wrong.
@@ -903,6 +909,15 @@ impl canvas::Program<Message> for Board<'_> {
             let mut wf = Frame::new(renderer, bounds.size());
             self.draw_wayfinding(&mut wf, target);
             geometries.push(wf.into_geometry());
+        }
+
+        // Its counterpart for a board with nothing to find: how to start one.
+        // Gone with the first note, and while a menu is up — the menu is the
+        // answer it gives.
+        if self.nodes.is_empty() && self.ghosts.is_empty() && !self.context_menu {
+            let mut hint = Frame::new(renderer, bounds.size());
+            self.draw_empty_hint(&mut hint, bounds.size());
+            geometries.push(hint.into_geometry());
         }
 
         if self.show_fps {
@@ -1765,6 +1780,36 @@ impl Board<'_> {
             Rectangle::new(Point::new(0.0, top), Size::new(w, THICK))
         };
         (rect, dir)
+    }
+
+    /// What a new, empty board says in its middle: how to put the first note on
+    /// it, and where every other action lives. A blank board said nothing at
+    /// all, and the right-click that starts one is the gesture nobody tries
+    /// first. Muted, and drawn on the canvas rather than as a widget above it,
+    /// so it can never catch the click it describes.
+    fn draw_empty_hint(&self, frame: &mut Frame, size: Size) {
+        let a = self.reveal;
+        let center = Point::new(size.width / 2.0, size.height / 2.0);
+        frame.fill_text(canvas::Text {
+            content: "Right-click to add a note".to_owned(),
+            position: Point::new(center.x, center.y - 12.0),
+            color: Color { a, ..self.theme.text_muted },
+            size: 17.0.into(),
+            font: self.theme.ui_font(),
+            align_x: TextAlignment::Center,
+            align_y: Vertical::Center,
+            ..canvas::Text::default()
+        });
+        frame.fill_text(canvas::Text {
+            content: format!("{PALETTE_CHORD} for every command"),
+            position: Point::new(center.x, center.y + 14.0),
+            color: Color { a: 0.7 * a, ..self.theme.text_muted },
+            size: 13.0.into(),
+            font: self.theme.ui_font(),
+            align_x: TextAlignment::Center,
+            align_y: Vertical::Center,
+            ..canvas::Text::default()
+        });
     }
 
     /// The wayfinding button: a soft, theme-colored edge bar (node card color,
