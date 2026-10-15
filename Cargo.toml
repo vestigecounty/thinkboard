@@ -54,6 +54,9 @@ criterion = { version = "0.5", default-features = false, features = ["cargo_benc
 # The same crate as above, with its test-only node/edge builders switched on —
 # so both crates' tests share one set rather than growing their own.
 thinkboard-core = { path = "crates/core", features = ["fixtures"] }
+# The offscreen tour (src/app/tour.rs) drives a `UserInterface` and runs tasks
+# itself, which iced keeps behind its own runtime. Already in the graph via iced.
+iced_runtime = "0.14"
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 tray-icon = "0.19"

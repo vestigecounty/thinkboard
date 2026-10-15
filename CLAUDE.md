@@ -631,6 +631,36 @@ Test apps are built as `scratch: true` (suppresses every disk write) and
 
 The text rasterizer works headless, so tests may measure and auto-size text.
 
+## Looking at the UI: the tour
+
+`src/app/tour.rs` drives the real `App` with synthetic mouse and keyboard
+events and renders each step offscreen to a PNG — no window, no display, no
+Screen Recording permission. It's how to *see* a change without asking for a
+screenshot.
+
+```sh
+cargo test --locked -p thinkboard tour -- --ignored --nocapture        # every scene
+TOUR=build_a_board TOUR_SCALE=2 cargo test --locked -p thinkboard tour -- --ignored --nocapture
+```
+
+Shots land in `target/tour/<scene>/` (or `$TOUR_OUT`). A scene is a plain
+function — `click`, `drag`, `type_text`, `chord`, `shot` — added to `SCENES`.
+Prefer gestures to `send(Message::…)`: a message skips the widget that would
+have published it, which is exactly the part a new user meets first.
+
+Three things it has to do that a runtime does for free, each learned from a
+shot that lied:
+
+- **Deliver a redraw to the tree that draws.** An iced 0.14 button keeps its
+  status on the widget, set from `RedrawRequested`; a freshly built tree drawn
+  without one paints every button as `Disabled`.
+- **Give big bitmaps a second frame.** iced_wgpu uploads an image over 2 MB on
+  a worker thread and leaves it out of the frame that asked for it — a large
+  card's text, blank. `shot` draws twice, `UPLOAD_GRACE` apart.
+- **Feed the subscription listeners.** Panel keys (palette Esc, arrows) arrive
+  through `event::listen_with`, not the widget tree; `App::event_listeners` is
+  the one list both `subscription` and the tour read.
+
 ## Platform notes
 
 - **macOS** — the overlay is an `NSPanel` via a class-morph on winit's window;

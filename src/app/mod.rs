@@ -64,6 +64,8 @@ mod theme_store;
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 mod tray;
 #[cfg(test)]
+mod tour;
+#[cfg(test)]
 mod update_tests;
 mod vault;
 mod view;
@@ -130,6 +132,9 @@ const PINCH_SPEED: f32 = 1.0;
 /// Ease time constant of the auto-zoom fly-to (its trigger/target zoom are in
 /// config).
 const FOCUS_TAU: f32 = 0.12;
+
+/// What `iced::event::listen_with` takes: a raw event in, maybe a message out.
+type EventListener = fn(iced::Event, iced::event::Status, window::Id) -> Option<Message>;
 
 /// Esc closes the in-board settings modal (its form widgets get everything else).
 fn settings_key_event(
@@ -2118,6 +2123,47 @@ impl App {
             || matches!(self.phase, Phase::Entering { .. } | Phase::Exiting { .. })
     }
 
+    /// The handlers that see raw window events beside the widget tree, for
+    /// whichever panels are open. A list of its own rather than inline in
+    /// [`App::subscription`] so the offscreen tour (`tour.rs`) can feed the
+    /// same handlers its synthetic events — it has no runtime to run a
+    /// subscription, and a copy of these conditions would drift.
+    fn event_listeners(&self) -> Vec<EventListener> {
+        let mut listeners: Vec<EventListener> = Vec::new();
+        // While recording a summon hotkey, capture the next key combination.
+        if self.hotkey_recording {
+            listeners.push(startup::capture_hotkey_event);
+        }
+        // While the find bar is open, Enter/Shift+Enter/Esc drive it.
+        if self.search.is_some() {
+            listeners.push(search::key_event);
+        }
+        // While the command palette is open, arrows/Esc drive it.
+        if self.command_palette.is_some() {
+            listeners.push(command::key_event);
+        }
+        // Same for the vault browser, which shares the palette's shell.
+        if self.vault_browser.is_some() {
+            listeners.push(vault::key_event);
+        }
+        if self.model_picker.is_some() {
+            listeners.push(model_picker::key_event);
+        }
+        if self.font_picker.is_some() {
+            listeners.push(font_picker::key_event);
+        }
+        if self.theme_picker.is_some() {
+            listeners.push(theme_picker::key_event);
+        }
+        // Esc closes the in-board settings modal.
+        if self.settings_overlay {
+            listeners.push(settings_key_event);
+        }
+        // Drag a `.canvas` onto the window to open it.
+        listeners.push(canvas_file::drop_event);
+        listeners
+    }
+
     fn subscription(&self) -> Subscription<Message> {
         let mut subscriptions = Vec::new();
         if self.animating() {
@@ -2136,37 +2182,7 @@ impl App {
         if self.editing.as_ref().is_some_and(|e| e.pending_caret.is_some()) {
             subscriptions.push(window::frames().map(|_| Message::PlaceEditorCaret));
         }
-        // While recording a summon hotkey, capture the next key combination.
-        if self.hotkey_recording {
-            subscriptions.push(iced::event::listen_with(startup::capture_hotkey_event));
-        }
-        // While the find bar is open, Enter/Shift+Enter/Esc drive it.
-        if self.search.is_some() {
-            subscriptions.push(iced::event::listen_with(search::key_event));
-        }
-        // While the command palette is open, arrows/Esc drive it.
-        if self.command_palette.is_some() {
-            subscriptions.push(iced::event::listen_with(command::key_event));
-        }
-        // Same for the vault browser, which shares the palette's shell.
-        if self.vault_browser.is_some() {
-            subscriptions.push(iced::event::listen_with(vault::key_event));
-        }
-        if self.model_picker.is_some() {
-            subscriptions.push(iced::event::listen_with(model_picker::key_event));
-        }
-        if self.font_picker.is_some() {
-            subscriptions.push(iced::event::listen_with(font_picker::key_event));
-        }
-        if self.theme_picker.is_some() {
-            subscriptions.push(iced::event::listen_with(theme_picker::key_event));
-        }
-        // Esc closes the in-board settings modal.
-        if self.settings_overlay {
-            subscriptions.push(iced::event::listen_with(settings_key_event));
-        }
-        // Drag a `.canvas` onto the window to open it.
-        subscriptions.push(iced::event::listen_with(canvas_file::drop_event));
+        subscriptions.extend(self.event_listeners().into_iter().map(iced::event::listen_with));
         if self.overlay {
             subscriptions.push(Subscription::run(hotkey_toggles));
             // Tray menu clicks (Show/Hide, Quit) where a tray exists.

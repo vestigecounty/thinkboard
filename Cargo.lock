@@ -5308,6 +5308,7 @@ dependencies = [
  "global-hotkey",
  "iced",
  "iced_graphics",
+ "iced_runtime",
  "image",
  "ksni",
  "notify",
