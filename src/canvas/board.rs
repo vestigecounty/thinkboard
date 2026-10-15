@@ -2574,38 +2574,49 @@ impl Board<'_> {
     }
 
     /// A vault file embedded in the board: its name as a muted header over a
-    /// hairline rule, then the note's Markdown body (or why there isn't one).
+    /// hairline rule, then the note's Markdown body (or, for a file that isn't
+    /// a note, what kind of file it is).
     fn draw_note_card(&self, frame: &mut Frame, node: &CanvasNode, rect: Rectangle, alpha: f32) {
         let zoom = self.camera.zoom;
         let pad = NODE_TEXT_PAD_X * zoom;
-        // The header is deliberately smaller and muted: it names the file,
-        // while the body below is the content. Sized like the title, it read as
-        // a stray first line of the note.
-        let title_size = (REFERENCE_TITLE_SIZE * zoom).max(MIN_TEXT_PX);
-        let title_y = rect.y + NODE_TEXT_PAD_Y * zoom / 2.0;
+        let attachment = node.node_kind() == NodeKind::Attachment;
+        let note = self.notes.get(&node.id).map(String::as_str);
+        // An attachment is named in full: without its extension nothing said
+        // what kind of file the card stood for.
+        let name = if attachment { file_name(node) } else { node.file_title() };
+        // A note whose first heading is its own name already says it: the
+        // header repeated it, one line above the same words set large.
+        let header = name.filter(|name| !note.is_some_and(|text| first_heading_is(text, name)));
 
-        frame.fill_text(canvas::Text {
-            content: node.file_title().unwrap_or_else(|| "(no file)".to_owned()),
-            position: Point::new(rect.x + pad, title_y),
-            color: Color { a: 0.9 * alpha, ..self.theme.text_muted },
-            size: title_size.into(),
-            font: self.theme.ui_font(),
-            ..canvas::Text::default()
-        });
+        let mut body_y = rect.y + NODE_TEXT_PAD_Y * zoom / 2.0;
+        if let Some(name) = header {
+            // The header is deliberately smaller and muted: it names the file,
+            // while the body below is the content. Sized like the title, it
+            // read as a stray first line of the note.
+            let title_size = (REFERENCE_TITLE_SIZE * zoom).max(MIN_TEXT_PX);
+            frame.fill_text(canvas::Text {
+                content: name,
+                position: Point::new(rect.x + pad, body_y),
+                color: Color { a: 0.9 * alpha, ..self.theme.text_muted },
+                size: title_size.into(),
+                font: self.theme.ui_font(),
+                ..canvas::Text::default()
+            });
 
-        // A rule under the header separates it from the body, the way
-        // Obsidian's embedded-note header does.
-        let rule_y = title_y + title_size * crate::text_raster::LINE_HEIGHT;
-        frame.fill(
-            &Path::rectangle(
-                Point::new(rect.x + pad, rule_y),
-                Size::new((rect.width - pad * 2.0).max(0.0), (1.0 * zoom).max(0.5)),
-            ),
-            Color { a: 0.6 * alpha, ..self.theme.border },
-        );
+            // A rule under the header separates it from the body, the way
+            // Obsidian's embedded-note header does.
+            let rule_y = body_y + title_size * crate::text_raster::LINE_HEIGHT;
+            frame.fill(
+                &Path::rectangle(
+                    Point::new(rect.x + pad, rule_y),
+                    Size::new((rect.width - pad * 2.0).max(0.0), (1.0 * zoom).max(0.5)),
+                ),
+                Color { a: 0.6 * alpha, ..self.theme.border },
+            );
+            body_y = rule_y + NODE_TEXT_PAD_Y * zoom / 2.0;
+        }
 
-        let body_y = rule_y + NODE_TEXT_PAD_Y * zoom / 2.0;
-        match self.notes.get(&node.id).map(String::as_str) {
+        match note {
             Some(text) if !text.trim().is_empty() => {
                 // Top-aligned (height 0 zeroes the layout's vertical centering)
                 // and started below the rule.
@@ -2619,13 +2630,16 @@ impl Board<'_> {
                 self.draw_markdown_live(frame, origin, text, FONT_SIZE, wrap, alpha, None);
             }
             _ => {
-                // Nothing to show: say why rather than leaving a blank card.
-                let reason = match node.node_kind() {
-                    NodeKind::Attachment => "(not previewable)",
-                    _ => "(note not found)",
+                // Nothing to show: say what the file is, or why there's no
+                // note, rather than leave a blank card. "(not previewable)"
+                // here read like an error for a file that was simply a PDF.
+                let reason = if attachment {
+                    file_kind(node)
+                } else {
+                    "(note not found)".to_owned()
                 };
                 frame.fill_text(canvas::Text {
-                    content: reason.to_owned(),
+                    content: reason,
                     position: Point::new(rect.x + pad, body_y),
                     color: Color { a: 0.7 * alpha, ..self.theme.text_muted },
                     size: ((FONT_SIZE - 2.0) * zoom).max(MIN_TEXT_PX).into(),
@@ -3628,6 +3642,28 @@ impl Board<'_> {
     }
 }
 
+/// The last component of a file node's path, extension included.
+fn file_name(node: &CanvasNode) -> Option<String> {
+    let file = node.file.as_deref()?;
+    file.rsplit(['/', '\\']).next().filter(|name| !name.is_empty()).map(str::to_owned)
+}
+
+/// What kind of file an attachment is, from its extension: "PDF file".
+fn file_kind(node: &CanvasNode) -> String {
+    file_name(node)
+        .and_then(|name| name.rsplit_once('.').map(|(_, ext)| ext.to_uppercase()))
+        .filter(|ext| !ext.is_empty())
+        .map_or_else(|| "File".to_owned(), |ext| format!("{ext} file"))
+}
+
+/// Whether `text`'s first heading, before anything else, is `name`.
+fn first_heading_is(text: &str, name: &str) -> bool {
+    text.lines()
+        .find(|line| !line.trim().is_empty())
+        .and_then(|line| line.trim_start().strip_prefix("# "))
+        .is_some_and(|heading| heading.trim().eq_ignore_ascii_case(name.trim()))
+}
+
 /// The cubic bezier path of an edge (screen space).
 /// The axis-aligned rectangle spanning two corner points.
 /// The header strip along a group frame's top edge — the caption's band, and
@@ -4104,6 +4140,29 @@ mod node_kind_tests {
         // A frame dragged down to nothing still has to be grabbable.
         let tiny = Rectangle::new(Point::new(0.0, 0.0), Size::new(400.0, 10.0));
         assert_eq!(group_header(tiny, 1.0).height, 10.0);
+    }
+}
+
+#[cfg(test)]
+mod reference_card_tests {
+    use super::{file_kind, first_heading_is};
+    use thinkboard_core::fixtures::node;
+
+    #[test]
+    fn a_note_headed_with_its_own_name_needs_no_header() {
+        assert!(first_heading_is("# Meeting notes\n\nbody", "Meeting notes"));
+        assert!(first_heading_is("\n\n#  meeting NOTES  \n", "Meeting notes"), "blank lines, case, spacing");
+        assert!(!first_heading_is("Intro first\n# Meeting notes", "Meeting notes"), "only the first line counts");
+        assert!(!first_heading_is("## Meeting notes", "Meeting notes"), "only a title-level heading");
+        assert!(!first_heading_is("# Agenda", "Meeting notes"));
+    }
+
+    #[test]
+    fn an_attachment_says_what_kind_of_file_it_is() {
+        let file = |path: &str| thinkboard_core::model::CanvasNode { file: Some(path.to_owned()), ..node("f") };
+        assert_eq!(file_kind(&file("docs/Quarterly report.pdf")), "PDF file");
+        assert_eq!(file_kind(&file("song.mp3")), "MP3 file");
+        assert_eq!(file_kind(&file("README")), "File");
     }
 }
 
