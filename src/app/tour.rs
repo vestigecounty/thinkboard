@@ -155,7 +155,14 @@ impl Tour {
     }
 
     /// Delivers one message, as the runtime would — keeping its task.
+    ///
+    /// Except the two that exist only to talk to the OS — re-raising the
+    /// overlay's window, and handing the keyboard back to the app that had it
+    /// — which want a real window on the main thread and change no frame.
     fn send(&mut self, message: Message) {
+        if matches!(message, Message::WindowShown | Message::ReleaseFocus) {
+            return;
+        }
         if let Some(stream) = task::into_stream(self.app.update(message)) {
             self.tasks.push(stream);
         }
@@ -303,7 +310,12 @@ impl Tour {
             (VIEWPORT.width * self.scale).round() as u32,
             (VIEWPORT.height * self.scale).round() as u32,
         );
-        (size, Headless::screenshot(&mut self.renderer, size, self.scale, style.background_color))
+        let mut rgba = Headless::screenshot(&mut self.renderer, size, self.scale, style.background_color);
+        // The overlay is see-through: what's under it is part of the picture.
+        if style.background_color.a < 1.0 {
+            over_a_desktop(&mut rgba, size.width, size.height);
+        }
+        (size, rgba)
     }
 
     // --- Strips: one region, frame by frame ---
@@ -328,10 +340,30 @@ impl Tour {
             ((r.height * self.scale) as u32).min(size.height - y),
         );
         let mut tile = ::image::imageops::crop_imm(&full, x, y, w, h).to_image();
+        // A whole window per frame makes a sheet too big to read; halve it.
+        if tile.width() > 1000 {
+            let (tw, th) = (tile.width() / 2, tile.height() / 2);
+            tile = ::image::imageops::resize(&tile, tw, th, ::image::imageops::FilterType::Triangle);
+        }
         let n = strip.frames.len() + 1;
         stamp_number(&mut tile, n);
         strip.frames.push(tile);
         strip.legend.push(format!("{n:>3}  {label:<28} {}", self.editing_state()));
+    }
+
+    /// Frames of an animation as it plays, a frame every ~40 ms until it ends.
+    /// For a transition started with [`Tour::send`] — anything that settles
+    /// would play it out before the first frame.
+    fn film(&mut self, strip: &mut Strip, label: &str) {
+        let start = Instant::now();
+        while self.app.animating() && start.elapsed() < Duration::from_secs(3) {
+            self.pump();
+            self.send(Message::Tick(Instant::now()));
+            self.frame(strip, &format!("{label} +{} ms", start.elapsed().as_millis()));
+            std::thread::sleep(Duration::from_millis(40));
+        }
+        self.settle();
+        self.frame(strip, &format!("{label}: settled"));
     }
 
     /// The numbers a strip's legend carries per frame: what the card, the
@@ -541,6 +573,66 @@ impl iced_runtime::core::widget::Operation for Noop {
     fn traverse(&mut self, _operate: &mut dyn FnMut(&mut dyn iced_runtime::core::widget::Operation)) {}
 }
 
+/// Puts a translucent frame (premultiplied RGBA, as read back) over a stand-in
+/// desktop — see [`desktop`].
+fn over_a_desktop(rgba: &mut [u8], width: u32, height: u32) {
+    let under = desktop(width, height);
+    for (pixel, below) in rgba.chunks_exact_mut(4).zip(under.chunks_exact(3)) {
+        let clear = 255 - u16::from(pixel[3]);
+        for c in 0..3 {
+            pixel[c] = (u16::from(pixel[c]) + u16::from(below[c]) * clear / 255).min(255) as u8;
+        }
+        pixel[3] = 255;
+    }
+}
+
+/// A stand-in desktop, RGB: a dusk gradient and a light document window —
+/// the case a dim has to work hardest for, light text-heavy content right
+/// under the board. Drawn once per size; a film composites every frame.
+fn desktop(width: u32, height: u32) -> std::sync::Arc<Vec<u8>> {
+    /// The last desktop drawn, and the size it was drawn at.
+    type Drawn = ((u32, u32), std::sync::Arc<Vec<u8>>);
+    static CACHE: std::sync::Mutex<Option<Drawn>> = std::sync::Mutex::new(None);
+    let mut cache = CACHE.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
+    if let Some((size, pixels)) = cache.as_ref()
+        && *size == (width, height)
+    {
+        return pixels.clone();
+    }
+    let window = (width as f32 * 0.08, height as f32 * 0.12, width as f32 * 0.55, height as f32 * 0.7);
+    let line = 22.0 * (width as f32 / VIEWPORT.width);
+    let mut pixels = Vec::with_capacity((width * height * 3) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            let (fx, fy) = (x as f32, y as f32);
+            let t = (fx / width as f32 + fy / height as f32) / 2.0;
+            let mut rgb = [
+                (58.0 + (230.0 - 58.0) * t) as u8,
+                (96.0 + (120.0 - 96.0) * t) as u8,
+                (140.0 + (90.0 - 140.0) * t) as u8,
+            ];
+            let (wx, wy) = (fx - window.0, fy - window.1);
+            if wx >= 0.0 && wy >= 0.0 && wx < window.2 && wy < window.3 {
+                let row = (wy / line) as u32;
+                let in_line = (wy % line) / line;
+                let ends = window.2 * (0.55 + 0.4 * ((row * 37 % 11) as f32 / 11.0));
+                // A title bar, then lines of "text".
+                rgb = if wy < line * 1.3 {
+                    [226, 226, 224]
+                } else if (0.36..0.64).contains(&in_line) && wx > line && wx < ends {
+                    [60, 60, 66]
+                } else {
+                    [246, 246, 244]
+                };
+            }
+            pixels.extend_from_slice(&rgb);
+        }
+    }
+    let pixels = std::sync::Arc::new(pixels);
+    *cache = Some(((width, height), pixels.clone()));
+    pixels
+}
+
 /// One region of the screen over a run of steps — see [`Tour::strip`].
 struct Strip {
     name: String,
@@ -601,6 +693,24 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 /// for that theme. Resolved in `App::new`'s order: the theme's fonts before
 /// `use_font` reads the database.
 fn first_launch(document: impl FnOnce(&ColorTheme) -> CanvasDocument) -> App {
+    launch(document, true, PathBuf::from("."))
+}
+
+/// [`first_launch`] as the overlay — the app's own mode, summoned over the
+/// desktop rather than opened in a window.
+///
+/// Marked as already set up: the first frame of a real overlay restyles its
+/// window and creates the menu-bar icon, both of which want a real window on
+/// the main thread, and neither of which shows in a frame.
+fn overlay_launch(document: impl FnOnce(&ColorTheme) -> CanvasDocument) -> App {
+    let mut app = launch(document, false, PathBuf::from("."));
+    app.overlay_configured = true;
+    app
+}
+
+/// An app built from a default config showing `document`, windowed or as the
+/// overlay, with file nodes resolved against `base`.
+fn launch(document: impl FnOnce(&ColorTheme) -> CanvasDocument, windowed: bool, base: PathBuf) -> App {
     let mut config = config::Config::default();
     // A theme of the caller's, for looking at the app as a particular user
     // has it: `TOUR_THEME` names a built-in one, `TOUR_THEME_CSS` points at an
@@ -623,12 +733,12 @@ fn first_launch(document: impl FnOnce(&ColorTheme) -> CanvasDocument) -> App {
         theme,
         document,
         canvas_path: PathBuf::new(),
-        base_path: PathBuf::from("."),
+        base_path: base,
         file_mtime: None,
         scratch: true,
         hotkey_manager: None,
         registered_hotkey: None,
-        windowed: true,
+        windowed,
     })
 }
 
@@ -670,6 +780,45 @@ fn sample_board(_: &ColorTheme) -> CanvasDocument {
         }
     }
     CanvasDocument { nodes, edges, extra: serde_json::Map::new() }
+}
+
+/// One board with a bit of everything a theme colours: heading, bold,
+/// italic, code (inline and a block), a link, a list with tasks, a quote, a
+/// labelled link between notes, every card colour, and a named frame.
+fn theme_sampler(_: &ColorTheme) -> CanvasDocument {
+    use thinkboard_core::fixtures::{edge, node};
+    let text = |id: &str, text: &str, (x, y, w, h): (f32, f32, f32, f32)| CanvasNode {
+        text: Some(text.to_owned()),
+        x,
+        y,
+        width: w,
+        height: h,
+        ..node(id)
+    };
+    let mut nodes = vec![
+        text("intro", "# Theme sampler\n\nBody text with **bold**, *italic*, `inline code` and a [link](https://example.com).", (0.0, 0.0, 400.0, 170.0)),
+        text("lists", "## Lists\n\n- an item\n- [ ] a task\n- [x] a done task\n\n> a quote", (520.0, -60.0, 300.0, 230.0)),
+        text("code", "```rust\nfn main() {\n    println!(\"hi\");\n}\n```", (520.0, 220.0, 300.0, 130.0)),
+    ];
+    let names = ["Red", "Orange", "Yellow", "Green", "Cyan", "Purple"];
+    for (i, name) in names.iter().enumerate() {
+        nodes.push(CanvasNode {
+            color: Some((i + 1).to_string()),
+            ..text(&format!("c{i}"), name, (i as f32 * 140.0 - 20.0, 300.0, 120.0, 60.0))
+        });
+    }
+    let mut frame = node("frame");
+    frame.kind = "group".to_owned();
+    frame.text = None;
+    frame.x = -50.0;
+    frame.y = 260.0;
+    frame.width = 880.0;
+    frame.height = 130.0;
+    frame.set_label("Colours");
+    nodes.insert(0, frame);
+    let mut labelled = edge("intro", "lists");
+    labelled.set_label("links");
+    CanvasDocument { nodes, edges: vec![labelled, edge("intro", "code")], extra: serde_json::Map::new() }
 }
 
 // --- Scenes ---
@@ -1054,6 +1203,167 @@ fn big_board() {
     tour.shot("panned-away");
 }
 
+/// The overlay, the way the app is meant to be met: summoned over the
+/// desktop, dismissed with Esc and with a click on empty space, summoned again.
+fn overlay() {
+    let mut tour = Tour::new("overlay", overlay_launch(canvas_file::scratch_document));
+    tour.shot("summoned");
+    // Slowed, so a strip catches the frames in between: at full speed the
+    // whole exit is over between two of them.
+    tour.app.config.animation_scale = 4.0;
+    let everything = Rectangle::new(Point::ORIGIN, VIEWPORT);
+    let mut exit = tour.strip("dismissed-with-esc", everything);
+    // What the board publishes for Esc in the overlay; sent rather than typed,
+    // since a keystroke settles and would play the whole exit out unseen.
+    tour.send(Message::Exit);
+    tour.film(&mut exit, "esc");
+    tour.save(exit, 3);
+    let mut summon = tour.strip("summoned-again", everything);
+    tour.send(Message::ToggleOverlay);
+    tour.film(&mut summon, "summon");
+    tour.save(summon, 3);
+    tour.app.config.animation_scale = 1.0;
+    tour.click(Point::new(1380.0, 860.0));
+    tour.shot("clicked-away");
+}
+
+/// Every built-in theme on one board, each chosen the way a person chooses
+/// one: the palette, the picker, its name, Return.
+fn themes() {
+    let mut tour = Tour::new("themes", first_launch(theme_sampler));
+    let mut sheet = tour.strip("every-theme", Rectangle::new(Point::ORIGIN, VIEWPORT));
+    tour.frame(&mut sheet, "built-in default");
+    for name in [
+        "ThinkBoard Dark", "Catppuccin Mocha", "Dracula", "Gruvbox Dark", "Monokai",
+        "Nord", "One Dark", "Rosé Pine", "Solarized Dark", "Tokyo Night",
+    ] {
+        tour.palette("theme");
+        tour.type_text(name);
+        tour.named(key::Named::Enter);
+        tour.frame(&mut sheet, name);
+    }
+    tour.save(sheet, 2);
+}
+
+/// What a card can be besides text: an image, an embedded note, an
+/// attachment, a web link — from a vault made for them.
+fn card_kinds() {
+    let dir = std::env::temp_dir().join(format!("thinkboard-tour-kinds-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a folder for the files");
+    // A picture to show: a sky, a sea, a sun.
+    let image = ::image::RgbaImage::from_fn(480, 300, |x, y| {
+        let (fx, fy) = (x as f32 / 480.0, y as f32 / 300.0);
+        if (fx - 0.72).hypot((fy - 0.32) * 0.62) < 0.08 {
+            ::image::Rgba([255, 214, 120, 255])
+        } else if fy > 0.62 {
+            ::image::Rgba([(30.0 + 40.0 * fy) as u8, (90.0 + 30.0 * fy) as u8, (140.0 + 20.0 * fy) as u8, 255])
+        } else {
+            ::image::Rgba([(250.0 - 90.0 * fy) as u8, (170.0 + 30.0 * fy) as u8, (150.0 + 90.0 * fy) as u8, 255])
+        }
+    });
+    image.save(dir.join("Sunset.png")).expect("the picture");
+    std::fs::write(dir.join("Meeting notes.md"), "# Meeting notes\n\nAgreed to ship the **sync** rewrite first.\n\n- Ana: migration plan\n- Bo: load tests\n").expect("a note");
+    std::fs::write(dir.join("Quarterly report.pdf"), "%PDF-1.4\n").expect("an attachment");
+
+    let document = |_: &ColorTheme| {
+        use thinkboard_core::fixtures::node;
+        let file = |id: &str, path: &str, (x, y, w, h): (f32, f32, f32, f32)| CanvasNode {
+            kind: "file".to_owned(),
+            text: None,
+            file: Some(path.to_owned()),
+            x,
+            y,
+            width: w,
+            height: h,
+            ..node(id)
+        };
+        let mut link = CanvasNode { kind: "link".to_owned(), text: None, x: 520.0, y: 300.0, width: 320.0, height: 90.0, ..node("link") };
+        link.extra.insert("url".to_owned(), serde_json::Value::String("https://www.rust-lang.org/learn".to_owned()));
+        let nodes = vec![
+            file("image", "Sunset.png", (0.0, 0.0, 400.0, 250.0)),
+            file("note", "Meeting notes.md", (520.0, 0.0, 320.0, 240.0)),
+            file("pdf", "Quarterly report.pdf", (0.0, 320.0, 400.0, 70.0)),
+            link,
+            CanvasNode { text: Some("A plain **text** card, for comparison.".to_owned()), x: 0.0, y: 450.0, width: 400.0, height: 70.0, ..node("text") },
+        ];
+        CanvasDocument { nodes, edges: Vec::new(), extra: serde_json::Map::new() }
+    };
+    let mut tour = Tour::new("card_kinds", launch(document, true, dir.clone()));
+    tour.shot("kinds");
+    let note = tour.app.nodes.iter().position(|n| n.id == "note").expect("the note");
+    tour.move_to(tour.node_center(note));
+    tour.shot("note-hovered");
+    let image = tour.app.nodes.iter().position(|n| n.id == "image").expect("the image");
+    tour.click(tour.node_center(image));
+    tour.shot("image-selected");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// Tidying a board: a messy tree laid out with one command, a card dragged
+/// with snap to grid on, and one resized by its corner.
+fn arranging() {
+    let messy = |_: &ColorTheme| {
+        use thinkboard_core::fixtures::{edge, node};
+        let card = |id: &str, text: &str, x: f32, y: f32| CanvasNode {
+            text: Some(text.to_owned()),
+            x,
+            y,
+            width: 200.0,
+            height: 60.0,
+            ..node(id)
+        };
+        CanvasDocument {
+            nodes: vec![
+                card("a", "Launch plan", 300.0, 260.0),
+                card("b", "Marketing", -120.0, 40.0),
+                card("c", "Engineering", 620.0, -80.0),
+                card("d", "Landing page", 80.0, 420.0),
+                card("e", "Press kit", 520.0, 460.0),
+                card("f", "Release build", 900.0, 220.0),
+            ],
+            edges: vec![edge("a", "b"), edge("a", "c"), edge("b", "d"), edge("b", "e"), edge("c", "f")],
+            extra: serde_json::Map::new(),
+        }
+    };
+    let mut tour = Tour::new("arranging", first_launch(messy));
+    tour.shot("messy");
+    tour.drag(Point::new(12.0, 12.0), Point::new(1428.0, 888.0));
+    tour.shot("all-selected");
+    tour.palette("auto-layout sel");
+    tour.shot("laid-out");
+
+    // Snap to grid, from the board's menu.
+    tour.click(Point::new(12.0, 888.0));
+    let at = Point::new(120.0, 120.0);
+    tour.right_click(at);
+    tour.click(Point::new(at.x + 60.0, at.y + 4.0 + 93.0));
+    // A toggle leaves the menu up, showing its tick; Esc puts it away (a
+    // click would only close it, and start no drag).
+    tour.named(key::Named::Escape);
+    let first = tour.find("Launch plan");
+    let from = tour.node_center(first);
+    tour.move_to(from);
+    tour.press(mouse::Button::Left);
+    for step in 1..=8 {
+        tour.move_to(Point::new(from.x + step as f32 * 9.0, from.y + step as f32 * 7.0));
+    }
+    tour.shot("dragging-on-the-grid");
+    tour.release(mouse::Button::Left);
+
+    // A card's corner, dragged out.
+    let card = &tour.app.nodes[first];
+    let corner = tour.app.camera.to_screen(Point::new(card.x + card.width - 1.0, card.y + card.height - 1.0));
+    tour.move_to(corner);
+    tour.press(mouse::Button::Left);
+    for step in 1..=6 {
+        tour.move_to(Point::new(corner.x + step as f32 * 20.0, corner.y + step as f32 * 12.0));
+    }
+    tour.shot("resizing");
+    tour.release(mouse::Button::Left);
+    tour.shot("resized");
+}
+
 const SCENES: &[(&str, fn())] = &[
     ("first_run", first_run),
     ("build_a_board", build_a_board),
@@ -1067,6 +1377,10 @@ const SCENES: &[(&str, fn())] = &[
     ("groups", groups),
     ("vault", vault),
     ("big_board", big_board),
+    ("overlay", overlay),
+    ("themes", themes),
+    ("card_kinds", card_kinds),
+    ("arranging", arranging),
 ];
 
 #[test]
