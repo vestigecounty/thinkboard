@@ -190,7 +190,9 @@ impl App {
                 // The three reasons a list can be empty read differently, and
                 // only one of them is the user's to fix.
                 empty: match (&picker.error, picker.loading) {
-                    (Some(error), _) => format!("Couldn't list models — {error}").into(),
+                    // Each says what went wrong itself — "Couldn't reach LM
+                    // Studio", "wants an API key" — so it stands alone.
+                    (Some(error), _) => error.as_str().into(),
                     (None, true) => "Asking the endpoint…".into(),
                     (None, false) => "No matching model".into(),
                 },

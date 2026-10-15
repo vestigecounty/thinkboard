@@ -404,11 +404,16 @@ impl App {
     }
 
     fn ai_error(&mut self, stream_id: &str, error: String) -> Task<Message> {
-        self.end_ai_pending(stream_id);
+        // Still pending, the note holds only the dots; otherwise it holds the
+        // answer as far as it got, which the failure is added to rather than
+        // written over.
+        let pending = self.end_ai_pending(stream_id);
         if let Some(stream) = self.ai.streams.remove(stream_id)
             && let Some(index) = self.nodes.iter().position(|n| n.id == stream.current)
         {
-            self.nodes[index].text = Some(format!("⚠ {error}"));
+            let written = self.nodes[index].text.take().filter(|_| !pending).unwrap_or_default();
+            let gap = if written.trim().is_empty() { "" } else { "\n\n" };
+            self.nodes[index].text = Some(format!("{}{gap}⚠ {error}", written.trim_end()));
             self.autosize_node(index, true);
             self.invalidate_snapshot(index);
         }

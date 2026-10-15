@@ -1766,7 +1766,7 @@ fn ai_answers() {
 }
 
 /// When asking fails: nothing listening at the URL (a local runtime not
-/// started yet), and a key the provider refuses.
+/// started yet), no key where one is wanted, and a key the provider refuses.
 fn ai_errors() {
     let mut tour = Tour::new("ai_errors", first_launch(trip_board));
     configure(&mut tour, &Provider::absent());
@@ -1776,10 +1776,16 @@ fn ai_errors() {
     tour.settle_until(|app| app.ai.streams.is_empty());
     tour.shot("nothing-listening");
 
+    // A hosted provider asked with no key, then with one it refuses.
     let rejecting = Provider::start(&REJECTING);
     configure(&mut tour, &rejecting.url);
     let sintra = tour.find("How do we get");
     ask(&mut tour, sintra);
+    tour.settle_until(|app| app.ai.streams.is_empty());
+    tour.shot("no-key");
+    tour.app.config.set_ai_key("sk-not-a-real-key");
+    let trip = tour.find("# Trip to Lisbon");
+    ask(&mut tour, trip);
     tour.settle_until(|app| app.ai.streams.is_empty());
     tour.shot("key-rejected");
     tour.palette("model");

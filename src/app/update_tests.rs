@@ -1733,6 +1733,29 @@ fn a_greyed_command_says_what_would_let_it_run() {
     assert_eq!(AskAi.unavailable(&app), None);
 }
 
+#[test]
+fn a_failure_partway_keeps_what_was_written() {
+    use thinkboard_core::ai::Event;
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "http://localhost:1234/v1".to_owned();
+    let text = |app: &App, id: &str| app.nodes.iter().find(|n| n.id == id).and_then(|n| n.text.clone());
+
+    // Before the first word, the note holds only the dots: the failure is it.
+    send(&mut app, Message::SelectNode(Some(0)));
+    send(&mut app, Message::AskAi);
+    let first = app.ai.streams.keys().next().expect("asked").clone();
+    send(&mut app, Message::Ai(first.clone(), Event::Error("Couldn't reach LM Studio".to_owned())));
+    assert_eq!(text(&app, &first).as_deref(), Some("⚠ Couldn't reach LM Studio"));
+
+    // After some, the answer stays and the failure follows it.
+    send(&mut app, Message::SelectNode(Some(1)));
+    send(&mut app, Message::AskAi);
+    let second = app.ai.streams.keys().next().expect("asked").clone();
+    send(&mut app, Message::Ai(second.clone(), Event::Delta("Take the train from Rossio ".to_owned())));
+    send(&mut app, Message::Ai(second.clone(), Event::Error("The connection dropped".to_owned())));
+    assert_eq!(text(&app, &second).as_deref(), Some("Take the train from Rossio\n\n⚠ The connection dropped"));
+}
+
 // --- The font picker ---
 
 /// A family name that is nobody's font.

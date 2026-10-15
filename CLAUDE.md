@@ -474,9 +474,19 @@ switching provider mid-flight would offer one provider's models under another's
 name. The last list is kept (one endpoint's worth) so reopening is instant, and
 refetched behind it — the vault browser's bargain.
 
-Failures are phrased as something to act on rather than a status code: a 401 is
-"the API key was rejected", a 404 is "this endpoint has no model list", which is
-the ordinary answer from a local runtime rather than a fault.
+Failures are phrased as something to act on rather than a status code — what
+went wrong, then where to fix it — and **in one place**, `ai::describe_failure`,
+for the model list and a question alike. They used to describe the same 401 two
+ways, and only one of them said what to do. What was asked decides what a
+refusal means: a 404 from `/models` is a local runtime without the route (the
+ordinary answer, not a fault), while a question refused with a message about a
+model is that model not being served. A 401 sent with no key asks for one rather
+than calling it rejected, and nothing listening on localhost asks whether the
+runtime is running, by its preset's name where it has one.
+
+A failed answer stays on the board as a note, which is deliberate: it's where
+the question was asked, and deleting it is the editor's ordinary delete. A
+failure partway through is added under what had arrived, not written over it.
 
 ## Link routing
 

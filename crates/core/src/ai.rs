@@ -95,11 +95,11 @@ pub struct Model {
 /// are extensions, read when present and skipped when not.
 pub async fn models(base_url: &str, api_key: &str) -> Result<Vec<Model>, String> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let response = authed_get(&url, api_key).send().await.map_err(|e| e.to_string())?;
+    let response = authed_get(&url, api_key).send().await.map_err(|e| describe_unreachable(&e, base_url))?;
     if !response.status().is_success() {
         let status = response.status();
         let body = response.text().await.unwrap_or_default();
-        return Err(describe_failure(status, &body));
+        return Err(describe_failure(status, &body, base_url, api_key, Asked::Models));
     }
     let body: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
     Ok(parse_models(&body))
@@ -140,26 +140,97 @@ fn parse_models(body: &serde_json::Value) -> Vec<Model> {
     models
 }
 
-/// A failed request, in a sentence a user can act on rather than a status code.
-fn describe_failure(status: reqwest::StatusCode, body: &str) -> String {
-    let detail = serde_json::from_str::<serde_json::Value>(body)
-        .ok()
-        .and_then(|v| {
-            v.pointer("/error/message")
-                .or_else(|| v.pointer("/message"))
-                .and_then(|m| m.as_str())
-                .map(str::to_owned)
-        })
-        .unwrap_or_else(|| body.chars().take(200).collect());
-    match status {
-        reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN => {
-            format!("{status}: the API key was rejected ({detail})")
-        }
-        reqwest::StatusCode::NOT_FOUND => {
-            format!("{status}: this endpoint has no model list ({detail})")
-        }
-        _ => format!("{status}: {detail}"),
+/// What a request was for, which decides what a refusal means.
+#[derive(Clone, Copy)]
+enum Asked<'a> {
+    /// `GET /models`, where a 404 is a local runtime without the route — the
+    /// ordinary answer, not a fault.
+    Models,
+    /// A chat completion naming `model`, where a refusal that mentions a model
+    /// is almost always that one not being served.
+    Chat { model: &'a str },
+}
+
+/// A refused request, in a sentence a user can act on rather than a status
+/// code: what went wrong, then where to fix it.
+///
+/// One wording whichever request it was. The model list and the question used
+/// to describe the same 401 two ways — one "the API key was rejected", the
+/// other "endpoint returned 401 Unauthorized" — and only one said what to do.
+fn describe_failure(status: reqwest::StatusCode, body: &str, base_url: &str, api_key: &str, asked: Asked) -> String {
+    let detail = error_detail(body);
+    let provider = provider_name(base_url).unwrap_or("The provider");
+    let unserved = match asked {
+        Asked::Chat { model } if matches!(status.as_u16(), 400 | 404 | 422) && names_a_model(&detail) => Some(model),
+        _ => None,
+    };
+    if let Some(model) = unserved {
+        return format!("{provider} doesn't serve “{model}” — choose another model in Settings → AI.");
     }
+    match status.as_u16() {
+        // Sent with no key at all, a refusal is a request for one, not a
+        // verdict on it.
+        401 | 403 if api_key.trim().is_empty() => format!("{provider} wants an API key — paste one in Settings → AI."),
+        401 | 403 => "The API key was rejected — check it in Settings → AI.".to_owned(),
+        404 if matches!(asked, Asked::Models) => {
+            "This endpoint doesn't list its models — type the model's name in Settings → AI.".to_owned()
+        }
+        404 => format!("Nothing answers at {} — check the API URL in Settings → AI.", base_url.trim()),
+        429 => format!("{provider} is limiting requests — wait a moment, then ask again. ({detail})"),
+        500..=599 => format!("{provider} couldn't answer ({status}): {detail}"),
+        _ => format!("{provider} refused the request ({status}): {detail}"),
+    }
+}
+
+/// Whether a refusal is about the model named — wording varies by runtime:
+/// OpenAI's "does not exist", Ollama's "not found, try pulling it first",
+/// OpenRouter's "is not a valid model ID".
+fn names_a_model(detail: &str) -> bool {
+    let detail = detail.to_lowercase();
+    detail.contains("model")
+        && ["not found", "does not exist", "doesn't exist", "not a valid", "invalid model", "unknown model", "no such model"]
+            .iter()
+            .any(|phrase| detail.contains(phrase))
+}
+
+/// A request that got no answer at all, as what to check.
+fn describe_unreachable(error: &reqwest::Error, base_url: &str) -> String {
+    if error.is_builder() {
+        return format!("“{}” isn't a web address — it should start with http:// or https://.", base_url.trim());
+    }
+    if error.is_connect() {
+        return unreachable(base_url);
+    }
+    error.to_string()
+}
+
+/// Nothing listening at `base_url`. Local, that's a runtime not started yet,
+/// which is the thing to ask about — reqwest's own "error sending request for
+/// url" says only that something, somewhere, failed.
+fn unreachable(base_url: &str) -> String {
+    let Ok(url) = reqwest::Url::parse(base_url.trim()) else {
+        return format!("Couldn't reach {}.", base_url.trim());
+    };
+    let host = url.host_str().unwrap_or_default();
+    let at = match url.port() {
+        Some(port) => format!("{host}:{port}"),
+        None => host.to_owned(),
+    };
+    if matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "0.0.0.0") {
+        match provider_name(base_url) {
+            Some(name) => format!("Couldn't reach {name} at {at} — is it running?"),
+            None => format!("Nothing is answering at {at} — is the server running?"),
+        }
+    } else {
+        format!("Couldn't reach {at} — check the connection, and the API URL in Settings → AI.")
+    }
+}
+
+/// The preset `base_url` belongs to, by name: "LM Studio" means more in a
+/// sentence than its port does.
+fn provider_name(base_url: &str) -> Option<&'static str> {
+    let url = base_url.trim().trim_end_matches('/');
+    PRESETS.iter().find(|preset| preset.url.trim_end_matches('/') == url).map(|preset| preset.name)
 }
 
 fn system_prompt(max_notes: usize) -> String {
@@ -416,7 +487,6 @@ pub async fn suggest(
     count: usize,
     thinking: bool,
 ) -> Result<Vec<String>, String> {
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let system = format!(
         "You are a mind-mapping copilot. Given a note and its context, suggest {count} \
          brief, distinct sibling notes that could branch from the same parent alongside \
@@ -442,7 +512,7 @@ pub async fn suggest(
     });
     apply_thinking(&mut body, &base_url, thinking);
 
-    let response = post_with_reasoning_retry(&url, &api_key, &mut body).await?;
+    let response = post_with_reasoning_retry(&base_url, &api_key, &mut body).await?;
     let value: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
     let content = value
         .get("choices")
@@ -538,15 +608,16 @@ fn is_reasoning_mandatory(body: &str) -> bool {
 /// request is rejected because the model mandates reasoning, learns that for the
 /// session, drops to the lowest thinking effort, and retries once.
 async fn post_with_reasoning_retry(
-    url: &str,
+    base_url: &str,
     api_key: &str,
     body: &mut serde_json::Value,
 ) -> Result<reqwest::Response, String> {
-    let response = authed_post(url, api_key)
+    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
+    let response = authed_post(&url, api_key)
         .json(&*body)
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| describe_unreachable(&e, base_url))?;
     if response.status().is_success() {
         return Ok(response);
     }
@@ -559,19 +630,24 @@ async fn post_with_reasoning_retry(
             mark_reasoning_required(model);
         }
         body["reasoning"] = lowest_reasoning();
-        let retry = authed_post(url, api_key)
+        let retry = authed_post(&url, api_key)
             .json(&*body)
             .send()
             .await
-            .map_err(|e| e.to_string())?;
+            .map_err(|e| describe_unreachable(&e, base_url))?;
         if retry.status().is_success() {
             return Ok(retry);
         }
         let status = retry.status();
         let text = retry.text().await.unwrap_or_default();
-        return Err(format!("endpoint returned {status}: {}", error_detail(&text)));
+        return Err(describe_failure(status, &text, base_url, api_key, asked(body)));
     }
-    Err(format!("endpoint returned {status}: {}", error_detail(&text)))
+    Err(describe_failure(status, &text, base_url, api_key, asked(body)))
+}
+
+/// A chat request's [`Asked`], naming the model it asked for.
+fn asked(body: &serde_json::Value) -> Asked<'_> {
+    Asked::Chat { model: body.get("model").and_then(|m| m.as_str()).unwrap_or_default() }
 }
 
 /// A human-readable reason from a failed response body: the OpenAI-style
@@ -582,6 +658,7 @@ fn error_detail(body: &str) -> String {
         let err = value.get("error");
         if let Some(msg) = err
             .and_then(|e| e.get("message").and_then(|m| m.as_str()).or_else(|| e.as_str()))
+            .or_else(|| value.get("message").and_then(|m| m.as_str()))
         {
             return msg.to_owned();
         }
@@ -662,7 +739,6 @@ async fn run(
     thinking: bool,
     output: &mut Sender<Event>,
 ) -> Result<(), String> {
-    let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let mut body = serde_json::json!({
         "model": model,
         "stream": true,
@@ -673,7 +749,7 @@ async fn run(
     });
     apply_thinking(&mut body, base_url, thinking);
 
-    let response = post_with_reasoning_retry(&url, api_key, &mut body).await?;
+    let response = post_with_reasoning_retry(base_url, api_key, &mut body).await?;
 
     // Server-sent events: `data: {json}` lines, terminated by `data: [DONE]`.
     // Buffer bytes and only decode whole lines so multi-byte characters split
@@ -683,7 +759,7 @@ async fn run(
     let mut sse: Vec<u8> = Vec::new();
     let mut content = String::new();
     while let Some(chunk) = stream.next().await {
-        sse.extend_from_slice(&chunk.map_err(|e| e.to_string())?);
+        sse.extend_from_slice(&chunk.map_err(|_| "The connection dropped partway through the answer.".to_owned())?);
         while let Some(newline) = sse.iter().position(|&b| b == b'\n') {
             let line: Vec<u8> = sse.drain(..=newline).collect();
             let text = String::from_utf8_lossy(&line);
@@ -1216,17 +1292,41 @@ mod tests {
 
     #[test]
     fn a_failure_says_what_to_do_about_it() {
-        let unauthorized = describe_failure(
-            reqwest::StatusCode::UNAUTHORIZED,
-            r#"{"error": {"message": "No auth credentials found"}}"#,
-        );
-        assert!(unauthorized.contains("API key"), "{unauthorized}");
-        assert!(unauthorized.contains("No auth credentials found"), "{unauthorized}");
+        use reqwest::StatusCode;
+        let lm_studio = "http://localhost:1234/v1";
+        let chat = Asked::Chat { model: "google/gemma-4-26b-a4b-qat" };
 
-        // A provider that simply hasn't got the route — the common case for a
-        // local runtime — shouldn't read as a broken key.
-        let missing = describe_failure(reqwest::StatusCode::NOT_FOUND, "<html>404</html>");
-        assert!(missing.contains("no model list"), "{missing}");
+        // No key sent: a request for one, from the provider by name.
+        let no_key = describe_failure(StatusCode::UNAUTHORIZED, r#"{"error": {"message": "No auth credentials found"}}"#, "https://api.openai.com/v1", "", chat);
+        assert_eq!(no_key, "OpenAI wants an API key — paste one in Settings → AI.");
+        // A key sent and refused: the same sentence for the list and a question.
+        let rejected = |asked| describe_failure(StatusCode::UNAUTHORIZED, "{}", lm_studio, "sk-1", asked);
+        assert_eq!(rejected(Asked::Models), rejected(chat));
+        assert!(rejected(chat).contains("check it in Settings → AI"));
+
+        // A local runtime without the route: ordinary, and nothing to do with a key.
+        let missing = describe_failure(StatusCode::NOT_FOUND, "<html>404</html>", lm_studio, "", Asked::Models);
+        assert!(missing.contains("doesn't list its models"), "{missing}");
+
+        // A question for a model the provider hasn't got, in three runtimes' words.
+        for body in [
+            r#"{"error": {"message": "The model `google/gemma-4-26b-a4b-qat` does not exist or you do not have access to it."}}"#,
+            r#"{"error": "model \"gemma\" not found, try pulling it first"}"#,
+            r#"{"error": {"message": "google/gemma is not a valid model ID"}}"#,
+        ] {
+            let unserved = describe_failure(StatusCode::NOT_FOUND, body, lm_studio, "", chat);
+            assert_eq!(unserved, "LM Studio doesn't serve “google/gemma-4-26b-a4b-qat” — choose another model in Settings → AI.");
+        }
+        // A 404 that isn't about a model is the URL.
+        let elsewhere = describe_failure(StatusCode::NOT_FOUND, "Not Found", "http://example.com/api", "", chat);
+        assert!(elsewhere.contains("Nothing answers at http://example.com/api"), "{elsewhere}");
+    }
+
+    #[test]
+    fn nothing_listening_asks_whether_it_is_running() {
+        assert_eq!(unreachable("http://localhost:1234/v1"), "Couldn't reach LM Studio at localhost:1234 — is it running?");
+        assert_eq!(unreachable("http://127.0.0.1:8080/v1"), "Nothing is answering at 127.0.0.1:8080 — is the server running?");
+        assert!(unreachable("https://api.openai.com/v1").starts_with("Couldn't reach api.openai.com — check the connection"));
     }
 
 }
