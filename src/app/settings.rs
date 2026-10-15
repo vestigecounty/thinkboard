@@ -54,6 +54,7 @@ pub(crate) enum Field {
     AutoZoomLevel,
     ThemeCss,
     OverlayDim,
+    ColoredCardOpacity,
     CenterNodeText,
     RasterizeText,
     NodeScrollbars,
@@ -217,6 +218,11 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         "Overlay dim",
         feel_slider(Field::OverlayDim, c.overlay_dim, 1.0),
         "How much the overlay dims the desktop (0 none, 1 solid black).",
+    ));
+    items.push(setting(
+        "Colored card opacity",
+        feel_slider(Field::ColoredCardOpacity, c.colored_card_opacity, 1.0),
+        "How solid a colored card is. Below 1, what's under it shows through — the board, or in the overlay the desktop.",
     ));
     // Template-image menu-bar icon, macOS-only (the template concept is AppKit's).
     #[cfg(target_os = "macos")]
@@ -761,6 +767,7 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
         (Field::AutoZoomTrigger, Value::Num(v)) => config.auto_zoom_trigger = v,
         (Field::AutoZoomLevel, Value::Num(v)) => config.auto_zoom_level = v,
         (Field::OverlayDim, Value::Num(v)) => config.overlay_dim = v,
+        (Field::ColoredCardOpacity, Value::Num(v)) => config.colored_card_opacity = v,
         (Field::NewNodeMinWidth, Value::Num(v)) => config.new_node_min_width = v,
         (Field::NewNodeMinHeight, Value::Num(v)) => config.new_node_min_height = v,
         (Field::MaxNodeWidth, Value::Num(v)) => config.max_node_width = v,

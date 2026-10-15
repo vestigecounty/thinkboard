@@ -2388,7 +2388,10 @@ impl Board<'_> {
             let accent = node.palette_color().map(IntoColor::into_color);
 
             let fill = match accent {
-                Some(color) => Color { a: 0.85, ..blend(self.theme.card_fill, color, 0.15) },
+                Some(color) => Color {
+                    a: self.config.colored_card_opacity,
+                    ..blend(self.theme.card_fill, color, 0.15)
+                },
                 None => self.theme.card_fill,
             };
             frame.fill(&card, Color { a: fill.a * alpha, ..fill });

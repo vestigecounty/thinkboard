@@ -127,6 +127,10 @@ pub struct Config {
     pub font: String,
     /// Overlay dim opacity over the desktop (0 = none, 1 = solid black).
     pub overlay_dim: f32,
+    /// How solid a colored card is. Below 1 what's under it — the board, the
+    /// cards beneath, the desktop in the overlay — shows through, which is the
+    /// look colored cards have always had (0.85); an uncolored card is opaque.
+    pub colored_card_opacity: f32,
     /// Whether node/cluster text may be centered. When true (default), plain or
     /// simply-emphasized text (only bold/italic) is centered, and anything with
     /// richer formatting (headings, code, links, lists) is left-aligned; when
@@ -244,6 +248,7 @@ impl Default for Config {
             theme_css: None,
             font: String::new(),
             overlay_dim: 0.55,
+            colored_card_opacity: 0.85,
             center_node_text: true,
             rasterize_text: true,
             node_scrollbars: false,
@@ -428,6 +433,8 @@ impl Config {
         self.auto_zoom_trigger = self.auto_zoom_trigger.clamp(0.0, self.max_zoom);
         self.auto_zoom_level = self.auto_zoom_level.clamp(self.min_zoom, self.max_zoom);
         self.overlay_dim = self.overlay_dim.clamp(0.0, 1.0);
+        // A floor, so a card can't be faded out of sight by accident.
+        self.colored_card_opacity = self.colored_card_opacity.clamp(0.2, 1.0);
         self.new_node_min_width = self.new_node_min_width.max(20.0);
         self.new_node_min_height = self.new_node_min_height.max(20.0);
         self.max_node_width = self.max_node_width.max(self.new_node_min_width);
