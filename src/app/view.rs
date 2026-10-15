@@ -149,14 +149,17 @@ impl App {
             1.0
         };
 
-        // Bottom layer: the dim (overlay) or dark fill (windowed).
+        // Bottom layer: the dim (overlay) or the theme's background (windowed).
+        // A fixed dark fill here left every theme's cards on the same neutral
+        // grey — Solarized's teal on charcoal — whatever the theme said its
+        // background was.
         let backdrop_color = if self.overlay {
             iced::Color {
                 a: self.config.overlay_dim * content_alpha,
                 ..iced::Color::BLACK
             }
         } else {
-            board::BACKGROUND
+            self.theme.background
         };
         let backdrop = container(Space::new().width(Fill).height(Fill))
             .width(Fill)

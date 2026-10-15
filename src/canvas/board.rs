@@ -31,7 +31,6 @@ use crate::document::IntoColor;
 use crate::model::{CanvasEdge, CanvasNode, EdgeEnd, NodeKind};
 use crate::theme::Theme as ColorTheme;
 
-pub const BACKGROUND: Color = Color::from_rgb(0.12, 0.12, 0.13);
 /// Default outline for uncolored nodes/clusters (not themed).
 const CARD_BORDER: Color = Color::from_rgb(0.45, 0.45, 0.45);
 /// Default node text color, and the fallback used by the app's menu chrome.
