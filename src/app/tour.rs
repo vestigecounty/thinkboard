@@ -479,6 +479,31 @@ impl Tour {
         self.hold(Modifiers::empty());
     }
 
+    /// A mouse wheel's notches over `at` — on the board, a zoom.
+    fn wheel(&mut self, at: Point, lines: f32) {
+        self.move_to(at);
+        self.feed(vec![Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Lines { x: 0.0, y: lines },
+        })]);
+    }
+
+    /// A trackpad's two-finger scroll over `at` — on the board, a pan; over a
+    /// panel, a scroll.
+    fn swipe(&mut self, at: Point, dx: f32, dy: f32) {
+        self.move_to(at);
+        self.feed(vec![Event::Mouse(mouse::Event::WheelScrolled {
+            delta: mouse::ScrollDelta::Pixels { x: dx, y: dy },
+        })]);
+    }
+
+    /// Runs a command the way a person does: the palette, a few letters of its
+    /// name, Return.
+    fn palette(&mut self, query: &str) {
+        self.chord(Modifiers::COMMAND | Modifiers::SHIFT, "p");
+        self.type_text(query);
+        self.named(key::Named::Enter);
+    }
+
     /// Types `text` a key at a time; `\n` is Return.
     fn type_text(&mut self, text: &str) {
         for c in text.chars() {
@@ -609,6 +634,42 @@ fn first_launch(document: impl FnOnce(&ColorTheme) -> CanvasDocument) -> App {
 
 fn empty_document(_: &ColorTheme) -> CanvasDocument {
     CanvasDocument { nodes: Vec::new(), edges: Vec::new(), extra: serde_json::Map::new() }
+}
+
+/// A board with some life in it: eight topics, each a note linked to a
+/// handful of its own, laid out in blocks — enough to cluster when zoomed out
+/// and to have something on every side when panned.
+fn sample_board(_: &ColorTheme) -> CanvasDocument {
+    use thinkboard_core::fixtures::{edge, node};
+    const TOPICS: &[(&str, &[&str])] = &[
+        ("# Trip to Lisbon", &["Flights\n\n- TAP, Fri evening\n- back Mon night", "Stay in **Alfama**", "Pastéis de nata at Manteigaria", "Day trip to *Sintra*", "Budget: ~€900"]),
+        ("# Garden", &["Tomatoes: start indoors in March", "Fix the **fence** before spring", "Compost bin", "Ask about the apple tree"]),
+        ("# Reading list", &["*The Overstory*", "*Piranesi* — reread", "Designing Data-Intensive Applications", "*A Swim in a Pond in the Rain*", "Poetry: Mary Oliver"]),
+        ("# Q4 plan", &["Ship the **sync** rewrite", "Hire: two engineers", "Offsite in November", "OKR: p95 latency < 200 ms", "Retire the old dashboard"]),
+        ("# Home renovation", &["Kitchen: quotes from 3 builders", "Paint the hallway — *sage green*?", "Bathroom tiles", "Budget and timeline"]),
+        ("# Learning Rust", &["Finish the **ownership** chapter", "Write a CLI tool", "Read about `async`", "Advent of Code in Rust"]),
+        ("# Birthday party", &["Guest list (~20)", "Cake: lemon & olive oil", "Playlist", "Venue: the back garden"]),
+        ("# Running", &["10k in under 50 min", "Long run on Sundays", "New shoes", "Half marathon in April?"]),
+    ];
+    let (mut nodes, mut edges) = (Vec::new(), Vec::new());
+    for (t, (root, children)) in TOPICS.iter().enumerate() {
+        let (bx, by) = ((t % 2) as f32 * 1100.0, (t / 2) as f32 * 760.0);
+        let id = format!("t{t}");
+        nodes.push(CanvasNode { text: Some((*root).to_owned()), x: bx, y: by + 200.0, width: 260.0, height: 80.0, ..node(&id) });
+        for (c, text) in children.iter().enumerate() {
+            let child = format!("t{t}c{c}");
+            nodes.push(CanvasNode {
+                text: Some((*text).to_owned()),
+                x: bx + 420.0,
+                y: by + c as f32 * 120.0,
+                width: 280.0,
+                height: if text.contains('\n') { 110.0 } else { 70.0 },
+                ..node(&child)
+            });
+            edges.push(edge(&id, &child));
+        }
+    }
+    CanvasDocument { nodes, edges, extra: serde_json::Map::new() }
 }
 
 // --- Scenes ---
@@ -827,12 +888,160 @@ fn overlapping() {
     tour.shot("left-over");
 }
 
+/// The settings panel, opened from the palette and scrolled through.
+fn settings() {
+    let mut tour = Tour::new("settings", first_launch(canvas_file::scratch_document));
+    tour.palette("settings");
+    tour.shot("top");
+    let over = Point::new(720.0, 500.0);
+    for page in 1..=6 {
+        tour.swipe(over, 0.0, -520.0);
+        tour.shot(&format!("scrolled-{page}"));
+    }
+    tour.named(key::Named::Escape);
+}
+
+/// Trying themes and fonts on: the pickers preview as you move, and Esc puts
+/// the board back.
+fn pickers() {
+    let mut tour = Tour::new("pickers", first_launch(sample_board));
+    tour.palette("theme");
+    tour.shot("theme-picker");
+    for _ in 0..3 {
+        tour.named(key::Named::ArrowDown);
+    }
+    tour.shot("theme-previewing");
+    tour.type_text("nord");
+    tour.shot("theme-filtered");
+    tour.named(key::Named::Escape);
+    tour.shot("theme-cancelled");
+
+    tour.palette("font");
+    tour.shot("font-picker");
+    tour.type_text("georgia");
+    tour.shot("font-filtered");
+    tour.named(key::Named::Escape);
+}
+
+/// Find on board: a query, the next hit, and the way out.
+fn find() {
+    let mut tour = Tour::new("find", first_launch(canvas_file::scratch_document));
+    tour.chord(Modifiers::COMMAND, "f");
+    tour.shot("find-bar");
+    tour.type_text("board");
+    tour.shot("hits");
+    tour.named(key::Named::Enter);
+    tour.shot("next-hit");
+    tour.type_text("zzz");
+    tour.shot("no-hits");
+    tour.named(key::Named::Escape);
+    tour.shot("closed");
+}
+
+/// Links: hovered, selected, its menu — and the board in each link style.
+fn links() {
+    let mut tour = Tour::new("links", first_launch(sample_board));
+    // Close in on the first topic: its note on the left, its links fanning right.
+    let root = tour.find("# Trip to Lisbon");
+    let factor = 1.0 / tour.app.camera.zoom;
+    tour.send(Message::ZoomBy { factor, cursor: Point::new(720.0, 450.0) });
+    tour.settle();
+    let to_left = Point::new(360.0, 450.0) - tour.node_center(root);
+    tour.send(Message::Pan { delta: to_left, track: false });
+    tour.settle();
+    // The middle of the link to the third note: halfway between its ports.
+    let child = tour.find("Pastéis");
+    let (a, b) = (&tour.app.nodes[root], &tour.app.nodes[child]);
+    let from = tour.app.camera.to_screen(Point::new(a.x + a.width, a.y + a.height / 2.0));
+    let to = tour.app.camera.to_screen(Point::new(b.x, b.y + b.height / 2.0));
+    let middle = Point::new((from.x + to.x) / 2.0, (from.y + to.y) / 2.0);
+    tour.move_to(middle);
+    tour.shot("link-hovered");
+    tour.click(middle);
+    tour.shot("link-selected");
+    tour.right_click(middle);
+    tour.shot("link-menu");
+    tour.named(key::Named::Escape);
+    let empty = Point::new(from.x - 40.0, 860.0);
+    tour.click(empty);
+    for style in ["mermaid", "square"] {
+        tour.app.config.link_style = style.parse().expect("a link style");
+        tour.app.cache.clear();
+        tour.shot(&format!("style-{style}"));
+    }
+}
+
+/// Grouping: three notes swept up with a marquee, framed, named, moved.
+fn groups() {
+    let mut tour = Tour::new("groups", first_launch(sample_board));
+    let factor = 0.9 / tour.app.camera.zoom;
+    tour.send(Message::ZoomBy { factor, cursor: Point::new(720.0, 450.0) });
+    tour.settle();
+    // A marquee around the first topic's first three notes.
+    let (first, third) = (&tour.app.nodes[1], &tour.app.nodes[3]);
+    let top_left = tour.app.camera.to_screen(Point::new(first.x - 30.0, first.y - 30.0));
+    let bottom_right = tour.app.camera.to_screen(Point::new(third.x + third.width + 30.0, third.y + third.height + 30.0));
+    tour.drag(top_left, bottom_right);
+    tour.shot("marquee-selected");
+    tour.palette("group");
+    tour.shot("group-naming");
+    tour.type_text("Logistics");
+    tour.named(key::Named::Escape);
+    tour.shot("group-named");
+    tour.click(Point::new(40.0, 860.0));
+    tour.shot("deselected");
+}
+
+/// The vault browser over a vault made for it: boards in folders, one hidden.
+fn vault() {
+    let root = std::env::temp_dir().join(format!("thinkboard-tour-vault-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for path in [
+        "Trips/Lisbon.canvas", "Trips/Japan 2027.canvas", "Work/Q4 plan.canvas", "Work/Hiring.canvas",
+        "Home/Renovation.canvas", "Reading.canvas", ".obsidian/workspace.canvas",
+    ] {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().expect("a folder")).expect("vault folder");
+        std::fs::write(&file, r#"{"nodes":[],"edges":[]}"#).expect("a board");
+    }
+    let mut tour = Tour::new("vault", first_launch(sample_board));
+    tour.app.config.vault = root.display().to_string();
+    tour.chord(Modifiers::COMMAND, "o");
+    tour.shot("browser");
+    tour.type_text("trip");
+    tour.shot("filtered");
+    tour.named(key::Named::Escape);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// A larger board from far out to close in, then panned off into nothing.
+fn big_board() {
+    let mut tour = Tour::new("big_board", first_launch(sample_board));
+    tour.shot("fitted");
+    let center = Point::new(720.0, 450.0);
+    for step in 1..=3 {
+        tour.wheel(center, 3.0);
+        tour.shot(&format!("zoom-in-{step}"));
+    }
+    for _ in 0..12 {
+        tour.swipe(center, -400.0, 0.0);
+    }
+    tour.shot("panned-away");
+}
+
 const SCENES: &[(&str, fn())] = &[
     ("first_run", first_run),
     ("build_a_board", build_a_board),
     ("double_click_to_add", double_click_to_add),
     ("editing", editing),
     ("overlapping", overlapping),
+    ("settings", settings),
+    ("pickers", pickers),
+    ("find", find),
+    ("links", links),
+    ("groups", groups),
+    ("vault", vault),
+    ("big_board", big_board),
 ];
 
 #[test]
