@@ -323,6 +323,24 @@ pub fn derive(palette: &Palette) -> Resolved {
         fonts: Fonts::default(),
     };
 
+    // A card is a raised surface: lighter than the board in a dark scheme,
+    // darker in a light one. base01 is meant to be exactly that, and in most
+    // schemes is — but Catppuccin's is its "mantle", a shade *darker* than its
+    // base, and every card looked sunk into the board. Where base01 doesn't
+    // rise, the next surface up (base02) does; the border, which was base02,
+    // steps up with it rather than vanish into the card. First, because the
+    // contrast checks below measure against the card.
+    if let (Some(board), Some(card), Some(text)) = (out.background, out.card_fill, out.text) {
+        let dark = luminance(text) > luminance(board);
+        let rises = |c: Rgba| (luminance(c) > luminance(board)) == dark;
+        if !rises(card)
+            && let Some(surface) = s[0x2].filter(|&c| rises(c))
+        {
+            out.card_fill = Some(surface);
+            out.border = s[0x3];
+        }
+    }
+
     // Inline code is orange by convention across the ecosystem, and that
     // matches the app's own default — but a scheme tuned for low contrast can
     // put orange somewhere genuinely hard to read. Solarized's is 2.8:1 against
@@ -464,6 +482,28 @@ mod tests {
         "base0C": "#2aa198", "base0D": "#268bd2", "base0E": "#6c71c4", "base0F": "#d33682"
       }
     }"##;
+
+    #[test]
+    fn a_card_rises_from_the_board_even_where_base01_sinks() {
+        // Catppuccin's base01 is darker than its base00: cards sank.
+        let catppuccin = r##"{
+          "format": 1, "name": "Catppuccin Mocha", "appearance": "dark",
+          "palette": {
+            "base00": "#1e1e2e", "base01": "#181825", "base02": "#313244", "base03": "#45475a",
+            "base04": "#585b70", "base05": "#cdd6f4", "base06": "#f5e0dc", "base07": "#b4befe",
+            "base08": "#f38ba8", "base09": "#fab387", "base0A": "#f9e2af", "base0B": "#a6e3a1",
+            "base0C": "#94e2d5", "base0D": "#89b4fa", "base0E": "#cba6f7", "base0F": "#f2cdcd"
+          }
+        }"##;
+        let theme = ThemeFile::parse(catppuccin).expect("parses").resolve();
+        let (board, card) = (theme.background.unwrap(), theme.card_fill.unwrap());
+        assert!(luminance(card) > luminance(board), "the card stands above the board");
+        assert_ne!(theme.border, theme.card_fill, "and its border still shows");
+
+        // Where base01 already rises, it's still the card.
+        let solarized = ThemeFile::parse(SOLARIZED).expect("parses").resolve();
+        assert_eq!(solarized.card_fill, Some(Rgba::from_rgb8(0x07, 0x36, 0x42)));
+    }
 
     #[test]
     fn a_palette_alone_yields_a_whole_theme() {
