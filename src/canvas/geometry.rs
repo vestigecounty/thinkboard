@@ -1,11 +1,12 @@
-//! Pure geometry for the curved links between nodes.
+//! Pure geometry for the board: the curved links between nodes, and how
+//! overlapping cards stack.
 //!
-//! Split out from the board widget because it is the hot path behind link
-//! hover: [`bezier_distance`] samples every edge's curve on every mouse move,
-//! so its cost scales with the edge count and is worth being able to measure
-//! (see `benches/render.rs`) and test on its own.
+//! Split out from the board widget because both run per frame: link hover
+//! ([`bezier_distance`] samples every edge's curve on every mouse move) and
+//! [`stacking_planes`] (every rebuild of the scene), so their cost is worth
+//! being able to measure (see `benches/render.rs`) and test on their own.
 
-use iced::Point;
+use iced::{Point, Rectangle};
 
 /// A link's cubic Bézier, in screen space.
 #[derive(Debug, Clone, Copy)]
@@ -83,9 +84,109 @@ pub fn within_reach(point: Point, g: &EdgeGeometry, threshold: f32) -> bool {
         && point.y <= max_y + threshold
 }
 
+/// Which plane each card is drawn in, for `rects` in drawing order (later is
+/// on top): 0 for a card that overlaps nothing drawn before it, else one above
+/// the highest card under it — never past `top`.
+///
+/// A plane is a renderer layer, and only a later layer can put a card's fill
+/// over another card's text (see `canvas::layered`). Most boards have no
+/// overlaps and so one plane; a pile of cards needs as many as it is deep, and
+/// past `top` the rest share the top one, where they bleed into each other as
+/// every card used to.
+pub fn stacking_planes(rects: &[Rectangle], top: usize) -> Vec<usize> {
+    let mut under: Vec<Vec<usize>> = vec![Vec::new(); rects.len()];
+    for (earlier, later) in overlapping_pairs(rects) {
+        under[later].push(earlier);
+    }
+    let mut planes = vec![0; rects.len()];
+    for i in 0..rects.len() {
+        planes[i] = under[i].iter().map(|&j| planes[j] + 1).max().unwrap_or(0).min(top);
+    }
+    planes
+}
+
+/// Whether any of `over` overlaps any of `under`.
+pub fn covers_any(over: &[Rectangle], under: &[Rectangle]) -> bool {
+    if over.is_empty() || under.is_empty() {
+        return false;
+    }
+    let all: Vec<Rectangle> = under.iter().chain(over).copied().collect();
+    let is_over = |i: usize| i >= under.len();
+    overlapping_pairs(&all).into_iter().any(|(a, b)| is_over(a) != is_over(b))
+}
+
+/// Every pair of `rects` that overlap, as `(earlier, later)` indices.
+///
+/// A sweep over left edges, so a board of cards side by side costs a sort and
+/// a scan, not a comparison of every pair. Touching edges don't count: a card
+/// placed flush against another isn't covering it.
+fn overlapping_pairs(rects: &[Rectangle]) -> Vec<(usize, usize)> {
+    const TOUCH: f32 = 0.5;
+    let mut by_left: Vec<usize> = (0..rects.len()).collect();
+    by_left.sort_by(|&a, &b| rects[a].x.total_cmp(&rects[b].x));
+    let mut pairs = Vec::new();
+    let mut open: Vec<usize> = Vec::new();
+    for &i in &by_left {
+        let r = rects[i];
+        open.retain(|&j| rects[j].x + rects[j].width > r.x + TOUCH);
+        for &j in &open {
+            let o = rects[j];
+            if o.y < r.y + r.height - TOUCH && r.y < o.y + o.height - TOUCH {
+                pairs.push((i.min(j), i.max(j)));
+            }
+        }
+        open.push(i);
+    }
+    pairs
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn card(x: f32, y: f32) -> Rectangle {
+        Rectangle::new(Point::new(x, y), iced::Size::new(100.0, 50.0))
+    }
+
+    #[test]
+    fn cards_apart_share_one_plane() {
+        let rects = [card(0.0, 0.0), card(200.0, 0.0), card(0.0, 100.0)];
+        assert_eq!(stacking_planes(&rects, 3), vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn a_card_over_another_goes_one_plane_up() {
+        // The second overlaps the first; the third overlaps only the second.
+        let rects = [card(0.0, 0.0), card(50.0, 20.0), card(140.0, 40.0)];
+        assert_eq!(stacking_planes(&rects, 3), vec![0, 1, 2]);
+    }
+
+    #[test]
+    fn drawing_order_decides_who_is_on_top_not_position() {
+        // The same overlap, listed the other way round: the later one lifts.
+        let rects = [card(50.0, 20.0), card(0.0, 0.0)];
+        assert_eq!(stacking_planes(&rects, 3), vec![0, 1]);
+    }
+
+    #[test]
+    fn touching_is_not_overlapping() {
+        let rects = [card(0.0, 0.0), card(100.0, 0.0), card(0.0, 50.0)];
+        assert_eq!(stacking_planes(&rects, 3), vec![0, 0, 0]);
+    }
+
+    #[test]
+    fn covering_is_between_the_two_sets_only() {
+        let (a, b, far) = (card(0.0, 0.0), card(50.0, 20.0), card(500.0, 0.0));
+        assert!(covers_any(&[b], &[a]));
+        assert!(!covers_any(&[far], &[a, b]), "a and b overlap, but both are under");
+        assert!(!covers_any(&[], &[a]));
+    }
+
+    #[test]
+    fn a_deep_pile_shares_the_top_plane() {
+        let rects: Vec<Rectangle> = (0..6).map(|i| card(i as f32 * 10.0, 0.0)).collect();
+        assert_eq!(stacking_planes(&rects, 2), vec![0, 1, 2, 2, 2, 2]);
+    }
 
     /// A curve from (0,0) to (100,0) bowing downward.
     fn curve() -> EdgeGeometry {

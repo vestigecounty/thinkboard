@@ -23,7 +23,10 @@ use iced::{Color, Point, Rectangle, Renderer, Size, Theme, Vector};
 
 use crate::Message;
 use crate::camera::Camera;
-use super::geometry::{EdgeGeometry, bezier_distance, cubic_bezier, within_reach};
+use super::geometry::{
+    EdgeGeometry, bezier_distance, covers_any, cubic_bezier, stacking_planes, within_reach,
+};
+use super::layered::Stacked;
 use crate::document::IntoColor;
 use crate::model::{CanvasEdge, CanvasNode, EdgeEnd, NodeKind};
 use crate::theme::Theme as ColorTheme;
@@ -73,6 +76,40 @@ const SEARCH_HIT_CURRENT: Color = Color::from_rgb(1.0, 0.882, 0.302);
 /// starts reading as a smudge on the card.
 const SEARCH_HIT: Color = Color::from_rgb(0.55, 0.485, 0.166);
 const SEARCH_INK: Color = Color::BLACK;
+
+/// Planes of overlapping cards stacked above the base scene before the rest
+/// share the top one — see [`stacking_planes`]. Each costs a renderer
+/// layer, but only while some card is that deep in a pile.
+const LIFTED_PLANES: usize = 3;
+
+/// The board's cached scene: the base — frames, links, clusters and every card
+/// that overlaps nothing beneath it — and a plane per level of a pile of
+/// overlapping cards above it.
+pub struct SceneCache {
+    base: canvas::Cache,
+    lifted: [canvas::Cache; LIFTED_PLANES],
+    /// How many lifted planes the last rebuild filled.
+    lifted_in_use: std::cell::Cell<usize>,
+}
+
+impl SceneCache {
+    pub fn new() -> Self {
+        Self {
+            base: canvas::Cache::new(),
+            lifted: std::array::from_fn(|_| canvas::Cache::new()),
+            lifted_in_use: std::cell::Cell::new(0),
+        }
+    }
+
+    /// Invalidates every plane together: anything that moves a card can move
+    /// it between planes.
+    pub fn clear(&self) {
+        self.base.clear();
+        for plane in &self.lifted {
+            plane.clear();
+        }
+    }
+}
 
 /// The command palette's chord, as the empty board's hint prints it.
 #[cfg(target_os = "macos")]
@@ -292,7 +329,7 @@ pub struct Board<'a> {
     /// Top safe-area inset (px) — the macOS notch / menu-bar height, so the
     /// top wayfinding button isn't clipped. 0 off macOS or where there's none.
     pub top_safe_inset: f32,
-    pub cache: &'a canvas::Cache,
+    pub cache: &'a SceneCache,
     pub editing: Option<usize>,
     pub overlay: bool,
     /// An in-board modal (the settings panel) is up: board keyboard shortcuts
@@ -764,31 +801,123 @@ impl canvas::Program<Message> for Board<'_> {
         &self,
         state: &Interaction,
         renderer: &Renderer,
+        theme: &Theme,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> Vec<Geometry> {
+        // Drawn through `Layered`, which reads the layering too; a plain canvas
+        // would get the same geometries in one layer.
+        self.draw_stacked(state, renderer, theme, bounds, cursor)
+            .into_iter()
+            .map(|(geometry, _)| geometry)
+            .collect()
+    }
+
+    fn mouse_interaction(
+        &self,
+        state: &Interaction,
+        bounds: Rectangle,
+        cursor: mouse::Cursor,
+    ) -> mouse::Interaction {
+        match state.kind {
+            Kind::Panning { .. }
+            | Kind::Dragging { .. }
+            | Kind::DraggingGhost { .. }
+            | Kind::DraggingCluster { .. } => mouse::Interaction::Grabbing,
+            Kind::Connecting { .. } => mouse::Interaction::Pointer,
+            Kind::Resizing { corner, .. } => corner.interaction(),
+            Kind::ScrollingNode { .. } => mouse::Interaction::Grabbing,
+            Kind::Idle => {
+                let Some(position) = cursor.position_in(bounds) else {
+                    return mouse::Interaction::default();
+                };
+                if self.show_clusters() {
+                    if self.cluster_at(self.camera.to_world(position)).is_some() {
+                        mouse::Interaction::Grab
+                    } else {
+                        mouse::Interaction::default()
+                    }
+                } else if let Some((_, corner)) = self.corner_at(position) {
+                    corner.interaction()
+                } else if self.node_thumb_at(position).is_some() {
+                    mouse::Interaction::Grab
+                } else if self.port_at(position).is_some() {
+                    mouse::Interaction::Pointer
+                } else if self
+                    .hit_test(self.camera.to_world(position))
+                    .filter(|index| self.selected.contains(index))
+                    .and_then(|index| self.link_at(index, position))
+                    .is_some()
+                {
+                    // Over a link on a selected node: a click opens it.
+                    mouse::Interaction::Pointer
+                } else if self.hit_test(self.camera.to_world(position)).is_some() {
+                    mouse::Interaction::Grab
+                } else if self.edge_at(position).is_some() {
+                    mouse::Interaction::Pointer
+                } else {
+                    mouse::Interaction::default()
+                }
+            }
+        }
+    }
+}
+
+/// Which nodes a [`Board::draw_nodes`] pass renders. The selected node(s) are
+/// lifted out of the cached scene into the uncached overlay so they layer above
+/// everything else — a single geometry can't put a node's card mesh above
+/// another node's image, since images always composite over meshes.
+#[derive(Clone, Copy)]
+enum NodePass<'p> {
+    /// Every node (used in cluster mode, where there's no overlay to lift into).
+    All,
+    /// The unselected cards in one plane of a pile (see [`Board::stacking`]):
+    /// plane 0 is the cached base scene, the rest are stacked above it.
+    Plane(usize, &'p [usize]),
+    /// Only the selected node(s) — drawn into the overlay, on top.
+    SelectedOnly,
+}
+
+impl Stacked<Message> for Board<'_> {
+    fn draw_stacked(
+        &self,
+        state: &Interaction,
+        renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
         _cursor: mouse::Cursor,
-    ) -> Vec<Geometry> {
+    ) -> Vec<(Geometry, bool)> {
         // The backdrop (dim or dark fill) and the node shadows live in
         // stack layers below this canvas; only edges and nodes are drawn
         // here.
         let build_start = self.show_fps.then(Instant::now);
-        let geometry = self.cache.draw(renderer, bounds.size(), |frame| {
-            // Crossfade node and cluster layers through the threshold; the
-            // more-opaque one is drawn on top so end states are clean.
-            let weight = self.cluster_weight();
-            let draw_nodes = weight < 1.0;
-            let draw_clusters = weight > 0.0;
+        // Crossfade node and cluster layers through the threshold; the
+        // more-opaque one is drawn on top so end states are clean.
+        let weight = self.cluster_weight();
+        let draw_nodes = weight < 1.0;
+        let draw_clusters = weight > 0.0;
+        // Cards are lifted into planes only while they're drawn alone: through
+        // a crossfade the base scene has to own the order between cards and
+        // clusters, and in cluster mode there are no cards.
+        let lift = draw_nodes && !draw_clusters && !self.show_clusters();
+        // Worked out once per rebuild, by whichever plane's cache asks first —
+        // and not at all on a frame every plane's cache answers itself.
+        let planes = std::cell::OnceCell::new();
+        let planes = || planes.get_or_init(|| self.stacking(lift));
+        let geometry = self.cache.base.draw(renderer, bounds.size(), |frame| {
+            self.cache.lifted_in_use.set(planes().1);
 
             let node_layer = |frame: &mut Frame| {
                 // Frames first: a group is a backdrop its members sit on.
                 self.draw_groups(frame);
                 self.draw_edges(frame);
                 // In cluster mode there's no overlay, so draw every node here;
-                // otherwise hold the selected node(s) back for the overlay.
+                // otherwise hold the selected node(s) back for the overlay, and
+                // any card over another back for a plane above.
                 let pass = if self.show_clusters() {
                     NodePass::All
                 } else {
-                    NodePass::Unselected
+                    NodePass::Plane(0, &planes().0)
                 };
                 self.draw_nodes(frame, pass);
             };
@@ -824,7 +953,18 @@ impl canvas::Program<Message> for Board<'_> {
             }
         }
 
-        let mut geometries = vec![geometry];
+        let mut geometries = vec![(geometry, false)];
+        // Each in a layer of its own (`Layered`), so a card here covers the text
+        // of one beneath it, as a card in the same layer can't — which is what
+        // a plane exists for, so every one asks.
+        if lift {
+            for plane in 1..=self.cache.lifted_in_use.get() {
+                let cards = self.cache.lifted[plane - 1].draw(renderer, bounds.size(), |frame| {
+                    self.draw_nodes(frame, NodePass::Plane(plane, &planes().0));
+                });
+                geometries.push((cards, true));
+            }
+        }
 
         // Uncached overlay: edge highlights (on top of nodes), hover port
         // dots, and the connection-drag preview. Not in cluster mode.
@@ -899,7 +1039,10 @@ impl canvas::Program<Message> for Board<'_> {
                 self.draw_snap_dots(&mut overlay, index);
             }
 
-            geometries.push(overlay.into_geometry());
+            // A layer of its own only when it has to cover a card: almost every
+            // frame it holds a port dot or a highlight, which sit fine in the
+            // layer below, and a layer is a pass of the whole window.
+            geometries.push((overlay.into_geometry(), self.overlay_covers_cards()));
         }
 
         // Wayfinding button when the viewport has drifted off all content. Its
@@ -908,7 +1051,7 @@ impl canvas::Program<Message> for Board<'_> {
         if let Some(target) = self.wayfinding_target() {
             let mut wf = Frame::new(renderer, bounds.size());
             self.draw_wayfinding(&mut wf, target);
-            geometries.push(wf.into_geometry());
+            geometries.push((wf.into_geometry(), false));
         }
 
         // Its counterpart for a board with nothing to find: how to start one.
@@ -917,78 +1060,15 @@ impl canvas::Program<Message> for Board<'_> {
         if self.nodes.is_empty() && self.ghosts.is_empty() && !self.context_menu {
             let mut hint = Frame::new(renderer, bounds.size());
             self.draw_empty_hint(&mut hint, bounds.size());
-            geometries.push(hint.into_geometry());
+            geometries.push((hint.into_geometry(), false));
         }
 
         if self.show_fps {
-            geometries.push(self.draw_fps_meter(renderer, bounds));
+            geometries.push((self.draw_fps_meter(renderer, bounds), false));
         }
 
         geometries
     }
-
-    fn mouse_interaction(
-        &self,
-        state: &Interaction,
-        bounds: Rectangle,
-        cursor: mouse::Cursor,
-    ) -> mouse::Interaction {
-        match state.kind {
-            Kind::Panning { .. }
-            | Kind::Dragging { .. }
-            | Kind::DraggingGhost { .. }
-            | Kind::DraggingCluster { .. } => mouse::Interaction::Grabbing,
-            Kind::Connecting { .. } => mouse::Interaction::Pointer,
-            Kind::Resizing { corner, .. } => corner.interaction(),
-            Kind::ScrollingNode { .. } => mouse::Interaction::Grabbing,
-            Kind::Idle => {
-                let Some(position) = cursor.position_in(bounds) else {
-                    return mouse::Interaction::default();
-                };
-                if self.show_clusters() {
-                    if self.cluster_at(self.camera.to_world(position)).is_some() {
-                        mouse::Interaction::Grab
-                    } else {
-                        mouse::Interaction::default()
-                    }
-                } else if let Some((_, corner)) = self.corner_at(position) {
-                    corner.interaction()
-                } else if self.node_thumb_at(position).is_some() {
-                    mouse::Interaction::Grab
-                } else if self.port_at(position).is_some() {
-                    mouse::Interaction::Pointer
-                } else if self
-                    .hit_test(self.camera.to_world(position))
-                    .filter(|index| self.selected.contains(index))
-                    .and_then(|index| self.link_at(index, position))
-                    .is_some()
-                {
-                    // Over a link on a selected node: a click opens it.
-                    mouse::Interaction::Pointer
-                } else if self.hit_test(self.camera.to_world(position)).is_some() {
-                    mouse::Interaction::Grab
-                } else if self.edge_at(position).is_some() {
-                    mouse::Interaction::Pointer
-                } else {
-                    mouse::Interaction::default()
-                }
-            }
-        }
-    }
-}
-
-/// Which nodes a [`Board::draw_nodes`] pass renders. The selected node(s) are
-/// lifted out of the cached scene into the uncached overlay so they layer above
-/// everything else — a single geometry can't put a node's card mesh above
-/// another node's image, since images always composite over meshes.
-#[derive(Clone, Copy)]
-enum NodePass {
-    /// Every node (used in cluster mode, where there's no overlay to lift into).
-    All,
-    /// Everything except the selected node(s) — the cached base scene.
-    Unselected,
-    /// Only the selected node(s) — drawn into the overlay, on top.
-    SelectedOnly,
 }
 
 impl Board<'_> {
@@ -2204,6 +2284,40 @@ impl Board<'_> {
 
     // MARK: Drawing
 
+    /// The plane each card is drawn in, by node index, and the deepest one
+    /// used. Without `lift`, or for a selected card or a frame, it's 0 — the
+    /// selected are lifted into the overlay anyway, and a frame is a backdrop,
+    /// enclosing cards rather than covering them.
+    fn stacking(&self, lift: bool) -> (Vec<usize>, usize) {
+        let mut planes = vec![0; self.nodes.len()];
+        if !lift {
+            return (planes, 0);
+        }
+        let cards: Vec<usize> = (0..self.nodes.len())
+            .filter(|&i| !self.nodes[i].is_group() && !self.selected.contains(&i))
+            .collect();
+        let rects: Vec<Rectangle> = cards.iter().map(|&i| self.node_rect(&self.nodes[i])).collect();
+        let mut deepest = 0;
+        for (&index, plane) in cards.iter().zip(stacking_planes(&rects, LIFTED_PLANES)) {
+            planes[index] = plane;
+            deepest = deepest.max(plane);
+        }
+        (planes, deepest)
+    }
+
+    /// Whether the overlay holds something that covers a card in the scene
+    /// beneath it — a selected card or a suggestion card over another card —
+    /// and so needs a layer of its own to be drawn over it.
+    fn overlay_covers_cards(&self) -> bool {
+        let (mut over, mut under) = (Vec::new(), Vec::new());
+        for (index, node) in self.nodes.iter().enumerate().filter(|(_, node)| !node.is_group()) {
+            let rect = self.node_rect(node);
+            if self.selected.contains(&index) { over.push(rect) } else { under.push(rect) }
+        }
+        over.extend(self.ghosts.iter().map(|ghost| ghost.rect));
+        covers_any(&over, &under)
+    }
+
     fn draw_nodes(&self, frame: &mut Frame, pass: NodePass) {
         let zoom = self.camera.zoom;
 
@@ -2213,7 +2327,7 @@ impl Board<'_> {
             let selected = self.selected.contains(&index);
             let skip = match pass {
                 NodePass::All => false,
-                NodePass::Unselected => selected,
+                NodePass::Plane(plane, planes) => selected || planes.get(index) != Some(&plane),
                 NodePass::SelectedOnly => !selected,
             };
             // Groups are frames, drawn in their own pass behind everything.

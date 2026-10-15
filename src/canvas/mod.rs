@@ -2,6 +2,7 @@ pub mod board;
 pub mod geometry;
 pub mod camera;
 pub mod hue_picker;
+pub mod layered;
 pub mod md_edit;
 pub mod shadows;
 pub mod text_raster;

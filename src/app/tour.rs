@@ -807,11 +807,32 @@ fn editing() {
     tour.shot("board");
 }
 
+/// Cards over cards: one dragged across another, then left there. A card's
+/// fill has to cover the text of the one beneath it — in the same renderer
+/// layer it can't, and both texts showed through each other.
+fn overlapping() {
+    let mut tour = Tour::new("overlapping", first_launch(canvas_file::scratch_document));
+    let dragged = tour.find("**Double-click**");
+    let target = tour.find("Hover a note");
+    let (from, to) = (tour.node_center(dragged), tour.node_center(target));
+    tour.move_to(from);
+    tour.press(mouse::Button::Left);
+    for step in 1..=10 {
+        let t = step as f32 / 10.0;
+        tour.move_to(Point::new(from.x + (to.x - from.x) * t, from.y + (to.y - from.y) * t + 8.0));
+    }
+    tour.shot("dragging-over");
+    tour.release(mouse::Button::Left);
+    tour.click(Point::new(1300.0, 860.0));
+    tour.shot("left-over");
+}
+
 const SCENES: &[(&str, fn())] = &[
     ("first_run", first_run),
     ("build_a_board", build_a_board),
     ("double_click_to_add", double_click_to_add),
     ("editing", editing),
+    ("overlapping", overlapping),
 ];
 
 #[test]

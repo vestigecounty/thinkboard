@@ -297,6 +297,40 @@ fn link_hover(c: &mut Criterion) {
     group.finish();
 }
 
+/// Stacking overlapping cards into planes: once per rebuild of the scene for
+/// [`stacking_planes`], and every frame for [`covers_any`] while something is
+/// selected. Both sweep left edges rather than comparing every pair, so a board
+/// laid out side by side — the common one — should cost a sort.
+fn stacking(c: &mut Criterion) {
+    use iced::{Rectangle, Size};
+    use thinkboard::geometry::{covers_any, stacking_planes};
+
+    // A grid of cards, every tenth pushed onto its neighbour: a few real
+    // overlaps among many that aren't.
+    let cards: Vec<Rectangle> = (0..800)
+        .map(|i| {
+            let (col, row) = ((i % 40) as f32, (i / 40) as f32);
+            let nudge = if i % 10 == 0 { (160.0, 40.0) } else { (0.0, 0.0) };
+            Rectangle::new(Point::new(col * 280.0 + nudge.0, row * 140.0 + nudge.1), Size::new(250.0, 90.0))
+        })
+        .collect();
+
+    let mut group = c.benchmark_group("stacking");
+    for count in [100, 800] {
+        let slice = &cards[..count];
+        group.throughput(Throughput::Elements(count as u64));
+        group.bench_with_input(BenchmarkId::new("planes", count), &count, |b, _| {
+            b.iter(|| stacking_planes(black_box(slice), 3))
+        });
+        // One card selected: the overlay asking whether it covers any other.
+        let (selected, rest) = slice.split_at(1);
+        group.bench_with_input(BenchmarkId::new("covers_any", count), &count, |b, _| {
+            b.iter(|| covers_any(black_box(selected), black_box(rest)))
+        });
+    }
+    group.finish();
+}
+
 /// What the main thread actually pays when background text work is running.
 ///
 /// Measurement and rasterization share one global mutex (`with_raster`), so a
@@ -402,6 +436,7 @@ criterion_group!(
     live_layout,
     recluster,
     link_hover,
+    stacking,
     contention,
     per_frame_overheads,
 );

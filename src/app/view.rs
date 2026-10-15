@@ -15,6 +15,7 @@ use super::search::Search;
 use super::{App, ContextMenuKind, Message, PICKER_REVEAL, chrome, command, settings, startup};
 use crate::canvas::board::{self, Board};
 use crate::canvas::hue_picker::HuePicker;
+use crate::canvas::layered::layered;
 use crate::canvas::{camera, md_edit, shadows};
 use crate::document::IntoColor;
 use crate::model;
@@ -171,7 +172,9 @@ impl App {
         .width(Fill)
         .height(Fill);
 
-        let board = iced_canvas(Board {
+        // Layered rather than a plain canvas: its geometries have to stack, or
+        // a card's fill can't cover the text of a card beneath it.
+        let board = layered(Board {
             nodes: &self.nodes,
             node_index: self
                 .nodes
@@ -239,9 +242,7 @@ impl App {
             ghost_fade: self.ghost_fade(),
             ghost_fade_in: self.ghost_fade_in(),
             ghost_hovered: self.ghosts.hovered,
-        })
-        .width(Fill)
-        .height(Fill);
+        });
 
         let mut layers = stack![backdrop, shadow_layer, board];
 

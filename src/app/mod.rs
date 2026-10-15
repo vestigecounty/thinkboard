@@ -514,7 +514,7 @@ struct App {
     /// Top safe-area inset (px), refreshed on resize; passed to the board so the
     /// top wayfinding button clears the macOS notch.
     top_safe_inset: f32,
-    cache: iced::widget::canvas::Cache,
+    cache: board::SceneCache,
     inertia: Option<Inertia>,
     zoom_animation: Option<ZoomAnimation>,
     pan_velocity: Vector,
@@ -791,7 +791,7 @@ impl App {
                 max_zoom,
                 ..Camera::default()
             },
-            cache: iced::widget::canvas::Cache::new(),
+            cache: board::SceneCache::new(),
             inertia: None,
             zoom_animation: None,
             pan_velocity: Vector::new(0.0, 0.0),

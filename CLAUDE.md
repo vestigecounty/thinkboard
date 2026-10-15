@@ -101,7 +101,12 @@ module and its `impl App` block there — keep `update` a dispatch table.
 
 ## Card sizing
 
-Auto-size **grows a card, never narrows it**. A width is something the user can
+Auto-size **grows a card, never narrows it**, and grows its height **downward
+from the top edge** — about its centre, every new line pushed the text already
+written upward and let a long note climb over the card above. While editing, a
+card is sized to the larger of its source and its rendered Markdown, so ending
+an edit doesn't make it jump (a heading is typed at body size but rendered
+large). A width is something the user can
 drag to deliberately, and re-deriving it from the text on the next keystroke
 threw that away. `max_node_width` bounds how wide a card grows *by itself*; it
 is not a limit on one sized by hand. Height still tracks content, so text
@@ -144,6 +149,29 @@ clipped by arithmetic rather than by `with_clip` — which is what the node
 scrollbar thumb and `Board::draw_search_hits` both do. The failure is silent and
 looks like a colour bug: the search highlight's black ink drew on bare card for
 four rounds while its yellow fill went straight under the card.
+
+## Cards over cards: renderer layers
+
+**Within one renderer layer, iced_wgpu draws every mesh, then every image,
+then every text — whatever order they were recorded in.** And the stock canvas
+draws all the geometries its program returns into the *same* layer. So no
+card's fill could cover another card's bitmap or text: a dragged card showed the
+text beneath it interleaved with its own, as did any two cards left
+overlapping. The overlay that "lifts" selected cards never lifted anything.
+
+The board is therefore drawn by `canvas::layered`, iced's canvas with one
+change: `Stacked::draw_stacked` returns each geometry with whether it starts a
+layer of its own. Unselected cards that overlap an earlier card go into
+**planes** above the base scene (`geometry::stacking_planes`, a sweep, one cache
+per plane in `board::SceneCache`), and the selection overlay takes a layer only
+when a selected or suggestion card actually covers another card.
+
+**A layer is not free.** With antialiasing, each layer holding meshes is a
+multisampled pass of the whole window plus a blit — about 0.1–0.2 ms on a retina
+frame. That's why layers are asked for rather than given: a board without
+overlapping cards draws in one layer, exactly as before. Measured with the tour
+on 400 cards in release: no difference without overlaps, at most ~0.2 ms with a
+plane in use. Don't give every geometry a layer "to be safe".
 
 ## First run
 
@@ -603,6 +631,9 @@ Standing results worth knowing (Apple silicon, release):
   sizes, hits the cache throughout, and is ~75× cheaper.
 - Link hover rejects on the curve's hull box before sampling it, which took a
   scan of 800 edges from 64 µs to 2.2 µs per mouse move.
+- Stacking overlapping cards (`stacking` group): 16 µs to place 800 cards in
+  planes, paid once per scene rebuild; 14 µs per frame for the overlay's
+  "does the selection cover a card" check while something is selected.
 
 Measured and **not** worth optimizing — don't re-propose without a new number:
 clustering itself, layered layout, canvas parse/serialize, Markdown parse,
