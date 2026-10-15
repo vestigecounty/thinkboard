@@ -541,6 +541,9 @@ struct App {
     /// Whether the settings window's collapsible "Advanced" section is expanded.
     /// Collapsed by default so the essentials (theme, canvas, hotkey) stay short.
     settings_advanced_open: bool,
+    /// "Custom" was picked as the AI provider and no URL typed yet — which the
+    /// config alone can't say, an empty URL being "Off".
+    settings_custom_ai: bool,
     /// The in-board find (Cmd/Ctrl+F), while its bar is open. `None` = closed.
     search: Option<Search>,
     /// The command palette (Cmd/Ctrl+Shift+P), when open. Mutually exclusive
@@ -806,6 +809,7 @@ impl App {
             settings_window: None,
             settings_drafts: HashMap::new(),
             settings_advanced_open: false,
+            settings_custom_ai: false,
             search: None,
             command_palette: None,
             vault_browser: None,
@@ -2209,7 +2213,8 @@ impl App {
         // Native summon gesture (macOS four-finger swipe), when enabled. The
         // subscription just registers the handler; the trackpad tap is toggled
         // on/off by `set_summon_gesture_enabled` (startup + settings change).
-        if platform::SUPPORTS_GESTURES && self.config.summon_gesture {
+        // Overlay only, like the hotkey: in a window it would hide the window.
+        if platform::SUPPORTS_GESTURES && self.overlay && self.config.summon_gesture {
             subscriptions.push(Subscription::run(gesture_stream));
         }
         // Autosave debounce ticks only while there are unsaved changes (never

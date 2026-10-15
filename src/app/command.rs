@@ -76,9 +76,9 @@ impl CommandId {
             // Nothing to browse until a vault has been picked — "Open vault…"
             // sits right above it.
             CommandId::SwitchCanvas if !app.has_vault() => Some("Open a vault first"),
-            CommandId::ToggleSetting(Field::DismissOnBackgroundClick) if !app.overlay => {
-                Some("Overlay only")
-            }
+            CommandId::ToggleSetting(
+                Field::DismissOnBackgroundClick | Field::PersistAcrossSpaces | Field::SummonGesture,
+            ) if !app.overlay => Some("Overlay only"),
             CommandId::ToggleSetting(Field::DoubleClickAddsNote)
                 if app.config.click_dismisses(app.overlay) =>
             {

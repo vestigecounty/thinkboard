@@ -1620,6 +1620,19 @@ fn the_command_is_greyed_without_an_endpoint() {
 }
 
 #[test]
+fn custom_is_remembered_before_its_url_is_typed() {
+    // An empty URL reads as "Off", so without this the form would snap back
+    // to "Off" and hide the URL field "Custom" was picked to reveal.
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url.clear();
+    send(&mut app, Message::Settings(settings::Msg::PickPreset("Custom".to_owned())));
+    assert!(app.settings_custom_ai);
+    assert!(!app.config.ai_enabled(), "picking Custom writes no URL of its own");
+    send(&mut app, Message::Settings(settings::Msg::PickPreset(settings::PROVIDER_OFF.to_owned())));
+    assert!(!app.settings_custom_ai);
+}
+
+#[test]
 fn a_greyed_command_says_what_would_let_it_run() {
     use command::CommandId::AskAi;
     let mut app = app_with(two_nodes(), Vec::new());

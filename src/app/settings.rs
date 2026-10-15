@@ -167,15 +167,15 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     #[cfg(target_os = "macos")]
     items.push(setting(
         "Persist across Spaces",
-        toggle(Field::PersistAcrossSpaces, c.persist_across_spaces),
-        "Keep the board up when you switch macOS Spaces (else it auto-dismisses).",
+        toggle_when(Field::PersistAcrossSpaces, c.persist_across_spaces, app.overlay),
+        "Keep the board up when you switch macOS Spaces (else it auto-dismisses). Overlay only.",
     ));
     // Raw-trackpad gesture, macOS-only (uses a private framework).
     #[cfg(target_os = "macos")]
     items.push(setting(
         "Four-finger swipe to summon",
-        toggle(Field::SummonGesture, c.summon_gesture),
-        "Swipe four fingers down on the trackpad to show or hide the board. On by default on a Mac, where the Pause hotkey below needs a keyboard most Macs haven't got.",
+        toggle_when(Field::SummonGesture, c.summon_gesture, app.overlay),
+        "Swipe four fingers down on the trackpad to show or hide the board. On by default on a Mac, where the Pause hotkey below needs a keyboard most Macs haven't got. Overlay only.",
     ));
 
     items.push(header("Appearance"));
@@ -227,26 +227,37 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     ));
 
     items.push(header("AI"));
+    // The endpoint's fields describe a provider, so they wait for one. Shown
+    // under "Off" they were three boxes to fill in for nothing — one already
+    // holding a model name — with no sign that none of them did anything.
+    let custom = app.settings_custom_ai && !c.ai_enabled();
+    let provider = c.ai_enabled() || custom;
     items.push(setting(
         "Provider preset",
-        preset_choices(current_preset(&c.ai_url)),
-        "Fills the endpoint URL for a known provider. Pick Custom to enter your own.",
+        preset_choices(if custom { "Custom".to_owned() } else { current_preset(&c.ai_url) }),
+        if provider {
+            "Fills the endpoint URL for a known provider. Pick Custom to enter your own."
+        } else {
+            "Off: Ask AI and suggestions stay hidden. Pick a provider to turn them on — a local one like LM Studio needs no key."
+        },
     ));
-    items.push(setting(
-        "API URL",
-        line(Field::AiUrl, app.draft(Field::AiUrl), "http://localhost:1234/v1"),
-        "OpenAI-compatible base URL (e.g. LM Studio); /chat/completions is appended.",
-    ));
-    items.push(setting(
-        "Model",
-        line(Field::AiModel, app.draft(Field::AiModel), ""),
-        "Model name sent to the endpoint. Cmd/Ctrl+Shift+P → \"Change AI model\" lists what the endpoint serves, so you needn't type one exactly.",
-    ));
-    items.push(setting(
-        "API key",
-        key_line(Field::AiApiKey, app.draft(Field::AiApiKey)),
-        "Sent as a Bearer token. Required for hosted providers like OpenRouter; leave blank for local LM Studio.",
-    ));
+    if provider {
+        items.push(setting(
+            "API URL",
+            line(Field::AiUrl, app.draft(Field::AiUrl), "http://localhost:1234/v1"),
+            "OpenAI-compatible base URL (e.g. LM Studio); /chat/completions is appended.",
+        ));
+        items.push(setting(
+            "Model",
+            line(Field::AiModel, app.draft(Field::AiModel), ""),
+            "Model name sent to the endpoint. Cmd/Ctrl+Shift+P → \"Change AI model\" lists what the endpoint serves, so you needn't type one exactly.",
+        ));
+        items.push(setting(
+            "API key",
+            key_line(Field::AiApiKey, app.draft(Field::AiApiKey)),
+            "Sent as a Bearer token. Required for hosted providers like OpenRouter; leave blank for local LM Studio.",
+        ));
+    }
 
     items.push(header("Animation"));
     items.push(setting(
@@ -844,7 +855,10 @@ impl App {
             }
             Msg::PickPreset(name) => {
                 // "Off" clears the endpoint (AI disabled); a known provider fills
-                // it; "Custom" keeps whatever the user typed.
+                // it; "Custom" keeps whatever the user typed — and, with nothing
+                // typed yet, has to be remembered here, or the form would read
+                // "Off" and hide the URL field it was picked to reveal.
+                self.settings_custom_ai = name == "Custom";
                 if name == PROVIDER_OFF {
                     self.config.ai_url = String::new();
                 } else if let Some(preset) = crate::ai::PRESETS.iter().find(|p| p.name == name) {
@@ -896,7 +910,8 @@ impl App {
             // thread here). The subscription registers the handler separately.
             Field::SummonGesture => {
                 if crate::platform::SUPPORTS_GESTURES {
-                    crate::platform::set_summon_gesture_enabled(self.config.summon_gesture);
+                    let armed = self.overlay && self.config.summon_gesture;
+                    crate::platform::set_summon_gesture_enabled(armed);
                 }
                 Task::none()
             }

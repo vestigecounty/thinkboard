@@ -893,6 +893,18 @@ fn settings() {
     let mut tour = Tour::new("settings", first_launch(canvas_file::scratch_document));
     tour.palette("settings");
     tour.shot("top");
+    // The AI section, as a new user finds it — and with "Custom" picked
+    // before a URL is typed, which must still show the URL field.
+    for _ in 0..2 {
+        tour.swipe(Point::new(720.0, 500.0), 0.0, -520.0);
+    }
+    tour.shot("ai-off");
+    tour.send(Message::Settings(settings::Msg::PickPreset("Custom".to_owned())));
+    tour.shot("ai-custom");
+    tour.send(Message::Settings(settings::Msg::PickPreset(settings::PROVIDER_OFF.to_owned())));
+    for _ in 0..2 {
+        tour.swipe(Point::new(720.0, 500.0), 0.0, 520.0);
+    }
     let over = Point::new(720.0, 500.0);
     for page in 1..=6 {
         tour.swipe(over, 0.0, -520.0);
