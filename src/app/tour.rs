@@ -533,7 +533,30 @@ fn build_a_board() {
     tour.shot("deselected");
 }
 
-const SCENES: &[(&str, fn())] = &[("first_run", first_run), ("build_a_board", build_a_board)];
+/// The opt-in Obsidian gesture: double-click empty space for a note. A window
+/// is never dismissed by a click, so here it works with the setting alone.
+fn double_click_to_add() {
+    let mut tour = Tour::new("double_click_to_add", first_launch(empty_document));
+    tour.app.config.double_click_adds_note = true;
+    tour.shot("empty-board-hint");
+    tour.double_click(Point::new(720.0, 300.0));
+    tour.shot("double-clicked");
+    tour.type_text("Made with a double-click");
+    tour.named(key::Named::Escape);
+    tour.double_click(Point::new(720.0, 600.0));
+    tour.type_text("And another");
+    tour.named(key::Named::Escape);
+    tour.shot("two-notes");
+
+    tour.send(Message::OpenSettingsOverlay);
+    tour.shot("settings");
+}
+
+const SCENES: &[(&str, fn())] = &[
+    ("first_run", first_run),
+    ("build_a_board", build_a_board),
+    ("double_click_to_add", double_click_to_add),
+];
 
 #[test]
 #[ignore = "renders to PNGs for a person to look at; needs a GPU adapter"]

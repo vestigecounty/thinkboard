@@ -1188,6 +1188,14 @@ impl Board<'_> {
                                 canvas::Action::publish(Message::SelectEdge(Some(edge)))
                                     .and_capture(),
                             )
+                        } else if is_double_click
+                            && self.config.double_click_adds_note(self.overlay)
+                        {
+                            // The first click of the pair started a marquee and
+                            // released it unmoved; this one makes the note.
+                            state.kind = Kind::Idle;
+                            let world = self.camera.to_world(position);
+                            Some(canvas::Action::publish(Message::CreateNode { world }).and_capture())
                         } else {
                             let base = if state.modifiers.command() {
                                 self.selected.to_vec()
@@ -1286,7 +1294,7 @@ impl Board<'_> {
                         // A click on empty space first clears the selection;
                         // it does not dismiss the board.
                         Some(canvas::Action::publish(Message::SelectNode(None)).and_capture())
-                    } else if self.overlay && self.config.dismiss_on_background_click {
+                    } else if self.config.click_dismisses(self.overlay) {
                         // Nothing selected: dismiss, like Dashboard.
                         Some(canvas::Action::publish(Message::Exit).and_capture())
                     } else {
@@ -1790,8 +1798,15 @@ impl Board<'_> {
     fn draw_empty_hint(&self, frame: &mut Frame, size: Size) {
         let a = self.reveal;
         let center = Point::new(size.width / 2.0, size.height / 2.0);
+        // Whichever gesture works here: double-click only where it's been
+        // turned on and a click doesn't dismiss the board instead.
+        let gesture = if self.config.double_click_adds_note(self.overlay) {
+            "Double-click"
+        } else {
+            "Right-click"
+        };
         frame.fill_text(canvas::Text {
-            content: "Right-click to add a note".to_owned(),
+            content: format!("{gesture} to add a note"),
             position: Point::new(center.x, center.y - 12.0),
             color: Color { a, ..self.theme.text_muted },
             size: 17.0.into(),

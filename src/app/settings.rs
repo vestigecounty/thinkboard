@@ -26,6 +26,7 @@ pub(crate) enum Field {
     Font,
     SummonHotkey,
     DismissOnBackgroundClick,
+    DoubleClickAddsNote,
     // Only surfaced in the UI on macOS (its Spaces are the only workspaces we
     // watch), but the apply/config plumbing stays cross-platform.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -129,7 +130,7 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     items.push(setting(
         "Board",
         path_line(Field::Canvas, app.draft(Field::Canvas)),
-        "The `.canvas` file opened on launch. Restart to load a different one.",
+        "The .canvas file opened on launch. Restart to load a different one.",
     ));
     items.push(setting(
         "Vault",
@@ -139,8 +140,21 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     items.push(hotkey_row(app, font, muted));
     items.push(setting(
         "Dismiss on background click",
-        toggle(Field::DismissOnBackgroundClick, c.dismiss_on_background_click),
-        "Clicking empty space on the overlay dismisses the board.",
+        // Greyed in a window, which a click never dismisses — on there, it
+        // read as a setting in force.
+        toggle_when(Field::DismissOnBackgroundClick, c.dismiss_on_background_click, app.overlay),
+        "Clicking empty space on the overlay dismisses the board. Overlay only.",
+    ));
+    // Greyed while a click dismisses, which is when it couldn't work: the
+    // board is gone before the second click lands.
+    items.push(setting(
+        "Double-click to add a note",
+        toggle_when(
+            Field::DoubleClickAddsNote,
+            c.double_click_adds_note,
+            !c.click_dismisses(app.overlay),
+        ),
+        "Double-clicking empty space adds a note there. Needs \"Dismiss on background click\" off, or windowed mode.",
     ));
     items.push(setting(
         "Windowed mode",
@@ -463,8 +477,15 @@ fn setting_row<'a>(
 }
 
 fn toggle<'a>(field: Field, on: bool) -> Element<'a, Message> {
+    toggle_when(field, on, true)
+}
+
+/// A switch that only flips while `enabled` — one setting that depends on
+/// another shows its value greyed rather than vanishing, so the dependency
+/// can be read off the form.
+fn toggle_when<'a>(field: Field, on: bool, enabled: bool) -> Element<'a, Message> {
     toggler(on)
-        .on_toggle(move |b| Message::Settings(Msg::Toggle(field, b)))
+        .on_toggle_maybe(enabled.then_some(move |b| Message::Settings(Msg::Toggle(field, b))))
         .size(20)
         .into()
 }
@@ -695,6 +716,7 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
         (Field::AiNodeColor, Value::Text(s)) => config.ai_node_color = s,
 
         (Field::DismissOnBackgroundClick, Value::Bool(b)) => config.dismiss_on_background_click = b,
+        (Field::DoubleClickAddsNote, Value::Bool(b)) => config.double_click_adds_note = b,
         (Field::PersistAcrossSpaces, Value::Bool(b)) => config.persist_across_spaces = b,
         (Field::SummonGesture, Value::Bool(b)) => config.summon_gesture = b,
         (Field::OverlayTransparent, Value::Bool(b)) => config.overlay_transparent = b,
@@ -923,6 +945,7 @@ impl App {
         let c = &self.config;
         match field {
             Field::DismissOnBackgroundClick => c.dismiss_on_background_click,
+            Field::DoubleClickAddsNote => c.double_click_adds_note,
             Field::PersistAcrossSpaces => c.persist_across_spaces,
             Field::SummonGesture => c.summon_gesture,
             Field::CenterNodeText => c.center_node_text,

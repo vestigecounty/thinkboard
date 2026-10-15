@@ -33,6 +33,10 @@ pub struct Config {
     pub vault: String,
     /// Whether clicking empty space on the overlay dismisses the board.
     pub dismiss_on_background_click: bool,
+    /// Whether double-clicking empty space adds a note there, as Obsidian's
+    /// canvas does. Opt-in, and only where a click doesn't dismiss the board —
+    /// see [`Config::double_click_adds_note`].
+    pub double_click_adds_note: bool,
     /// Whether the board stays up when you switch macOS Spaces. When false
     /// (default), switching Spaces auto-dismisses it (re-summon with the
     /// hotkey).
@@ -212,6 +216,7 @@ impl Default for Config {
             canvas: String::new(),
             vault: String::new(),
             dismiss_on_background_click: true,
+            double_click_adds_note: false,
             persist_across_spaces: false,
             overlay_transparent: true,
             windowed: false,
@@ -372,6 +377,23 @@ impl Config {
         if !endpoint.is_empty() {
             self.ai_api_keys.entry(endpoint).or_insert_with(|| legacy.to_owned());
         }
+    }
+
+    /// Whether a click on empty space puts the board away. Only the overlay can
+    /// be dismissed; a window stays where it is.
+    pub fn click_dismisses(&self, overlay: bool) -> bool {
+        overlay && self.dismiss_on_background_click
+    }
+
+    /// Whether a double-click on empty space adds a note.
+    ///
+    /// Never while a click dismisses: the dismissal fires as the *first* click
+    /// is released, so the board would be gone before the second arrived, and
+    /// holding every dismissal back by the double-click window to find out
+    /// would make the Dashboard-style click feel late. So the two are
+    /// exclusive, and the setting waits on the other one being off.
+    pub fn double_click_adds_note(&self, overlay: bool) -> bool {
+        self.double_click_adds_note && !self.click_dismisses(overlay)
     }
 
     /// Whether AI is on: an endpoint is configured. Empty `ai_url` is the "Off"
@@ -634,6 +656,20 @@ mod tests {
     fn missing_config_uses_defaults() {
         let config = Config::load(Some("/nonexistent/thinkboard.json"));
         assert!(config.dismiss_on_background_click);
+    }
+
+    #[test]
+    fn double_click_adds_a_note_only_where_a_click_doesnt_dismiss() {
+        let mut config = Config { double_click_adds_note: true, ..Config::default() };
+        // The overlay with click-to-dismiss on: the first click would already
+        // have put the board away.
+        assert!(!config.double_click_adds_note(true));
+        // A window is never dismissed by a click, whatever the setting says.
+        assert!(config.double_click_adds_note(false));
+        config.dismiss_on_background_click = false;
+        assert!(config.double_click_adds_note(true));
+        // And it is opt-in.
+        assert!(!Config::default().double_click_adds_note(false));
     }
 
     #[test]

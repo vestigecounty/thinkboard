@@ -76,6 +76,14 @@ impl CommandId {
             // Nothing to browse until a vault has been picked — "Open vault…"
             // sits right above it.
             CommandId::SwitchCanvas if !app.has_vault() => Some("Open a vault first"),
+            CommandId::ToggleSetting(Field::DismissOnBackgroundClick) if !app.overlay => {
+                Some("Overlay only")
+            }
+            CommandId::ToggleSetting(Field::DoubleClickAddsNote)
+                if app.config.click_dismisses(app.overlay) =>
+            {
+                Some("Needs dismiss on background click off")
+            }
             _ => None,
         }
     }
@@ -136,6 +144,12 @@ static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
             ToggleSetting(Field::DismissOnBackgroundClick),
             "Toggle dismiss on background click",
             "setting",
+            "",
+        ),
+        cmd(
+            ToggleSetting(Field::DoubleClickAddsNote),
+            "Toggle double-click to add a note",
+            "setting create new card obsidian",
             "",
         ),
     ];
