@@ -212,8 +212,8 @@ pub enum EdgeEnd {
 impl CanvasEdge {
     /// The link's caption, drawn along the curve.
     ///
-    /// Like a group's label and a link node's URL, this lives in `extra`: the
-    /// app renders it but never writes it, and `extra` round-trips it untouched.
+    /// Like a group's label and a link node's URL, this lives in `extra`, which
+    /// round-trips it untouched; [`CanvasEdge::set_label`] writes it there.
     pub fn label(&self) -> Option<&str> {
         self.extra
             .get("label")
@@ -240,6 +240,43 @@ impl CanvasEdge {
     /// says otherwise.
     pub fn to_end(&self) -> EdgeEnd {
         edge_end(self.extra.get("toEnd"), EdgeEnd::Arrow)
+    }
+
+    /// Sets (or clears) the link's caption — blank stored as absent, for the
+    /// reason a group's is (see [`CanvasNode::set_label`]).
+    pub fn set_label(&mut self, label: &str) {
+        let trimmed = label.trim();
+        if trimmed.is_empty() {
+            self.extra.remove("label");
+        } else {
+            self.extra.insert("label".to_owned(), Value::String(trimmed.to_owned()));
+        }
+    }
+
+    /// Sets (or clears) the link's color: an Obsidian preset code or a hex
+    /// string, as a node's is.
+    pub fn set_color(&mut self, color: Option<&str>) {
+        match color {
+            Some(color) => self.extra.insert("color".to_owned(), Value::String(color.to_owned())),
+            None => self.extra.remove("color"),
+        };
+    }
+
+    /// Sets how the link ends at each node. A field is written only where it
+    /// differs from what its absence means — a bare start, an arrow at the
+    /// target — which is how Obsidian writes them, so a plain link stays a
+    /// plain line in the file.
+    pub fn set_ends(&mut self, from: EdgeEnd, to: EdgeEnd) {
+        let mut put = |key: &str, end: EdgeEnd, absent: EdgeEnd| {
+            if end == absent {
+                self.extra.remove(key);
+            } else {
+                let value = if end == EdgeEnd::Arrow { "arrow" } else { "none" };
+                self.extra.insert(key.to_owned(), Value::String(value.to_owned()));
+            }
+        };
+        put("fromEnd", from, EdgeEnd::None);
+        put("toEnd", to, EdgeEnd::Arrow);
     }
 }
 
@@ -836,6 +873,39 @@ mod tests {
         // Junk falls back to the default rather than losing the arrow.
         let junk = edge_json(json!({"id": "e", "fromNode": "a", "toNode": "b", "toEnd": "wat"}));
         assert_eq!(junk.to_end(), EdgeEnd::Arrow);
+    }
+
+    #[test]
+    fn setting_an_edges_ends_writes_only_what_differs_from_absent() {
+        use serde_json::json;
+        let mut edge = edge_json(json!({"id": "e", "fromNode": "a", "toNode": "b"}));
+
+        edge.set_ends(EdgeEnd::Arrow, EdgeEnd::Arrow);
+        assert_eq!(edge.extra.get("fromEnd"), Some(&json!("arrow")));
+        assert!(!edge.extra.contains_key("toEnd"), "an arrow at the target is the default");
+
+        edge.set_ends(EdgeEnd::None, EdgeEnd::None);
+        assert!(!edge.extra.contains_key("fromEnd"));
+        assert_eq!(edge.extra.get("toEnd"), Some(&json!("none")));
+
+        // Back to a plain link: back to a bare line in the file.
+        edge.set_ends(EdgeEnd::None, EdgeEnd::Arrow);
+        assert!(!edge.extra.contains_key("fromEnd") && !edge.extra.contains_key("toEnd"));
+    }
+
+    #[test]
+    fn an_edges_label_and_color_set_and_clear() {
+        use serde_json::json;
+        let mut edge = edge_json(json!({"id": "e", "fromNode": "a", "toNode": "b"}));
+        edge.set_label("  flies to  ");
+        edge.set_color(Some("4"));
+        assert_eq!(edge.label(), Some("flies to"));
+        assert_eq!(edge.extra.get("color"), Some(&json!("4")));
+
+        edge.set_label("   ");
+        edge.set_color(None);
+        assert!(!edge.extra.contains_key("label"), "blank is absent, not empty");
+        assert!(!edge.extra.contains_key("color"));
     }
 
     #[test]

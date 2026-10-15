@@ -167,6 +167,55 @@ fn the_order_only_changes_when_the_drop_covers_something() {
     assert_eq!(ids(&app), ["a", "b"], "a click is not a drop");
 }
 
+// --- The link menu ---
+
+fn open_link_menu(app: &mut App, edge: usize) {
+    send(app, Message::OpenLinkMenu { screen: Point::new(0.0, 0.0), edge });
+}
+
+#[test]
+fn a_links_label_is_what_the_field_holds_when_the_menu_closes() {
+    let mut app = app_with(two_nodes(), vec![edge("a", "b")]);
+    open_link_menu(&mut app, 0);
+    send(&mut app, Message::LinkLabelInput("depends on".to_owned()));
+    assert_eq!(app.edges[0].label(), None, "nothing is written while typing");
+    send(&mut app, Message::CloseContextMenu);
+    assert_eq!(app.edges[0].label(), Some("depends on"));
+
+    send(&mut app, Message::Undo);
+    assert_eq!(app.edges[0].label(), None, "one undo step takes it back");
+}
+
+#[test]
+fn deleting_a_link_from_its_menu_labels_nothing_else() {
+    // The draft names its link by id: deleted, the next link slides into its
+    // index, and must not inherit the half-typed label.
+    let mut nodes = two_nodes();
+    nodes.push(text_node("c", "node c"));
+    let mut app = app_with(nodes, vec![edge("a", "b"), edge("b", "c")]);
+    open_link_menu(&mut app, 0);
+    send(&mut app, Message::LinkLabelInput("half-typed".to_owned()));
+    send(&mut app, Message::DeleteSelected);
+
+    assert_eq!(app.edges.len(), 1);
+    assert_eq!(app.edges[0].label(), None);
+}
+
+#[test]
+fn the_link_menu_sets_arrows_and_colour_on_the_link() {
+    use crate::model::EdgeEnd;
+    let mut app = app_with(two_nodes(), vec![edge("a", "b")]);
+    open_link_menu(&mut app, 0);
+    send(&mut app, Message::SetLinkEnds { from: EdgeEnd::Arrow, to: EdgeEnd::Arrow });
+    assert_eq!((app.edges[0].from_end(), app.edges[0].to_end()), (EdgeEnd::Arrow, EdgeEnd::Arrow));
+
+    // The swatches are the node menu's: with a link selected, they color it.
+    open_link_menu(&mut app, 0);
+    send(&mut app, Message::SetNodeColor(Some("1".to_owned())));
+    assert!(app.edges[0].palette_color().is_some());
+    assert!(app.nodes.iter().all(|node| node.color.is_none()), "and no node");
+}
+
 // --- Undo boundaries ---
 
 #[test]

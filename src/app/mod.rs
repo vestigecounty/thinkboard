@@ -291,6 +291,10 @@ pub(crate) enum Message {
     DismissGhosts,
     /// Expands the node menu into the hue picker.
     ExpandColorPicker,
+    /// Typing in the link menu's label field.
+    LinkLabelInput(String),
+    /// The link menu's arrow chips: how the selected link ends at each node.
+    SetLinkEnds { from: model::EdgeEnd, to: model::EdgeEnd },
     SelectNode(Option<usize>),
     /// Toggle a node's membership in the selection (Cmd-click).
     ToggleNode(usize),
@@ -623,6 +627,10 @@ struct App {
     last_picked_color: Option<String>,
     /// Whether the node menu is showing the expanded hue picker.
     color_picker_open: bool,
+    /// The label being typed in the open link menu, with the id of the link it
+    /// belongs to — an id, so deleting the link from the same menu can't hand
+    /// its label to whichever link takes its index.
+    link_label_draft: Option<(String, String)>,
     /// Start of the hue picker's open transition, while it's playing.
     picker_anim: Option<Instant>,
     /// In-progress auto-layout animation easing nodes to new positions.
@@ -839,6 +847,7 @@ impl App {
             extra_swatch: None,
             last_picked_color: None,
             color_picker_open: false,
+            link_label_draft: None,
             picker_anim: None,
             layout_anim: None,
             history: History::new(MAX_UNDO),
@@ -1001,9 +1010,14 @@ impl App {
             }
             Message::OpenNodeMenu { screen, node } => self.open_node_menu(screen, node),
             Message::OpenLinkMenu { screen, edge } => {
-                // Right-clicking a link selects it (highlight on) and offers Delete.
+                // Right-clicking a link selects it (highlight on) and offers its
+                // color, label, arrows and Delete.
                 self.selected.clear();
                 self.selected_edge = Some(edge);
+                self.link_label_draft = self
+                    .edges
+                    .get(edge)
+                    .map(|e| (e.id.clone(), e.label().unwrap_or_default().to_owned()));
                 self.context_menu = Some(ContextMenu {
                     screen,
                     kind: ContextMenuKind::Link,
@@ -1020,6 +1034,24 @@ impl App {
                     }
                     _ => {}
                 }
+                self.close_context_menu();
+            }
+            Message::LinkLabelInput(text) => {
+                if let Some((_, draft)) = &mut self.link_label_draft {
+                    *draft = text;
+                }
+            }
+            Message::SetLinkEnds { from, to } => {
+                if let Some(edge) = self.selected_edge.and_then(|i| self.edges.get(i))
+                    && (edge.from_end(), edge.to_end()) != (from, to)
+                {
+                    self.push_undo();
+                    if let Some(edge) = self.selected_edge.and_then(|i| self.edges.get_mut(i)) {
+                        edge.set_ends(from, to);
+                    }
+                    self.mark_dirty();
+                }
+                self.selected_edge = None;
                 self.close_context_menu();
             }
             Message::ExpandColorPicker => {
@@ -1442,6 +1474,7 @@ impl App {
     fn dismiss_panels(&mut self) -> Task<Message> {
         // Not a panel, but it floats over the board the same way: left up, a
         // right-click menu stayed open under the palette and outlived it.
+        self.commit_link_label();
         self.context_menu = None;
         self.command_palette = None;
         self.vault_browser = None;
@@ -1700,6 +1733,23 @@ impl App {
     /// to default. Closes the menu so the pick reads as confirmed — one undo
     /// entry.
     fn set_node_color(&mut self, color: Option<String>) {
+        // The link menu shares the swatches (and the hue wheel): node and link
+        // selection are exclusive, so whichever is selected is what's colored.
+        if self.selected.is_empty()
+            && let Some(index) = self.selected_edge
+        {
+            if self.edges.get(index).is_some_and(|e| e.extra.get("color").and_then(|c| c.as_str()) != color.as_deref()) {
+                self.push_undo();
+                self.edges[index].set_color(color.as_deref());
+                self.mark_dirty();
+            }
+            if let Some(c) = color.filter(|c| !view::NODE_PALETTE.contains(&c.as_str())) {
+                self.last_picked_color = Some(c);
+            }
+            self.close_context_menu();
+            self.selected_edge = None;
+            return;
+        }
         let targets: Vec<usize> = self
             .selected
             .iter()
@@ -1720,6 +1770,23 @@ impl App {
         }
         self.close_context_menu();
         self.selected.clear();
+    }
+
+    /// Writes the link menu's label back onto its link — as one undo step, and
+    /// only if it changed. The menu has no Save button: what's in the field
+    /// when it closes, however it closes, is the label.
+    fn commit_link_label(&mut self) {
+        let Some((id, draft)) = self.link_label_draft.take() else {
+            return;
+        };
+        let Some(index) = self.edges.iter().position(|e| e.id == id) else {
+            return; // deleted from the same menu
+        };
+        if self.edges[index].label().unwrap_or_default() != draft.trim() {
+            self.push_undo();
+            self.edges[index].set_label(&draft);
+            self.mark_dirty();
+        }
     }
 
     fn open_node_menu(&mut self, screen: Point, node: usize) {
@@ -1748,6 +1815,7 @@ impl App {
 
     /// Closes any open context menu and collapses its hue picker.
     fn close_context_menu(&mut self) {
+        self.commit_link_label();
         self.context_menu = None;
         self.color_picker_open = false;
         self.picker_anim = None;

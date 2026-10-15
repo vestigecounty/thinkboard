@@ -533,10 +533,13 @@ gaps with dummy nodes. Ours come from the file.
   node actually *is* — text, image, note, attachment, link or group. The
   image-vs-Markdown distinction for `file` nodes lives only in that one place
   (it depends on the path's extension, not on `type`).
-- Only what the app itself *writes* is a struct field. A group's `label` and a
-  link's `url` are read through accessors off `extra`, which already
-  round-trips them — so the app renders them without ever having to serialize
-  them back.
+- Fields Obsidian treats as optional stay in `extra` rather than becoming
+  struct fields: a link node's `url`, a group's `label`, and a link's `label`,
+  `color`, `fromEnd` and `toEnd`. Accessors read them; where the app edits
+  them (a frame's caption, the link menu) a setter writes them back into
+  `extra` — a blank label as *absent*, and a link's ends only where they
+  differ from what absence means — so an untouched file round-trips byte for
+  byte and an edited one looks the way Obsidian would have written it.
 - **Groups are frames, not cards.** They draw behind everything, are grabbable
   only by their header strip, and are excluded from clustering, marquee
   selection, ports, shadows — and, importantly, from every *obstacle* set

@@ -973,8 +973,21 @@ fn links() {
     tour.shot("link-selected");
     tour.right_click(middle);
     tour.shot("link-menu");
-    tour.named(key::Named::Escape);
+    // The menu opens at the click: colour row, label field, arrow chips.
+    let width = tour.app.node_menu_width();
+    let (left, top) = (middle.x + 4.0, middle.y + 4.0);
+    tour.click(Point::new(left + width / 2.0, top + 64.0));
+    tour.type_text("the plan\n");
+    tour.shot("labelled");
+    tour.right_click(middle);
+    tour.click(Point::new(left + width - 32.0, top + 103.0));
+    tour.shot("both-ways");
+    tour.right_click(middle);
+    tour.click(Point::new(left + 12.0 + 30.0 * 1.0 + 12.0, top + 18.0));
+    // Off the link, or its hover highlight stands in for its colour.
     let empty = Point::new(from.x - 40.0, 860.0);
+    tour.move_to(empty);
+    tour.shot("coloured");
     tour.click(empty);
     for style in ["mermaid", "square"] {
         tour.app.config.link_style = style.parse().expect("a link style");

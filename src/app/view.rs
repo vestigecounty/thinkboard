@@ -469,11 +469,7 @@ impl App {
             .spacing(4)
             .into(),
             ContextMenuKind::Node => self.node_menu(item_style, delete_style, sep),
-            ContextMenuKind::Link => button(text("Delete").size(14))
-                .on_press(Message::DeleteSelected)
-                .padding([6, 12])
-                .style(delete_style)
-                .into(),
+            ContextMenuKind::Link => self.link_menu(delete_style, sep),
         };
 
         let panel = container(content)
@@ -513,37 +509,18 @@ impl App {
         )
     }
 
-    /// The node menu's body: the color swatch row (or the expanded hue picker),
-    /// then Ask AI, auto-layout and Delete.
-    fn node_menu<'a>(
-        &'a self,
-        item_style: impl Fn(&Theme, button::Status) -> button::Style + Copy + 'a,
-        delete_style: impl Fn(&Theme, button::Status) -> button::Style + Copy + 'a,
-        sep: impl Fn() -> container::Container<'a, Message> + Copy + 'a,
-    ) -> Element<'a, Message> {
+    /// The swatch row both the node and the link menus lead with — presets,
+    /// the last custom color, and the wheel that unrolls into a hue bar. A pick
+    /// sends `SetNodeColor`, which colors whichever is selected.
+    fn color_row(&self) -> Element<'_, Message> {
         // Swatch/wheel size and gap; the hue bar matches the swatch height so
         // expanding the picker doesn't change the row height.
         const SW: f32 = 24.0;
         const GAP: f32 = 6.0;
-
-        let delete_label = if self.selected.len() > 1 {
-            format!("Delete {} nodes", self.selected.len())
-        } else {
-            "Delete".to_owned()
-        };
-        let delete = button(text(delete_label).size(14))
-            .width(Fill)
-            .on_press(Message::DeleteSelected)
-            .padding([6, 12])
-            .style(delete_style);
-
-        // Fixed menu width — presets + optional extra + wheel — so expanding
-        // the picker never resizes the menu.
         let extra = self
             .extra_swatch
             .as_deref()
             .filter(|e| !NODE_PALETTE.contains(e));
-        let menu_width = self.node_menu_width();
 
         let body: Element<Message> = if self.color_picker_open {
             // A smooth hue bar, same height as the swatch row, that unrolls
@@ -595,9 +572,102 @@ impl App {
             );
             row.into()
         };
+        body
+    }
 
+    /// The link menu: its color, its label, its arrows — and Delete.
+    fn link_menu<'a>(
+        &'a self,
+        delete_style: impl Fn(&Theme, button::Status) -> button::Style + Copy + 'a,
+        sep: impl Fn() -> container::Container<'a, Message> + Copy + 'a,
+    ) -> Element<'a, Message> {
+        use crate::model::EdgeEnd::{Arrow, None as Bare};
+        let Some(edge) = self.selected_edge.and_then(|i| self.edges.get(i)) else {
+            return Space::new().into();
+        };
+        let font = self.theme.ui_font();
+        let accent = self.theme.accent;
+
+        // Committed when the menu closes, Return included — see
+        // `App::commit_link_label`.
+        let draft = self.link_label_draft.as_ref().map_or("", |(_, draft)| draft.as_str());
+        let label = text_input("Label", draft)
+            .on_input(Message::LinkLabelInput)
+            .on_submit(Message::CloseContextMenu)
+            .size(14)
+            .font(font)
+            .padding([6, 10]);
+
+        let current = (edge.from_end(), edge.to_end());
+        let chip = move |glyph: &'static str, from, to| {
+            let on = current == (from, to);
+            button(text(glyph).size(14).font(font).width(Fill).center())
+                .width(Length::Fixed(40.0))
+                .padding([6, 0])
+                .on_press(Message::SetLinkEnds { from, to })
+                .style(move |theme: &Theme, status| {
+                    let mut style = chip_style(theme, status);
+                    if on {
+                        style.background = Some(iced::Color { a: 0.35, ..accent }.into());
+                        style.border.color = accent;
+                    }
+                    style
+                })
+        };
+        let arrows = row![
+            text("Arrows").size(14).font(font).width(Fill),
+            chip("—", Bare, Bare),
+            chip("→", Bare, Arrow),
+            chip("↔", Arrow, Arrow),
+        ]
+        .spacing(6)
+        .align_y(iced::alignment::Vertical::Center)
+        .padding([0, 12]);
+
+        let delete = button(text("Delete link").size(14))
+            .width(Fill)
+            .on_press(Message::DeleteSelected)
+            .padding([6, 12])
+            .style(delete_style);
+
+        column![
+            container(self.color_row()).padding([6, 12]).width(Fill),
+            sep(),
+            container(label).padding([0, 8]),
+            sep(),
+            arrows,
+            sep(),
+            delete,
+        ]
+        .width(Length::Fixed(self.node_menu_width()))
+        .spacing(4)
+        .into()
+    }
+
+    /// The node menu's body: the color swatch row (or the expanded hue picker),
+    /// then Ask AI, auto-layout and Delete.
+    fn node_menu<'a>(
+        &'a self,
+        item_style: impl Fn(&Theme, button::Status) -> button::Style + Copy + 'a,
+        delete_style: impl Fn(&Theme, button::Status) -> button::Style + Copy + 'a,
+        sep: impl Fn() -> container::Container<'a, Message> + Copy + 'a,
+    ) -> Element<'a, Message> {
+        let delete_label = if self.selected.len() > 1 {
+            format!("Delete {} nodes", self.selected.len())
+        } else {
+            "Delete".to_owned()
+        };
+        let delete = button(text(delete_label).size(14))
+            .width(Fill)
+            .on_press(Message::DeleteSelected)
+            .padding([6, 12])
+            .style(delete_style);
+
+        // Fixed menu width — presets + optional extra + wheel — so expanding
+        // the picker never resizes the menu.
+        let menu_width = self.node_menu_width();
         let mut items: Vec<Element<Message>> =
-            vec![container(body).padding([6, 12]).width(Fill).into()];
+            vec![container(self.color_row()).padding([6, 12]).width(Fill).into()];
         // "Ask AI" only when an AI endpoint is configured (not "Off").
         if self.config.ai_enabled() {
             items.push(sep().into());
@@ -807,7 +877,7 @@ impl App {
     /// Width of the node context menu: the swatch row (default + presets +
     /// optional extra + wheel) plus side padding, so opening the color picker
     /// never resizes it. Shared by `node_menu` and `context_menu_size`.
-    fn node_menu_width(&self) -> f32 {
+    pub(super) fn node_menu_width(&self) -> f32 {
         const SW: f32 = 24.0;
         const GAP: f32 = 6.0;
         let has_extra = self
@@ -856,7 +926,9 @@ impl App {
                 let rules = ai + group + layout + 1;
                 (self.node_menu_width(), column(Some(36.0), rows, rules))
             }
-            ContextMenuKind::Link => (80.0, column(None, 1, 0)),
+            // The colour row, then a label field, the arrow chips and Delete —
+            // each a row's height — a rule between each.
+            ContextMenuKind::Link => (self.node_menu_width(), column(Some(36.0), 3, 3)),
         };
         Size::new(width + PAD, height + PAD)
     }
