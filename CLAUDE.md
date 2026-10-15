@@ -647,8 +647,17 @@ Shots land in `target/tour/<scene>/` (or `$TOUR_OUT`). A scene is a plain
 function — `click`, `drag`, `type_text`, `chord`, `shot` — added to `SCENES`.
 Prefer gestures to `send(Message::…)`: a message skips the widget that would
 have published it, which is exactly the part a new user meets first.
+`TOUR_THEME` / `TOUR_THEME_CSS` render it in a named theme or an Obsidian
+stylesheet, to see the app as a particular user has it.
 
-Three things it has to do that a runtime does for free, each learned from a
+For anything that changes frame to frame — editing above all — use a
+**strip** rather than shots: `strip` fixes a region, `frame` adds the very next
+frame after the last event (no extra redraw, so a value that lands a frame late
+shows as late), and `save` tiles them into one numbered sheet with a `.txt`
+legend of card size, editor box, line count and caret per frame. Read the
+legend first; it says which of the three fell behind.
+
+Five things it has to do that a runtime does for free, each learned from a
 shot that lied:
 
 - **Deliver a redraw to the tree that draws.** An iced 0.14 button keeps its
@@ -660,6 +669,15 @@ shot that lied:
 - **Feed the subscription listeners.** Panel keys (palette Esc, arrows) arrive
   through `event::listen_with`, not the widget tree; `App::event_listeners` is
   the one list both `subscription` and the tour read.
+- **Draw after every event.** Drawing isn't only output: the editor
+  highlights in its draw. Typing a note with no frames between keystrokes
+  left headings unstyled — a real bug (`MdHighlighter::change_line` kept the
+  latest change, not the earliest) that a window, drawing between keys, shows
+  far more rarely.
+- **Present every animation frame.** An image is uploaded when a frame is
+  prepared, which offscreen only a read-back does. Ticking a bitmap's warm-up
+  without presenting never started its upload, and the card it was warming
+  for drew blank.
 
 ## Platform notes
 

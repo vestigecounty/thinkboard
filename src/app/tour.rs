@@ -22,7 +22,9 @@
 //! ```
 //!
 //! Shots land in `$TOUR_OUT` (default `target/tour/`), one folder per scene,
-//! at 1× unless `TOUR_SCALE=2` asks for a retina frame. The welcome board lists
+//! at 1× unless `TOUR_SCALE=2` asks for a retina frame, in the built-in theme
+//! unless `TOUR_THEME` (a name) or `TOUR_THEME_CSS` (an Obsidian stylesheet)
+//! says otherwise. The welcome board lists
 //! whatever Obsidian vaults this machine has, as it would on a real first run.
 //! Ignored by default: it needs a GPU adapter, which CI doesn't promise, and
 //! it is a thing to look at rather than a thing that fails.
@@ -34,7 +36,7 @@ use std::time::{Duration, Instant};
 use iced::advanced::renderer::Headless;
 use iced::futures::stream::{BoxStream, StreamExt};
 use iced::keyboard::{self, Key, Modifiers, key};
-use iced::{Event, mouse};
+use iced::{Event, Rectangle, mouse};
 use iced_runtime::core::widget::operation::Outcome;
 use iced_runtime::core::{clipboard, renderer};
 use iced_runtime::user_interface::{self, UserInterface};
@@ -142,6 +144,14 @@ impl Tour {
             self.send(message);
         }
         self.settle();
+        // And a frame, as a window would draw one — though nothing is read
+        // back. Drawing isn't only output: the editor highlights in its draw,
+        // and a run of keystrokes with no frame between them is an editor
+        // asked to catch up on several edits at once, which a person typing
+        // rarely makes it do. (That is how the tour found `change_line`
+        // skipping lines; it is also why a tour that never drew showed it far
+        // more often than anyone would see it.)
+        self.draw();
     }
 
     /// Delivers one message, as the runtime would — keeping its task.
@@ -210,6 +220,12 @@ impl Tour {
             let mut busy = self.pump();
             if self.app.animating() {
                 self.send(Message::Tick(Instant::now()));
+                // Every animation frame is drawn *and presented*, as
+                // `window::frames` drives a window — some of what animates
+                // exists to be drawn unseen, like a bitmap warming its upload
+                // before it's shown, and the upload happens in the frame's
+                // preparation, which offscreen only a read-back runs.
+                let _ = self.render();
                 std::thread::sleep(Duration::from_millis(16));
                 busy = true;
             }
@@ -260,30 +276,124 @@ impl Tour {
         println!("tour: {}", path.display());
     }
 
-    /// Draws the tree offscreen and reads the frame back as RGBA.
+    /// Lays out and draws the tree, without reading it back.
     ///
     /// The tree that draws is first sent a redraw, as the runtime does every
     /// frame — iced 0.14's button learns its status from that event and keeps
     /// it on the widget rather than in the tree, so a freshly built one that
     /// hasn't seen it draws as `Disabled`: every menu item, dimmed.
-    fn render(&mut self) -> (iced::Size<u32>, Vec<u8>) {
+    fn draw(&mut self) {
         let theme = startup::theme(&self.app);
         let style = startup::style(&self.app, &theme);
         let cursor = mouse::Cursor::Available(self.cursor);
-        {
-            let Self { app, renderer, cache, .. } = self;
-            let mut ui = UserInterface::build(app.view(), VIEWPORT, cache.take().unwrap_or_default(), renderer);
-            let redraw = Event::Window(window::Event::RedrawRequested(Instant::now()));
-            // Whatever a redraw publishes, `shot`'s own `redraw` already delivered.
-            let _ = ui.update(&[redraw], cursor, renderer, &mut clipboard::Null, &mut Vec::new());
-            ui.draw(renderer, &theme, &renderer::Style { text_color: style.text_color }, cursor);
-            *cache = Some(ui.into_cache());
-        }
+        let Self { app, renderer, cache, .. } = self;
+        let mut ui = UserInterface::build(app.view(), VIEWPORT, cache.take().unwrap_or_default(), renderer);
+        let redraw = Event::Window(window::Event::RedrawRequested(Instant::now()));
+        let _ = ui.update(&[redraw], cursor, renderer, &mut clipboard::Null, &mut Vec::new());
+        ui.draw(renderer, &theme, &renderer::Style { text_color: style.text_color }, cursor);
+        *cache = Some(ui.into_cache());
+    }
+
+    /// Draws the tree offscreen and reads the frame back as RGBA.
+    fn render(&mut self) -> (iced::Size<u32>, Vec<u8>) {
+        // Whatever a redraw publishes, `shot`'s own `redraw` already delivered.
+        self.draw();
+        let style = startup::style(&self.app, &startup::theme(&self.app));
         let size = iced::Size::new(
             (VIEWPORT.width * self.scale).round() as u32,
             (VIEWPORT.height * self.scale).round() as u32,
         );
         (size, Headless::screenshot(&mut self.renderer, size, self.scale, style.background_color))
+    }
+
+    // --- Strips: one region, frame by frame ---
+
+    /// Starts a strip of `region` (screen coordinates), fixed for its length
+    /// so its frames line up.
+    fn strip(&self, name: &str, region: Rectangle) -> Strip {
+        Strip { name: name.to_owned(), region, frames: Vec::new(), legend: Vec::new() }
+    }
+
+    /// Adds the frame a window would show next: rendered once, straight after
+    /// the last event settled. Deliberately *not* a [`Tour::shot`] — that
+    /// redraws first, and a value that only lands on the frame after this one
+    /// is exactly what a strip is for catching.
+    fn frame(&mut self, strip: &mut Strip, label: &str) {
+        let (size, rgba) = self.render();
+        let full = ::image::RgbaImage::from_raw(size.width, size.height, rgba).expect("a full frame");
+        let r = strip.region;
+        let (x, y) = ((r.x * self.scale).max(0.0) as u32, (r.y * self.scale).max(0.0) as u32);
+        let (w, h) = (
+            ((r.width * self.scale) as u32).min(size.width - x),
+            ((r.height * self.scale) as u32).min(size.height - y),
+        );
+        let mut tile = ::image::imageops::crop_imm(&full, x, y, w, h).to_image();
+        let n = strip.frames.len() + 1;
+        stamp_number(&mut tile, n);
+        strip.frames.push(tile);
+        strip.legend.push(format!("{n:>3}  {label:<28} {}", self.editing_state()));
+    }
+
+    /// The numbers a strip's legend carries per frame: what the card, the
+    /// editor box and the editor's own content say about the text's size.
+    fn editing_state(&self) -> String {
+        let Some(editing) = &self.app.editing else {
+            let sizes: Vec<String> = self
+                .app
+                .nodes
+                .iter()
+                .map(|node| format!("{:.0}x{:.0}", node.width, node.height))
+                .collect();
+            return format!("reading   cards {}", sizes.join(" "));
+        };
+        let node = &self.app.nodes[editing.index];
+        let text = editing.content.text();
+        let cursor = editing.content.cursor().position;
+        let editor = self
+            .app
+            .editor_box(editing.index)
+            .map(|b| format!("{:.0}x{:.0}{}", b.width, b.height, if b.centered { " centred" } else { "" }))
+            .unwrap_or_default();
+        let tail: String = text.chars().rev().take(18).collect::<Vec<_>>().into_iter().rev().collect();
+        format!(
+            "editing   card {:.0}x{:.0}  editor {editor}  lines {}  caret {}:{}  …{tail:?}",
+            node.width,
+            node.height,
+            editing.content.line_count(),
+            cursor.line,
+            cursor.column,
+        )
+    }
+
+    /// Saves a strip as one numbered sheet, `columns` wide, with its legend
+    /// beside it as text.
+    fn save(&mut self, strip: Strip, columns: usize) {
+        const GUTTER: u32 = 6;
+        let Some(first) = strip.frames.first() else {
+            return;
+        };
+        let (w, h) = first.dimensions();
+        let rows = strip.frames.len().div_ceil(columns) as u32;
+        let columns = columns.min(strip.frames.len()) as u32;
+        let mut sheet = ::image::RgbaImage::from_pixel(
+            columns * (w + GUTTER) + GUTTER,
+            rows * (h + GUTTER) + GUTTER,
+            ::image::Rgba([60, 60, 66, 255]),
+        );
+        for (i, frame) in strip.frames.iter().enumerate() {
+            let (col, row) = (i as u32 % columns, i as u32 / columns);
+            ::image::imageops::overlay(
+                &mut sheet,
+                frame,
+                i64::from(GUTTER + col * (w + GUTTER)),
+                i64::from(GUTTER + row * (h + GUTTER)),
+            );
+        }
+        self.shots += 1;
+        let base = self.out.join(format!("{:02}-{}", self.shots, strip.name));
+        sheet.save(base.with_extension("png")).expect("write the sheet");
+        std::fs::write(base.with_extension("txt"), strip.legend.join("\n") + "\n").expect("write the legend");
+        println!("tour: {}.png (+ .txt)", base.display());
     }
 
     // --- What a person does ---
@@ -406,6 +516,49 @@ impl iced_runtime::core::widget::Operation for Noop {
     fn traverse(&mut self, _operate: &mut dyn FnMut(&mut dyn iced_runtime::core::widget::Operation)) {}
 }
 
+/// One region of the screen over a run of steps — see [`Tour::strip`].
+struct Strip {
+    name: String,
+    region: Rectangle,
+    frames: Vec<::image::RgbaImage>,
+    legend: Vec<String>,
+}
+
+/// Stamps `n` into a tile's top-left corner in a 3×5 pixel face, so a sheet's
+/// frames can be told apart and found in its legend. Nothing in the
+/// dependency tree draws text into an image, and ten digits don't need it to.
+fn stamp_number(tile: &mut ::image::RgbaImage, n: usize) {
+    const DIGITS: [u16; 10] = [
+        0b111_101_101_101_111, 0b010_110_010_010_111, 0b111_001_111_100_111,
+        0b111_001_111_001_111, 0b101_101_111_001_001, 0b111_100_111_001_111,
+        0b111_100_111_101_111, 0b111_001_010_010_010, 0b111_101_111_101_111,
+        0b111_101_111_001_111,
+    ];
+    const PX: u32 = 3;
+    let digits: Vec<u16> = n.to_string().bytes().map(|b| DIGITS[usize::from(b - b'0')]).collect();
+    let (width, height) = (digits.len() as u32 * 4 * PX + PX, 7 * PX);
+    for y in 0..height.min(tile.height()) {
+        for x in 0..width.min(tile.width()) {
+            tile.put_pixel(x, y, ::image::Rgba([0, 0, 0, 255]));
+        }
+    }
+    for (i, glyph) in digits.iter().enumerate() {
+        for bit in 0..15u32 {
+            if glyph & (1 << (14 - bit)) == 0 {
+                continue;
+            }
+            let (gx, gy) = (PX + i as u32 * 4 * PX + (bit % 3) * PX, PX + (bit / 3) * PX);
+            for dy in 0..PX {
+                for dx in 0..PX {
+                    if gx + dx < tile.width() && gy + dy < tile.height() {
+                        tile.put_pixel(gx + dx, gy + dy, ::image::Rgba([255, 214, 0, 255]));
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Polls a future that native wgpu resolves without ever really waiting.
 fn block_on<F: std::future::Future>(future: F) -> F::Output {
     let mut future = std::pin::pin!(future);
@@ -423,7 +576,16 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 /// for that theme. Resolved in `App::new`'s order: the theme's fonts before
 /// `use_font` reads the database.
 fn first_launch(document: impl FnOnce(&ColorTheme) -> CanvasDocument) -> App {
-    let config = config::Config::default();
+    let mut config = config::Config::default();
+    // A theme of the caller's, for looking at the app as a particular user
+    // has it: `TOUR_THEME` names a built-in one, `TOUR_THEME_CSS` points at an
+    // Obsidian stylesheet the way a vault's does.
+    if let Ok(name) = std::env::var("TOUR_THEME") {
+        config.theme = name;
+    }
+    if let Ok(path) = std::env::var("TOUR_THEME_CSS") {
+        config.theme_css = Some(path);
+    }
     let (mut theme, embedded_fonts) = theme_store::resolve_base(&config);
     if !embedded_fonts.is_empty() {
         text_raster::set_embedded_fonts(embedded_fonts);
@@ -552,10 +714,102 @@ fn double_click_to_add() {
     tour.shot("settings");
 }
 
+/// Writing in a note, a frame per step: what the card and the editor do as
+/// lines break, wrap, and outgrow the card — and what changes when editing
+/// ends and starts again. Read the sheets with their `.txt` legends: the
+/// numbers say which of card, editor box and content fell behind.
+fn editing() {
+    let mut tour = Tour::new("editing", first_launch(empty_document));
+
+    // A note made the way the hint says: right-click, "Add node".
+    let at = Point::new(560.0, 300.0);
+    tour.right_click(at);
+    tour.click(Point::new(at.x + 60.0, at.y + 19.0));
+    let region = Rectangle::new(Point::new(at.x - 200.0, at.y - 130.0), Size::new(400.0, 260.0));
+
+    // Line breaks: a frame after every word and every Return.
+    let mut breaks = tour.strip("line-breaks", region);
+    tour.frame(&mut breaks, "new note");
+    for step in ["Packing", " list", "\n", "\n", "- passport", "\n", "- charger", "\n", "\n", "Shoes?"] {
+        tour.type_text(step);
+        tour.frame(&mut breaks, &format!("typed {step:?}"));
+    }
+    tour.named(key::Named::Backspace);
+    tour.frame(&mut breaks, "backspace");
+    tour.named(key::Named::Escape);
+    tour.frame(&mut breaks, "esc: read view");
+    std::thread::sleep(UPLOAD_GRACE);
+    tour.frame(&mut breaks, "esc + 250 ms");
+    tour.save(breaks, 4);
+
+    // Back in, by double-clicking a word; a heading, then out again.
+    let mut reenter = tour.strip("re-enter", region);
+    let card = tour.node_center(0);
+    tour.double_click(Point::new(card.x, card.y - 10.0));
+    tour.frame(&mut reenter, "double-click: editing");
+    tour.chord(Modifiers::COMMAND, "a");
+    tour.type_text("# Trip to Lisbon\n\nA long weekend in May — flights, somewhere to stay in Alfama, and a list of tascas.");
+    tour.frame(&mut reenter, "replaced with heading + wrap");
+    tour.named(key::Named::Escape);
+    tour.frame(&mut reenter, "esc: read view");
+    let card = tour.node_center(0);
+    tour.double_click(card);
+    tour.frame(&mut reenter, "double-click again");
+    tour.named(key::Named::Escape);
+    tour.save(reenter, 2);
+
+    // A heading, a blank line and a body with bold in it, a word at a time:
+    // the styling has to hold on every line as the card widens, and the last
+    // frame shows how far the card jumps when the heading renders full size.
+    let at = Point::new(1000.0, 680.0);
+    tour.right_click(at);
+    tour.click(Point::new(at.x + 60.0, at.y + 19.0));
+    let mut heading = tour.strip("heading", Rectangle::new(Point::new(at.x - 260.0, at.y - 90.0), Size::new(520.0, 180.0)));
+    for key in ["# Trip to Lisbon", "\n", "\n", "Plan", " the", " **long", " weekend**", " in", " May.", " And", " June."] {
+        tour.type_text(key);
+        tour.frame(&mut heading, &format!("typed {key:?}"));
+    }
+    tour.named(key::Named::Escape);
+    tour.frame(&mut heading, "esc: read view");
+    tour.save(heading, 4);
+    tour.click(Point::new(1300.0, 850.0));
+
+    // A long sentence a word at a time: grow, then wrap.
+    let at = Point::new(980.0, 300.0);
+    tour.right_click(at);
+    tour.click(Point::new(at.x + 60.0, at.y + 19.0));
+    let mut wrap = tour.strip("wrapping", Rectangle::new(Point::new(at.x - 230.0, at.y - 110.0), Size::new(460.0, 220.0)));
+    let sentence = "Remember to check whether the museum is closed on Mondays before planning the route";
+    for (i, word) in sentence.split(' ').enumerate() {
+        tour.type_text(if i == 0 { word.to_owned() } else { format!(" {word}") }.as_str());
+        tour.frame(&mut wrap, &format!("+{word:?}"));
+    }
+    tour.named(key::Named::Escape);
+    tour.frame(&mut wrap, "esc: read view");
+    tour.save(wrap, 4);
+
+    // Past the auto-size ceiling: the card stops, the editor scrolls.
+    let at = Point::new(560.0, 640.0);
+    tour.right_click(at);
+    tour.click(Point::new(at.x + 60.0, at.y + 19.0));
+    let mut tall = tour.strip("overflow", Rectangle::new(Point::new(at.x - 220.0, 0.0), Size::new(440.0, 900.0)));
+    for line in 1..=60 {
+        tour.type_text(&format!("Line {line} of a long note\n"));
+        if line % 10 == 0 {
+            tour.frame(&mut tall, &format!("{line} lines"));
+        }
+    }
+    tour.named(key::Named::Escape);
+    tour.frame(&mut tall, "esc: read view");
+    tour.save(tall, 6);
+    tour.shot("board");
+}
+
 const SCENES: &[(&str, fn())] = &[
     ("first_run", first_run),
     ("build_a_board", build_a_board),
     ("double_click_to_add", double_click_to_add),
+    ("editing", editing),
 ];
 
 #[test]
