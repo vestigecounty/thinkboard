@@ -786,9 +786,10 @@ async fn run(
 /// Drains `content` into the events ready to emit: each `---` separator line
 /// becomes a `Split` (its preceding text a `Delta`), then the remaining text a
 /// `Delta`. Unless `is_final`, a trailing fragment that could be the start of a
-/// separator is held back for the next chunk; on the final flush (including when
-/// a stream stops mid-sentence) everything left is emitted, so an incomplete
-/// `---` ends up as literal text rather than being dropped.
+/// separator is held back for the next chunk, and so is bold that has opened
+/// and not yet closed (see [`open_bold_len`]); on the final flush (including
+/// when a stream stops mid-sentence) everything left is emitted, so an
+/// incomplete `---` ends up as literal text rather than being dropped.
 fn drain_segments(content: &mut String, is_final: bool) -> Vec<Event> {
     let mut events = Vec::new();
     while let Some(pos) = content.find(SEPARATOR) {
@@ -799,7 +800,7 @@ fn drain_segments(content: &mut String, is_final: bool) -> Vec<Event> {
         }
         events.push(Event::Split);
     }
-    let hold = if is_final { 0 } else { separator_prefix_len(content) };
+    let hold = if is_final { 0 } else { separator_prefix_len(content).max(open_bold_len(content)) };
     if content.len() > hold {
         let emit: String = content.drain(..content.len() - hold).collect();
         if !emit.is_empty() {
@@ -823,6 +824,47 @@ fn separator_prefix_len(content: &str) -> usize {
         .rev()
         .find(|&k| content.ends_with(&SEPARATOR[..k]))
         .unwrap_or(0)
+}
+
+/// The longest a run of bold is held back waiting for its closing `**`.
+const BOLD_HOLD: usize = 160;
+
+/// Length of the end of `content` that is bold still waiting to close — from
+/// an opening `**` with no closing one after it, or a lone trailing `*` that
+/// may be half of one.
+///
+/// A note is drawn as it arrives, and `**Taberna da Rua` drawn before its
+/// closing pair shows the asterisks, then snaps to bold when they come.
+/// Holding the run back until then costs a word or two of delay. An opener is
+/// a `**` not followed by a space and a closer one not preceded by one —
+/// CommonMark's flanking rules, simplified — so `x ** 2` isn't held at all. A
+/// run longer than [`BOLD_HOLD`] is let through, since a `**` that never
+/// closes (`**kwargs`, in code) would otherwise hold the answer until it ends.
+/// Always ASCII → safe cut.
+fn open_bold_len(content: &str) -> usize {
+    let bytes = content.as_bytes();
+    let mut open = None;
+    let mut i = 0;
+    while i + 1 < bytes.len() {
+        if bytes[i] == b'*' && bytes[i + 1] == b'*' {
+            let after_space = i > 0 && bytes[i - 1].is_ascii_whitespace();
+            let before_space = bytes.get(i + 2).is_some_and(u8::is_ascii_whitespace);
+            match open {
+                Some(_) if !after_space => open = None,
+                None if !before_space => open = Some(i),
+                _ => {}
+            }
+            i += 2;
+        } else {
+            i += 1;
+        }
+    }
+    let held = match open {
+        Some(at) => content.len() - at,
+        None if i + 1 == bytes.len() && bytes[i] == b'*' => 1,
+        None => 0,
+    };
+    if held > BOLD_HOLD { 0 } else { held }
 }
 
 /// The `choices[0].delta.content` string of a streamed chunk, if any.
@@ -1156,6 +1198,34 @@ mod tests {
         assert_eq!(content, "\n--"); // the maybe-separator is held back
         assert_eq!(drain_segments(&mut content, true), vec![Event::Delta("\n--".to_owned())]);
         assert!(content.is_empty());
+    }
+
+    #[test]
+    fn bold_is_held_until_it_closes() {
+        // Mid-stream, the open run waits; what's before it doesn't.
+        let mut content = "Try **Taberna da".to_owned();
+        assert_eq!(drain_segments(&mut content, false), vec![Event::Delta("Try ".to_owned())]);
+        content.push_str(" Rua** — small");
+        assert_eq!(drain_segments(&mut content, false), vec![Event::Delta("**Taberna da Rua** — small".to_owned())]);
+        // A lone `*` at the end may be the first half of a pair.
+        let mut content = "Try *".to_owned();
+        assert_eq!(drain_segments(&mut content, false), vec![Event::Delta("Try ".to_owned())]);
+        // However it was split, the answer arrives whole.
+        let (text, splits, drained) = run_stream(&["**Cerve", "jaria Ramiro*", "* — seafood"]);
+        assert_eq!((text.as_str(), splits, drained), ("**Cervejaria Ramiro** — seafood", 0, true));
+    }
+
+    #[test]
+    fn what_isnt_bold_is_not_held() {
+        assert_eq!(open_bold_len("a **b** c"), 0, "closed");
+        assert_eq!(open_bold_len("x ** 2"), 0, "an operator, not an opener");
+        assert_eq!(open_bold_len("a **b** c *"), 1, "a lone star could still pair");
+        let runaway = format!("def f(**{}", "kwargs, ".repeat(30));
+        assert_eq!(open_bold_len(&runaway), 0, "never closing, so let through");
+        // Final flush releases a run that never closed.
+        let (text, _, drained) = run_stream(&["Half **an answer"]);
+        assert_eq!(text, "Half **an answer");
+        assert!(drained);
     }
 
     #[test]

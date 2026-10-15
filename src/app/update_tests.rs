@@ -1815,6 +1815,28 @@ fn a_failure_partway_keeps_what_was_written() {
     assert_eq!(text(&app, &second).as_deref(), Some("Take the train from Rossio\n\n⚠ The connection dropped"));
 }
 
+#[test]
+fn an_answers_notes_share_one_width() {
+    use thinkboard_core::ai::Event;
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "http://localhost:1234/v1".to_owned();
+    send(&mut app, Message::SelectNode(Some(0)));
+    send(&mut app, Message::AskAi);
+    let id = app.ai.streams.keys().next().expect("asked").clone();
+    for event in [
+        Event::Delta("**Time Out Market** — a quick lunch, half the city's kitchens under one roof.".to_owned()),
+        Event::Split,
+        Event::Delta("Tram 28".to_owned()),
+        Event::Done,
+    ] {
+        send(&mut app, Message::Ai(id.clone(), event));
+    }
+    let answer: Vec<&CanvasNode> = app.nodes.iter().skip(2).collect();
+    assert_eq!(answer.len(), 2);
+    assert_eq!(answer[0].width, answer[1].width, "one column, one edge");
+    assert!(answer[1].height < answer[0].height, "each still as tall as its own text");
+}
+
 // --- The font picker ---
 
 /// A family name that is nobody's font.

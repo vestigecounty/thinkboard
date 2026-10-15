@@ -705,6 +705,18 @@ impl App {
         if ai.is_empty() {
             return;
         }
+        // One answer, one width. Each note sized to its own text left the
+        // column's right edge ragged, and a list read as unrelated cards. They
+        // take the widest's width — auto-size only ever grows a card, so this
+        // is the one width none of them has to shrink to — and are re-fitted,
+        // so a height still follows its text.
+        let widest = ai.iter().map(|&i| self.nodes[i].width).fold(0.0, f32::max);
+        for &i in &ai {
+            if self.nodes[i].width < widest {
+                self.nodes[i].width = widest;
+                self.autosize_node(i, true);
+            }
+        }
         let dir = self.config_layout_dir();
         let src = &self.nodes[source];
         let source_box = (src.x, src.y, src.width, src.height);
