@@ -133,6 +133,40 @@ fn a_marquee_result_replaces_the_whole_selection() {
     assert_eq!(app.selected, vec![0, 1]);
 }
 
+// --- Stacking ---
+
+fn ids(app: &App) -> Vec<&str> {
+    app.nodes.iter().map(|node| node.id.as_str()).collect()
+}
+
+#[test]
+fn a_card_dropped_on_a_later_one_comes_to_the_front() {
+    // Stacking is list order: dropped onto `b`, `a` would go back under it
+    // once deselected.
+    let mut app = app_with(two_nodes(), Vec::new());
+    send(&mut app, Message::SelectNode(Some(0)));
+    send(&mut app, Message::MoveNode { index: 0, position: Point::new(350.0, 20.0) });
+    send(&mut app, Message::NodeDragEnd { index: 0, moved: true });
+
+    assert_eq!(ids(&app), ["b", "a"]);
+    assert_eq!(app.selected, vec![1], "the selection follows the card it named");
+}
+
+#[test]
+fn the_order_only_changes_when_the_drop_covers_something() {
+    // A drop onto empty board, and a click that moved nothing, leave the file
+    // alone: an order changed for nothing is a file changed for nothing.
+    let mut app = app_with(two_nodes(), Vec::new());
+    send(&mut app, Message::SelectNode(Some(0)));
+    send(&mut app, Message::MoveNode { index: 0, position: Point::new(0.0, 300.0) });
+    send(&mut app, Message::NodeDragEnd { index: 0, moved: true });
+    assert_eq!(ids(&app), ["a", "b"]);
+
+    send(&mut app, Message::MoveNode { index: 0, position: Point::new(350.0, 20.0) });
+    send(&mut app, Message::NodeDragEnd { index: 0, moved: false });
+    assert_eq!(ids(&app), ["a", "b"], "a click is not a drop");
+}
+
 // --- Undo boundaries ---
 
 #[test]

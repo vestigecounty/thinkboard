@@ -34,6 +34,12 @@ pub(super) struct LayoutAnim {
     pub(super) moves: Vec<(usize, (f32, f32), (f32, f32))>,
 }
 
+/// Whether two cards overlap — by more than touching, so a card placed flush
+/// against another isn't counted as covering it.
+fn covers(a: Rectangle, b: Rectangle) -> bool {
+    a.intersection(&b).is_some_and(|both| both.width > 0.5 && both.height > 0.5)
+}
+
 pub(super) fn node_world_rect(node: &CanvasNode) -> Rectangle {
     Rectangle::new(
         Point::new(node.x, node.y),
@@ -426,6 +432,71 @@ impl App {
             .copied()
             .filter(|&i| self.nodes.get(i).is_some_and(|n| !n.is_group()))
             .collect()
+    }
+
+    /// Brings what was just dropped to the top of the stacking order, if it
+    /// landed on a card that would otherwise cover it.
+    ///
+    /// Stacking is the order of the node list, as in Obsidian. While dragged a
+    /// card is drawn above everything (the selection is), and once deselected
+    /// it went back to its place in the list — under any later card it had
+    /// been dropped on. Now the dropped cards move to the end of the list
+    /// instead. Only when they cover such a card, though: an order changed for
+    /// nothing is a file changed for nothing. Frames keep their place — they
+    /// draw behind everything whatever their order.
+    pub(super) fn raise_dropped(&mut self, index: usize) {
+        let card = |i: usize| self.nodes.get(i).is_some_and(|n| !n.is_group());
+        let mut dropped: Vec<usize> = self.drag_riders(index).into_iter().filter(|&i| card(i)).collect();
+        dropped.sort_unstable();
+        let covered_by_a_later_card = dropped.iter().any(|&d| {
+            let rect = node_world_rect(&self.nodes[d]);
+            (d + 1..self.nodes.len())
+                .filter(|&o| card(o) && !dropped.contains(&o))
+                .any(|o| covers(rect, node_world_rect(&self.nodes[o])))
+        });
+        if covered_by_a_later_card {
+            let order: Vec<usize> = (0..self.nodes.len())
+                .filter(|i| !dropped.contains(i))
+                .chain(dropped.iter().copied())
+                .collect();
+            self.reorder_nodes(&order);
+        }
+    }
+
+    /// Puts the nodes in `order` (old indices, each once), re-keying everything
+    /// that names a node by its index.
+    fn reorder_nodes(&mut self, order: &[usize]) {
+        let mut new_of_old = vec![0; order.len()];
+        for (new, &old) in order.iter().enumerate() {
+            new_of_old[old] = new;
+        }
+        let mut old_nodes: Vec<Option<CanvasNode>> = std::mem::take(&mut self.nodes).into_iter().map(Some).collect();
+        self.nodes = order.iter().filter_map(|&old| old_nodes[old].take()).collect();
+
+        let moved = |i: usize| new_of_old[i];
+        super::history::remap_indices(&mut self.rasters.text, &new_of_old);
+        super::history::remap_indices(&mut self.rasters.staging, &new_of_old);
+        super::history::remap_indices(&mut self.spawning, &new_of_old);
+        for selected in &mut self.selected {
+            *selected = moved(*selected);
+        }
+        self.pending_edit = self.pending_edit.map(moved);
+        self.fresh_node = self.fresh_node.map(moved);
+        if let Some(editing) = &mut self.editing {
+            editing.index = moved(editing.index);
+        }
+        if let Some(search) = &mut self.search {
+            for hit in &mut search.matches {
+                hit.node = moved(hit.node);
+            }
+        }
+        if let Some(anim) = &mut self.layout_anim {
+            for (node, _, _) in &mut anim.moves {
+                *node = moved(*node);
+            }
+        }
+        self.mark_dirty();
+        self.cache.clear();
     }
 
     /// Whether the selection is worth grouping — the condition the palette

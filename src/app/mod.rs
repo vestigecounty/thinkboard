@@ -319,7 +319,8 @@ pub(crate) enum Message {
     FileChanged,
     SnapshotsReady(Vec<(usize, text_raster::Snapshot)>),
     ClustersReady(cluster::Clustering, HashMap<usize, text_raster::Snapshot>),
-    NodeDragEnd,
+    /// A press on node `index` let go — after a drag when `moved`, else a click.
+    NodeDragEnd { index: usize, moved: bool },
     /// Open a link (from a note's text) in the default browser.
     OpenUrl(String),
     Undo,
@@ -892,7 +893,13 @@ impl App {
             // --- Direct manipulation ---
             Message::MoveNode { index, position } => self.move_node(index, position),
             Message::MoveCluster { index, delta } => self.move_cluster(index, delta),
-            Message::ClusterDragEnd | Message::NodeDragEnd => return self.schedule_recluster(),
+            Message::ClusterDragEnd => return self.schedule_recluster(),
+            Message::NodeDragEnd { index, moved } => {
+                if moved {
+                    self.raise_dropped(index);
+                }
+                return self.schedule_recluster();
+            }
             Message::ResizeNode { index, anchor, cursor } => self.resize_node(index, anchor, cursor),
             Message::ResizeEnd => {
                 return Task::batch([self.refresh_snapshots(), self.schedule_recluster()]);

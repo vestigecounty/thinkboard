@@ -69,6 +69,12 @@ pub(super) fn shift_indices<V>(map: &mut HashMap<usize, V>, removed: usize) {
         .collect();
 }
 
+/// Re-keys an index-keyed map after the nodes were reordered, where
+/// `new_of_old[i]` is where the node at `i` went.
+pub(super) fn remap_indices<V>(map: &mut HashMap<usize, V>, new_of_old: &[usize]) {
+    *map = map.drain().filter_map(|(k, v)| Some((*new_of_old.get(k)?, v))).collect();
+}
+
 impl App {
     /// Node ids belonging to in-flight AI generations, which are transient and
     /// excluded from undo history until they finish.

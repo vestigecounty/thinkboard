@@ -1357,14 +1357,15 @@ impl Board<'_> {
                 }
 
                 let background_press = state.background_press.take();
-                if let Kind::Dragging { moved, .. } = state.kind {
+                if let Kind::Dragging { index, moved, .. } = state.kind {
                     state.kind = Kind::Idle;
                     // A pending link released without a drag opens it; otherwise
                     // this was a node drag (or a plain click) — just end it.
                     let open = state.link.take().filter(|_| !moved);
                     Some(match open {
                         Some(url) => canvas::Action::publish(Message::OpenUrl(url)).and_capture(),
-                        None => canvas::Action::publish(Message::NodeDragEnd).and_capture(),
+                        None => canvas::Action::publish(Message::NodeDragEnd { index, moved })
+                            .and_capture(),
                     })
                 } else if let (Some(start), Some(position)) = (background_press, position) {
                     if start.distance(position) >= 4.0 {
