@@ -29,6 +29,12 @@ const SNAPSHOT_WARM_UP: Duration = Duration::from_millis(300);
 /// re-raster eases in instead of popping.
 const SNAPSHOT_FADE: Duration = Duration::from_millis(140);
 
+/// The size past which iced_wgpu uploads an image on its worker thread rather
+/// than in the frame that draws it (`MAX_SYNC_SIZE` in
+/// `vendor/iced_wgpu/src/image/cache.rs`). A bitmap this big draws as nothing
+/// until its upload lands — which is what warming one is for.
+const ASYNC_UPLOAD_BYTES: usize = 2 * 1024 * 1024;
+
 pub struct StagedSnapshot {
     pub snapshot: text_raster::Snapshot,
     since: Instant,
@@ -152,7 +158,8 @@ impl App {
     }
 
     /// Installs a finished background rasterization: bitmaps for nodes that
-    /// already show one are staged (warmed, then cross-faded); the rest go
+    /// already show one are staged (warmed, then cross-faded), and so is a
+    /// first bitmap too big to upload in the frame that draws it; the rest go
     /// straight on screen, since there's nothing to preserve.
     pub(super) fn snapshots_ready(
         &mut self,
@@ -172,7 +179,14 @@ impl App {
             if editing == Some(index) || self.is_search_match(index) {
                 continue;
             }
-            if self.rasters.text.contains_key(&index) {
+            // A first bitmap had nothing to preserve, so it used to go straight
+            // on screen — and one over the upload limit then drew as nothing
+            // until iced's worker finished: a card that had just been edited
+            // blinked empty between its live text and its bitmap. Staged, it
+            // keeps the live text until the bitmap has warmed. Small ones
+            // upload in-frame and gain nothing from waiting, which matters on a
+            // board's first load, when every card is a first bitmap.
+            if self.rasters.text.contains_key(&index) || snapshot.bytes >= ASYNC_UPLOAD_BYTES {
                 self.rasters.staging.insert(
                     index,
                     StagedSnapshot { snapshot, since: now, opacity: 0.0 },
@@ -187,8 +201,10 @@ impl App {
     }
 
     /// Advances the staged bitmaps' warm-up and cross-fade, promoting any that
-    /// have fully faded in. Returns whether anything changed (so the caller can
-    /// invalidate the canvas cache).
+    /// have fully faded in — or, with no bitmap to fade over, any that have
+    /// warmed: live text and its bitmap are the same glyphs, so there is
+    /// nothing to ease between. Returns whether anything changed (so the caller
+    /// can invalidate the canvas cache).
     pub(super) fn tick_snapshots(&mut self, now: Instant) -> bool {
         let mut promote = Vec::new();
         let mut fading = false;
@@ -203,7 +219,8 @@ impl App {
                 fading = true;
             }
             staged.opacity = opacity;
-            if opacity >= 1.0 {
+            let replacing = self.rasters.text.contains_key(index);
+            if opacity >= 1.0 || (!replacing && elapsed > SNAPSHOT_WARM_UP) {
                 promote.push(*index);
             }
         }

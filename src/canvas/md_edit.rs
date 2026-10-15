@@ -209,8 +209,14 @@ impl Highlighter for MdHighlighter {
         }
     }
 
+    /// Keeps the *earliest* line changed since the last highlight pass, as the
+    /// trait asks of `current_line`. The editor calls this from every layout
+    /// but highlights only when it draws, so two edits on different lines
+    /// between frames arrive as two calls — and taking the second outright
+    /// skipped the first: a heading typed, then a body line under it before
+    /// the next frame, stayed unstyled until it was edited again.
     fn change_line(&mut self, line: usize) {
-        self.line = line;
+        self.line = self.line.min(line);
     }
 
     fn highlight_line(&mut self, line: &str) -> Self::Iterator<'_> {
@@ -369,6 +375,20 @@ mod tests {
     #[test]
     fn heading_marker_then_text() {
         assert_eq!(ranges("# Title"), vec![0..2, 2..7]);
+    }
+
+    #[test]
+    fn a_later_change_does_not_skip_an_earlier_one() {
+        // Three lines highlighted; then, before the next pass, an edit on the
+        // first line and another on the third. The pass must start at the
+        // first, or the heading on it keeps the styling of what it used to say.
+        let mut h = MdHighlighter::build(Palette::from_theme(&ColorTheme::default()));
+        for line in ["# Title", "", "body"] {
+            let _ = h.highlight_line(line).count();
+        }
+        h.change_line(0);
+        h.change_line(2);
+        assert_eq!(h.current_line(), 0);
     }
 
     #[test]
