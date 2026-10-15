@@ -30,9 +30,7 @@ pub struct NodeClip {
 
 /// Writes copied nodes to the clipboard, wrapped under [`CANVAS_CLIP_KEY`].
 pub fn write_nodes(clip: &NodeClip) {
-    if let Ok(mut clipboard) = arboard::Clipboard::new() {
-        let _ = clipboard.set_text(encode_nodes(clip));
-    }
+    system::set_text(encode_nodes(clip));
 }
 
 /// Reads copied canvas nodes, or `None` if the clipboard doesn't hold our
@@ -303,26 +301,79 @@ pub enum Clip {
 /// The clipboard's text, if any. Cheap (unlike an image read), so it's fine
 /// to call on menu open to look for a pasteable color value.
 pub fn read_text() -> Option<String> {
-    arboard::Clipboard::new().ok()?.get_text().ok()
+    system::text()
 }
 
 /// Reads the clipboard, or `None` if it's empty, unreadable, or holds nothing
 /// we can turn into a node.
 pub fn read() -> Option<Clip> {
-    let mut clipboard = arboard::Clipboard::new().ok()?;
+    if let Some(image) = system::image()
+        && let Clip::Image { width, height, .. } = &image
+        && *width > 0
+        && *height > 0
+    {
+        return Some(image);
+    }
+    system::text().filter(|text| !text.trim().is_empty()).map(Clip::Text)
+}
 
-    if let Ok(image) = clipboard.get_image() {
-        if image.width > 0 && image.height > 0 {
-            return Some(Clip::Image {
-                width: image.width,
-                height: image.height,
-                rgba: image.bytes.into_owned(),
-            });
+/// The platform's clipboard.
+#[cfg(not(test))]
+mod system {
+    use super::Clip;
+
+    pub fn set_text(text: String) {
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            let _ = clipboard.set_text(text);
         }
     }
 
-    match clipboard.get_text() {
-        Ok(text) if !text.trim().is_empty() => Some(Clip::Text(text)),
-        _ => None,
+    pub fn text() -> Option<String> {
+        arboard::Clipboard::new().ok()?.get_text().ok()
+    }
+
+    pub fn image() -> Option<Clip> {
+        let image = arboard::Clipboard::new().ok()?.get_image().ok()?;
+        Some(Clip::Image { width: image.width, height: image.height, rgba: image.bytes.into_owned() })
+    }
+}
+
+/// Under test, a clipboard this process holds instead of the platform's: a
+/// test that copied would overwrite whatever the developer last copied, and
+/// one that pasted would paste it. The guard the config has against writing
+/// the real one (`config::writable`), for the other thing a test could reach
+/// out and change. The tour fills it to stand in for another app.
+#[cfg(test)]
+pub(super) mod system {
+    use std::sync::{Mutex, MutexGuard, PoisonError};
+
+    use super::Clip;
+
+    static HELD: Mutex<Option<Clip>> = Mutex::new(None);
+
+    /// What the stand-in holds. Shared by the whole test binary, so a test
+    /// that relies on its contents sets them first.
+    pub fn held() -> MutexGuard<'static, Option<Clip>> {
+        HELD.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    pub fn set_text(text: String) {
+        *held() = Some(Clip::Text(text));
+    }
+
+    pub fn text() -> Option<String> {
+        match &*held() {
+            Some(Clip::Text(text)) => Some(text.clone()),
+            _ => None,
+        }
+    }
+
+    pub fn image() -> Option<Clip> {
+        match &*held() {
+            Some(Clip::Image { width, height, rgba }) => {
+                Some(Clip::Image { width: *width, height: *height, rgba: rgba.clone() })
+            }
+            _ => None,
+        }
     }
 }

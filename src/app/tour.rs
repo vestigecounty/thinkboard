@@ -79,6 +79,8 @@ struct Tour {
     tasks: Vec<BoxStream<'static, Action<Message>>>,
     /// When the pending answer's dots last stepped (see [`Tour::timers`]).
     dots: Instant,
+    /// When the autosave last polled.
+    saves: Instant,
     out: PathBuf,
     shots: usize,
 }
@@ -122,6 +124,7 @@ impl Tour {
             window,
             tasks: Vec::new(),
             dots: Instant::now(),
+            saves: Instant::now(),
             out,
             shots: 0,
         };
@@ -212,12 +215,38 @@ impl Tour {
 
     /// The timers `subscription` runs, as far as these scenes need them: the
     /// dots in an answer still waiting for its first word, which nothing else
-    /// steps.
+    /// steps, and the autosave's poll, on the same terms as the subscription's
+    /// — while there's something unsaved on a board with a file.
     fn timers(&mut self) {
         if !self.app.ai.pending.is_empty() && self.dots.elapsed() >= ai::DOTS_INTERVAL {
             self.dots = Instant::now();
             self.send(Message::AiTick);
         }
+        if self.app.doc_dirty && !self.app.scratch && self.saves.elapsed() >= SAVE_POLL {
+            self.saves = Instant::now();
+            self.send(Message::SaveTick);
+        }
+    }
+
+    /// Watches the open board's file, with the watcher `subscription` runs —
+    /// the OS's own change events, not a `FileChanged` sent by hand, so a
+    /// write the watcher would miss is missed here too. It's a stream that
+    /// never ends, so every settle after this waits out [`QUIET`].
+    fn watch(&mut self) {
+        let path = self.app.canvas_path.clone();
+        self.tasks.push(sync::watch_file(&path).map(Action::Output).boxed());
+    }
+
+    /// Writes `text` beside the scene's shots, in `notes.txt`, and prints it —
+    /// for what a shot can't show, like what's on disk.
+    fn note(&self, text: &str) {
+        println!("tour: {text}");
+        let mut notes = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(self.out.join("notes.txt"))
+            .expect("the scene's notes");
+        let _ = writeln!(notes, "{text}");
     }
 
     fn act(&mut self, action: Action<Message>) {
@@ -303,6 +332,22 @@ impl Tour {
             }
             std::thread::sleep(Duration::from_millis(5));
             self.settle();
+        }
+    }
+
+    /// Lets `time` pass as a window would — tasks run, timers fire, frames are
+    /// drawn — for something that arrives on its own clock, like the OS's
+    /// report of a file changed.
+    fn wait(&mut self, time: Duration) {
+        let until = Instant::now() + time;
+        while Instant::now() < until {
+            self.pump();
+            self.timers();
+            if self.app.transitioning() {
+                self.send(Message::Tick(Instant::now()));
+                let _ = self.render();
+            }
+            std::thread::sleep(Duration::from_millis(16));
         }
     }
 
@@ -960,6 +1005,18 @@ fn respond(stream: &mut TcpStream, status: &str, body: &serde_json::Value) {
         "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len(),
     );
+}
+
+/// An app with the board at `path` open, as a launch opens a configured one:
+/// read from the file, saved back to it, and watched — none of which the
+/// scratch board is.
+fn file_launch(path: &std::path::Path) -> App {
+    let document = CanvasDocument::load(path).expect("the board");
+    let mut app = launch(|_| document, true, path.parent().expect("its folder").to_owned());
+    app.canvas_path = path.to_owned();
+    app.file_mtime = sync::file_mtime(path);
+    app.scratch = false;
+    app
 }
 
 /// An app as a first launch builds it — default config, the theme that config
@@ -1816,6 +1873,312 @@ fn ai_errors() {
     tour.named(key::Named::Escape);
 }
 
+/// Changes the board at `path` the way another program does — Obsidian, a
+/// sync client: reads it, changes it, writes it back whole.
+fn elsewhere(path: &std::path::Path, change: impl FnOnce(&mut CanvasDocument)) {
+    let mut document = CanvasDocument::load(path).expect("the board");
+    change(&mut document);
+    document.save(path).expect("written back");
+}
+
+/// The cards in the file at `path`, by their first line.
+fn on_disk(path: &std::path::Path) -> String {
+    match CanvasDocument::load(path) {
+        Ok(document) => document
+            .nodes
+            .iter()
+            .map(|node| node.text.as_deref().unwrap_or_default().lines().next().unwrap_or_default().to_owned())
+            .collect::<Vec<_>>()
+            .join(" | "),
+        Err(error) => format!("unreadable: {error}"),
+    }
+}
+
+/// The board's file changed by another program while it's open — idle, with
+/// a card selected, after an edit here that undo should take back, while a
+/// card is being edited, and renamed. What the file holds after each is in
+/// `notes.txt` beside the shots.
+fn outside_changes() {
+    use thinkboard_core::fixtures::{edge, node};
+    let dir = std::env::temp_dir().join(format!("thinkboard-tour-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a folder for the board");
+    let path = dir.join("Trip.canvas");
+    trip_board(&ColorTheme::default()).save(&path).expect("the board on disk");
+    let card = |id: &str, text: &str, y: f32| CanvasNode {
+        text: Some(text.to_owned()),
+        x: -120.0,
+        y,
+        width: 240.0,
+        height: 60.0,
+        ..node(id)
+    };
+
+    let mut tour = Tour::new("outside_changes", file_launch(&path));
+    frame_trip(&mut tour);
+    tour.watch();
+    tour.shot("open");
+
+    // Nothing happening here: a card added there, and a question reworded.
+    elsewhere(&path, |doc| {
+        doc.nodes.push(card("umbrella", "Pack an umbrella", 300.0));
+        doc.edges.push(edge("trip", "umbrella"));
+        if let Some(eat) = doc.nodes.iter_mut().find(|n| n.id == "eat") {
+            eat.text = Some("Where should we eat on Saturday?".to_owned());
+        }
+    });
+    tour.settle_until(|app| app.nodes.len() == 4);
+    tour.shot("changed-while-idle");
+
+    // A card selected here, and moved there.
+    let sintra = tour.find("How do we get");
+    tour.click(tour.node_center(sintra));
+    tour.shot("selected");
+    elsewhere(&path, |doc| {
+        if let Some(sintra) = doc.nodes.iter_mut().find(|n| n.id == "sintra") {
+            sintra.x += 160.0;
+        }
+    });
+    tour.settle_until(|app| app.nodes.iter().any(|n| n.id == "sintra" && n.x > -100.0));
+    tour.shot("changed-while-selected");
+
+    // A card moved here and saved, then something changed there — and undo.
+    let umbrella = tour.find("Pack an umbrella");
+    let from = tour.node_center(umbrella);
+    tour.drag(from, Point::new(from.x + 300.0, from.y));
+    tour.settle_until(|app| !app.doc_dirty);
+    let moved_to = tour.app.nodes[tour.find("Pack an umbrella")].x;
+    elsewhere(&path, |doc| {
+        if let Some(sintra) = doc.nodes.iter_mut().find(|n| n.id == "sintra") {
+            sintra.text = Some("How do we get to *Sintra* and back?".to_owned());
+        }
+    });
+    tour.settle_until(|app| app.nodes.iter().any(|n| n.text.as_deref().is_some_and(|t| t.ends_with("and back?"))));
+    tour.chord(Modifiers::COMMAND, "z");
+    tour.shot("undo-after-a-change-there");
+    let after_undo = tour.app.nodes[tour.find("Pack an umbrella")].x;
+    tour.note(&format!(
+        "undo after a change elsewhere: the umbrella card was moved to x={moved_to}, and after Cmd+Z is at x={after_undo}"
+    ));
+
+    // A card being edited here while one is added there.
+    let eat = tour.find("Where should we eat");
+    tour.double_click(tour.node_center(eat));
+    // To the end of the note, which wraps onto a second line.
+    tour.named(key::Named::ArrowDown);
+    tour.named(key::Named::End);
+    tour.type_text(" Near Alfama.");
+    elsewhere(&path, |doc| {
+        doc.nodes.push(card("tram", "Buy tram passes", 440.0));
+        doc.edges.push(edge("trip", "tram"));
+    });
+    tour.note(&format!("added there while editing here — on disk: {}", on_disk(&path)));
+    tour.wait(Duration::from_secs(1));
+    tour.shot("changed-while-editing");
+    tour.named(key::Named::Escape);
+    tour.settle_until(|app| !app.doc_dirty);
+    tour.wait(Duration::from_secs(1));
+    tour.shot("the-edit-saved");
+    tour.note(&format!("after the edit here was saved — on disk: {}", on_disk(&path)));
+
+    // Renamed there, then a card moved here.
+    let renamed = dir.join("Lisbon.canvas");
+    std::fs::rename(&path, &renamed).expect("renamed");
+    tour.wait(Duration::from_secs(1));
+    let eat = tour.find("Where should");
+    let from = tour.node_center(eat);
+    tour.drag(from, Point::new(from.x, from.y - 40.0));
+    tour.settle_until(|app| !app.doc_dirty);
+    tour.shot("moved-after-a-rename");
+    let mut files: Vec<String> = std::fs::read_dir(&dir)
+        .expect("the folder")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    files.sort();
+    tour.note(&format!("renamed Trip.canvas to Lisbon.canvas there, then moved a card here — the folder holds: {}", files.join(", ")));
+
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// What changed between two states of the board, card by card.
+fn changes(before: &(Vec<CanvasNode>, Vec<CanvasEdge>), after: &(Vec<CanvasNode>, Vec<CanvasEdge>)) -> String {
+    let name = |node: &CanvasNode| {
+        node.text
+            .as_deref()
+            .and_then(|text| text.lines().next())
+            .or_else(|| node.extra.get("label").and_then(|label| label.as_str()))
+            .or(node.file.as_deref())
+            .unwrap_or(node.kind.as_str())
+            .to_owned()
+    };
+    let mut out = Vec::new();
+    for node in &after.0 {
+        let Some(old) = before.0.iter().find(|old| old.id == node.id) else {
+            out.push(format!("+{:?}", name(node)));
+            continue;
+        };
+        if (old.x, old.y) != (node.x, node.y) {
+            out.push(format!("moved {:?}", name(node)));
+        }
+        if (old.width, old.height) != (node.width, node.height) {
+            out.push(format!("resized {:?}", name(node)));
+        }
+        if old.text != node.text {
+            out.push(format!("text of {:?}", name(old)));
+        }
+    }
+    for node in &before.0 {
+        if !after.0.iter().any(|new| new.id == node.id) {
+            out.push(format!("-{:?}", name(node)));
+        }
+    }
+    match after.1.len() as i64 - before.1.len() as i64 {
+        0 => {}
+        links => out.push(format!("{links:+} link(s)")),
+    }
+    if out.is_empty() { "nothing".to_owned() } else { out.join(", ") }
+}
+
+/// Undo and the clipboard. Ordinary edits, then Cmd+Z a step at a time and
+/// Shift+Cmd+Z back — what each step undid is in `notes.txt` — then cards
+/// copied and pasted, and what another app left on the clipboard pasted:
+/// Markdown, a long paragraph, an image.
+fn undo_and_clipboard() {
+    let dir = std::env::temp_dir().join(format!("thinkboard-tour-clip-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a folder for the board");
+    let path = dir.join("Trip.canvas");
+    trip_board(&ColorTheme::default()).save(&path).expect("the board on disk");
+    let mut tour = Tour::new("undo_and_clipboard", file_launch(&path));
+    frame_trip(&mut tour);
+    let state = |tour: &Tour| (tour.app.nodes.clone(), tour.app.edges.clone());
+    let empty = Point::new(1100.0, 820.0);
+
+    // The edits.
+    let mut done = vec![state(&tour)];
+    let eat = tour.find("Where should");
+    let from = tour.node_center(eat);
+    tour.drag(from, Point::new(from.x + 40.0, from.y - 80.0));
+    done.push(state(&tour));
+    let sintra = &tour.app.nodes[tour.find("How do we get")];
+    let corner = tour.app.camera.to_screen(Point::new(sintra.x + sintra.width - 1.0, sintra.y + sintra.height - 1.0));
+    tour.drag(corner, Point::new(corner.x + 80.0, corner.y + 40.0));
+    done.push(state(&tour));
+    tour.right_click(Point::new(560.0, 790.0));
+    tour.click_label("Add node");
+    tour.type_text("Pack an umbrella");
+    tour.named(key::Named::Escape);
+    done.push(state(&tour));
+    let trip = tour.find("# Trip to Lisbon");
+    tour.double_click(tour.node_center(trip));
+    for _ in 0..4 {
+        tour.named(key::Named::ArrowDown);
+    }
+    tour.named(key::Named::End);
+    tour.type_text(" Flights booked.");
+    tour.named(key::Named::Escape);
+    done.push(state(&tour));
+    let sintra = tour.find("How do we get");
+    tour.click(tour.node_center(sintra));
+    tour.named(key::Named::Backspace);
+    done.push(state(&tour));
+    tour.click(tour.node_center(tour.find("# Trip to Lisbon")));
+    tour.hold(Modifiers::COMMAND);
+    tour.click(tour.node_center(tour.find("Where should")));
+    tour.hold(Modifiers::empty());
+    tour.palette("group");
+    tour.type_text("Plan");
+    tour.named(key::Named::Escape);
+    done.push(state(&tour));
+    tour.click(empty);
+    tour.shot("edited");
+    let names = ["moved a card", "resized a card", "added a note", "edited a note", "deleted a card", "grouped two"];
+    for (i, name) in names.iter().enumerate() {
+        tour.note(&format!("did {name}: {}", changes(&done[i], &done[i + 1])));
+    }
+
+    // And back, a step at a time.
+    let mut strip = tour.strip("undoing", Rectangle::new(Point::ORIGIN, VIEWPORT));
+    tour.frame(&mut strip, "edited");
+    for step in 1..=7 {
+        let before = state(&tour);
+        tour.chord(Modifiers::COMMAND, "z");
+        let undid = changes(&before, &state(&tour));
+        tour.note(&format!("Cmd+Z #{step}: {undid}"));
+        tour.frame(&mut strip, &format!("Cmd+Z #{step}"));
+    }
+    for step in 1..=2 {
+        let before = state(&tour);
+        tour.chord(Modifiers::COMMAND | Modifiers::SHIFT, "z");
+        tour.note(&format!("Shift+Cmd+Z #{step}: {}", changes(&before, &state(&tour))));
+        tour.frame(&mut strip, &format!("Shift+Cmd+Z #{step}"));
+    }
+    tour.save(strip, 4);
+
+    // Cards copied and pasted: the two of them, and the link between.
+    tour.click(tour.node_center(tour.find("# Trip to Lisbon")));
+    tour.hold(Modifiers::COMMAND);
+    tour.click(tour.node_center(tour.find("Where should")));
+    tour.hold(Modifiers::empty());
+    tour.chord(Modifiers::COMMAND, "c");
+    tour.move_to(Point::new(1000.0, 700.0));
+    let before = state(&tour);
+    tour.chord(Modifiers::COMMAND, "v");
+    tour.note(&format!("pasted copied cards: {}", changes(&before, &state(&tour))));
+    tour.shot("cards-pasted");
+
+    // What another app copied.
+    let pastes: [(&str, super::clipboard::Clip, Point); 3] = [
+        ("markdown", super::clipboard::Clip::Text("## Packing\n\n- passport\n- adapter\n- **sunscreen**".to_owned()), Point::new(1180.0, 160.0)),
+        ("a-paragraph", super::clipboard::Clip::Text("Lisbon's trams are part of the city: the 28 climbs from Martim Moniz through Graça and Alfama to Estrela, past most of what a first visit wants to see, in old wooden cars that rattle and lean on every corner. Ride it early, before the queues, or take the 12 for a shorter loop. Validate a Viva Viagem card as you board.".to_owned()), Point::new(1180.0, 420.0)),
+        ("an-image", super::clipboard::Clip::Image { width: 480, height: 320, rgba: postcard(480, 320) }, Point::new(380.0, 760.0)),
+    ];
+    for (name, clip, at) in pastes {
+        tour.click(empty);
+        *super::clipboard::system::held() = Some(clip);
+        tour.move_to(at);
+        let before = state(&tour);
+        tour.chord(Modifiers::COMMAND, "v");
+        tour.note(&format!("pasted {name}: {}", changes(&before, &state(&tour))));
+        let node = tour.app.nodes.last().expect("pasted");
+        let (top_left, bottom_right) = (
+            tour.app.camera.to_screen(Point::new(node.x, node.y)),
+            tour.app.camera.to_screen(Point::new(node.x + node.width, node.y + node.height)),
+        );
+        tour.note(&format!(
+            "  pasted at the cursor {at:?}; landed on screen at {top_left:?}–{bottom_right:?}, {}×{} at zoom {:.2}",
+            node.width, node.height, tour.app.camera.zoom,
+        ));
+        tour.shot(&format!("pasted-{name}"));
+    }
+    let pasted: Vec<String> = std::fs::read_dir(&dir)
+        .expect("the folder")
+        .flatten()
+        .map(|entry| entry.file_name().to_string_lossy().into_owned())
+        .collect();
+    tour.note(&format!("the board's folder holds: {}", pasted.join(", ")));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// A picture to paste: a warm sky over a sea, as RGBA.
+fn postcard(width: usize, height: usize) -> Vec<u8> {
+    let mut rgba = Vec::with_capacity(width * height * 4);
+    for y in 0..height {
+        for x in 0..width {
+            let t = y as f32 / height as f32;
+            let sea = t > 0.62;
+            let (r, g, b) = if sea {
+                (30.0 + 40.0 * t, 90.0 + 30.0 * t, 140.0 + 20.0 * (x as f32 / width as f32))
+            } else {
+                (250.0 - 60.0 * t, 170.0 - 90.0 * t, 90.0 + 80.0 * t)
+            };
+            rgba.extend_from_slice(&[r as u8, g as u8, b as u8, 255]);
+        }
+    }
+    rgba
+}
+
 const SCENES: &[(&str, fn())] = &[
     ("first_run", first_run),
     ("build_a_board", build_a_board),
@@ -1836,6 +2199,8 @@ const SCENES: &[(&str, fn())] = &[
     ("ai_setup", ai_setup),
     ("ai_answers", ai_answers),
     ("ai_errors", ai_errors),
+    ("outside_changes", outside_changes),
+    ("undo_and_clipboard", undo_and_clipboard),
 ];
 
 #[test]

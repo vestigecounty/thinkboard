@@ -30,7 +30,7 @@ real one — use it for any run that might write settings.
   design. Match the surrounding style instead.
 - **Clippy runs without `-D warnings`.** A handful of style lints are
   intentional (index loops in union-find, `&PathBuf` in a signature that mirrors
-  a callback, items after a test module). The job still fails on genuine clippy
+  a callback). The job still fails on genuine clippy
   *errors*. Don't "fix" the standing warnings; don't add new ones either.
 - **Comments carry the reasoning.** Most non-obvious lines have a comment
   explaining *why*, often referencing a platform bug or a rendering artifact.
@@ -740,8 +740,16 @@ The AI scenes ask a **`Provider`**: an OpenAI-compatible endpoint on a loopback
 port, answering from a script, so the real client is what runs — the streamed
 events, the `---` that splits an answer, the sentence a refused request turns
 into. Nothing leaves the machine and no key is needed. It refuses a model it
-doesn't list with a 404, as OpenAI does, which is how `ai_setup` shows what a
+doesn't list with a 404, as OpenAI does, which is how `ai_errors` shows what a
 new config's model name does on a hosted provider.
+
+Two scenes open a board from a **real file** in a temp folder (`file_launch`),
+which brings what the scratch board skips: autosave, which `timers` polls as the
+subscription does, and the file watcher, which `watch` runs as a task — the
+OS's own change events, not a `FileChanged` sent by hand. And under test the
+**clipboard is a stand-in** (`clipboard::system`), as the config's default
+location is refused: a scene that copies would otherwise overwrite whatever the
+developer had copied. The tour fills it to play another app.
 
 Seven things it has to do that a runtime does for free, each learned from a
 shot that lied:
