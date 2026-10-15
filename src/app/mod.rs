@@ -1425,6 +1425,9 @@ impl App {
     /// nothing in the config to match, until something else re-resolves the
     /// theme — which may not be until the next launch.
     fn dismiss_panels(&mut self) -> Task<Message> {
+        // Not a panel, but it floats over the board the same way: left up, a
+        // right-click menu stayed open under the palette and outlived it.
+        self.context_menu = None;
         self.command_palette = None;
         self.vault_browser = None;
         self.model_picker = None;

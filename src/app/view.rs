@@ -212,6 +212,7 @@ impl App {
                 || self.theme_picker.is_some()
                 || self.font_picker.is_some()
                 || self.model_picker.is_some(),
+            context_menu: self.context_menu.is_some(),
             show_fps: self.show_fps,
             spawning: &self.spawning,
             text_snapshots: &self.rasters.text,
@@ -821,23 +822,40 @@ impl App {
     /// count (exactness isn't needed — it just bounds the clamp).
     fn context_menu_size(&self) -> Size {
         const ROW: f32 = 30.0; // a text button with [6,12] padding
-        const SEP: f32 = 5.0; // 1px rule + the column's 4px spacing
+        const RULE: f32 = 1.0; // a separator's own height
+        const GAP: f32 = 4.0; // the column's spacing — between *every* two children
         const PAD: f32 = 8.0; // the panel's 4px padding on both sides
+        // A column of `rows` items and `rules` separators under a `first` child
+        // of its own height. The spacing used to be counted once per separator,
+        // as if it only sat beside rules; it sits between every pair, which left
+        // the estimate 16px short and the bottom item clipped near the edge.
+        let column = |first: Option<f32>, rows: usize, rules: usize| {
+            let children = rows + rules + usize::from(first.is_some());
+            first.unwrap_or(0.0)
+                + rows as f32 * ROW
+                + rules as f32 * RULE
+                + children.saturating_sub(1) as f32 * GAP
+        };
         let Some(menu) = &self.context_menu else {
             return Size::ZERO;
         };
         let (width, height) = match menu.kind {
-            ContextMenuKind::Canvas { .. } => (200.0, ROW * 5.0 + SEP * 4.0),
+            // Add node, three toggles, Paste — a rule between each.
+            ContextMenuKind::Canvas { .. } => (200.0, column(None, 5, 4)),
             ContextMenuKind::Node => {
-                // Color row (24px swatch + [6,12] padding) + sep + "Ask AI" +
-                // sep + delete, plus the layout row + sep for a multi-selection.
-                let mut height = 36.0 + SEP + ROW + SEP + ROW;
-                if self.selected.len() > 1 {
-                    height += ROW + SEP;
-                }
-                (self.node_menu_width(), height)
+                // Counted off the same conditions `node_menu` builds from:
+                // under the colour row (24px swatches + [6,12] padding), Ask AI
+                // and Group each bring the rule above them, a rule always
+                // precedes Delete, and a multi-selection's layout row brings one
+                // more.
+                let ai = usize::from(self.config.ai_enabled());
+                let group = usize::from(self.groupable_selection());
+                let layout = usize::from(self.selected.len() > 1);
+                let rows = ai + group + layout + 1;
+                let rules = ai + group + layout + 1;
+                (self.node_menu_width(), column(Some(36.0), rows, rules))
             }
-            ContextMenuKind::Link => (80.0, ROW),
+            ContextMenuKind::Link => (80.0, column(None, 1, 0)),
         };
         Size::new(width + PAD, height + PAD)
     }

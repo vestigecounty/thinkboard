@@ -292,6 +292,8 @@ pub struct Board<'a> {
     /// An in-board modal (the settings panel) is up: board keyboard shortcuts
     /// are suppressed so the modal owns input.
     pub modal: bool,
+    /// A right-click menu is open: Esc closes it before it does anything else.
+    pub context_menu: bool,
     pub show_fps: bool,
     /// Spawn animation start times of freshly created nodes.
     pub spawning: &'a HashMap<usize, Instant>,
@@ -662,7 +664,12 @@ impl canvas::Program<Message> for Board<'_> {
                 key: keyboard::Key::Named(keyboard::key::Named::Escape),
                 ..
             }) => {
-                if self.editing.is_some() {
+                // A menu is the nearest thing to dismiss. Without this Esc fell
+                // through to the cases below and, in the overlay, put the whole
+                // board away with the menu still on it.
+                if self.context_menu {
+                    Some(canvas::Action::publish(Message::CloseContextMenu).and_capture())
+                } else if self.editing.is_some() {
                     Some(canvas::Action::publish(Message::StopEditing))
                 } else if self.search.is_some() {
                     // The find bar's own subscription closes it on Esc — don't
