@@ -673,11 +673,17 @@ impl ShapeWord {
         // — laid out in one face and, by a renderer that draws per span, drawn
         // in another, overlapping the next word. A span starting or ending
         // inside the word sends it down the grapheme path, which splits on
-        // attributes; words in one style keep the fast path.
-        let one_style = attrs_list.spans_iter().all(|(span, _)| {
-            let inside = |at: usize| at > word_range.start && at < word_range.end;
-            !inside(span.start) && !inside(span.end)
-        });
+        // attributes; words in one style keep the fast path. The check is
+        // upstream's own fix (cosmic-text main), copied verbatim so a re-vendor
+        // onto a release that has it simply drops this patch.
+        let one_style = {
+            let attrs_start = attrs_list.get_span(word_range.start);
+            attrs_list.spans_iter().all(|(other_range, other_attrs)| {
+                word_range.end <= other_range.start
+                    || other_range.end <= word_range.start
+                    || attrs_start.compatible(&other_attrs.as_attrs())
+            })
+        };
         let is_simple_ascii = one_style
             && word.is_ascii()
             && !word.chars().any(|c| c.is_ascii_control() && c != '\t');
