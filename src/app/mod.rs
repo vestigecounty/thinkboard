@@ -306,6 +306,9 @@ pub(crate) enum Message {
     PlaceEditorCaret,
     StopEditing,
     EditorAction(text_editor::Action),
+    /// Return in the editor: a line break that carries a list or quote marker
+    /// onto the new line, as Obsidian's does (see `edit::on_return`).
+    EditorReturn,
     /// Wrap the editor selection in a Markdown marker (`**` bold, `*` italic).
     WrapSelection(&'static str),
     /// Text-level undo/redo within the current edit session.
@@ -1056,6 +1059,7 @@ impl App {
             Message::PlaceEditorCaret => self.place_editor_caret(),
             Message::StopEditing => return self.stop_editing(),
             Message::EditorAction(action) => self.editor_action(action),
+            Message::EditorReturn => self.editor_return(),
             Message::WrapSelection(marker) => self.wrap_selection(marker),
             Message::UndoEdit => self.apply_edit_history(false),
             Message::RedoEdit => self.apply_edit_history(true),

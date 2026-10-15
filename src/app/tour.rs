@@ -671,7 +671,7 @@ fn build_a_board() {
     tour.shot("hover-port");
     tour.drag(port, Point::new(port.x + 260.0, port.y - 120.0));
     tour.shot("dragged-link");
-    tour.type_text("Flights\n\n- TAP, Fri evening\n- back Mon night");
+    tour.type_text("Flights\n\n- TAP, Fri evening\nback Mon night");
     tour.named(key::Named::Escape);
 
     tour.drag(port, Point::new(port.x + 260.0, port.y + 140.0));
@@ -730,7 +730,9 @@ fn editing() {
     // Line breaks: a frame after every word and every Return.
     let mut breaks = tour.strip("line-breaks", region);
     tour.frame(&mut breaks, "new note");
-    for step in ["Packing", " list", "\n", "\n", "- passport", "\n", "- charger", "\n", "\n", "Shoes?"] {
+    // The list is typed as it is in Obsidian: the marker once, then Return
+    // carries it, and Return on the empty item ends the list.
+    for step in ["Packing", " list", "\n", "\n", "- passport", "\n", "charger", "\n", "\n", "Shoes?"] {
         tour.type_text(step);
         tour.frame(&mut breaks, &format!("typed {step:?}"));
     }

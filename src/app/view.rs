@@ -970,5 +970,10 @@ fn editor_key_binding(
             _ => {}
         }
     }
+    // Return continues a list or a quote, Obsidian's way; Shift+Return is the
+    // plain line break inside an item, as it is there.
+    if matches!(key_press.key, Key::Named(Named::Enter)) && !key_press.modifiers.shift() {
+        return Some(text_editor::Binding::Custom(Message::EditorReturn));
+    }
     text_editor::Binding::from_key_press(key_press)
 }

@@ -148,6 +148,163 @@ fn toggle_marker(content: &mut text_editor::Content, marker: &str) -> bool {
     true
 }
 
+/// What Return does with the caret at byte `column` of `line`.
+#[derive(Debug, PartialEq, Eq)]
+enum ReturnKey {
+    /// An ordinary line break.
+    Plain,
+    /// Break the line, and start the new one with this.
+    Continue(String),
+    /// The item was empty: the line becomes this — the item stepped out a
+    /// level, or nothing — and no break is made.
+    End(String),
+}
+
+/// Return the way Obsidian's editor does it: in a list item or a quote, the new
+/// line starts with the same marker — the next number for an ordered list, an
+/// unticked box for a task — so a list is written by typing and pressing
+/// Return. Return on an *empty* item is how you stop: a nested one steps out a
+/// level, a top-level one loses its marker. Anywhere else, and with the caret
+/// still inside the marker, it's a plain line break.
+fn on_return(line: &str, column: usize) -> ReturnKey {
+    let Some(prefix) = MarkerPrefix::parse(line) else {
+        return ReturnKey::Plain;
+    };
+    if column < prefix.len {
+        return ReturnKey::Plain;
+    }
+    if !line[prefix.len..].trim().is_empty() {
+        return ReturnKey::Continue(prefix.next());
+    }
+    ReturnKey::End(prefix.ended())
+}
+
+/// The leading run of a line that Return carries over: indentation, any quote
+/// markers, then a list marker (with a task box, if it has one).
+struct MarkerPrefix<'a> {
+    /// Whitespace before everything else.
+    indent: &'a str,
+    /// `>` markers, as written (`"> "`, `"> > "`); empty outside a quote.
+    quote: &'a str,
+    /// Whitespace between the quote and the list marker.
+    inner: &'a str,
+    list: Option<ListMarker>,
+    /// Bytes of `line` the prefix covers.
+    len: usize,
+}
+
+#[derive(Clone, Copy)]
+enum ListMarker {
+    Bullet { mark: char, task: bool },
+    Ordered { number: u64, delim: char },
+}
+
+impl<'a> MarkerPrefix<'a> {
+    fn parse(line: &'a str) -> Option<Self> {
+        let blank = |c: char| c == ' ' || c == '\t';
+        let indent_len = line.len() - line.trim_start_matches(blank).len();
+        let mut at = indent_len;
+        while line[at..].starts_with('>') {
+            at += 1;
+            at += line[at..].len() - line[at..].trim_start_matches(blank).len();
+        }
+        let quote_end = at;
+        at += line[at..].len() - line[at..].trim_start_matches(blank).len();
+        let inner_end = at;
+
+        let rest = &line[at..];
+        let spaced = |after: usize| rest[after..].starts_with([' ', '\t']);
+        let list = if let Some(mark) = rest.chars().next().filter(|c| matches!(c, '-' | '*' | '+'))
+            && spaced(1)
+        {
+            at += 2;
+            let task = ["[ ] ", "[x] ", "[X] "].iter().any(|box_| line[at..].starts_with(box_));
+            if task {
+                at += 4;
+            }
+            Some(ListMarker::Bullet { mark, task })
+        } else {
+            let digits = rest.len() - rest.trim_start_matches(|c: char| c.is_ascii_digit()).len();
+            let delim = rest[digits..].chars().next();
+            match delim {
+                Some(delim @ ('.' | ')')) if (1..=9).contains(&digits) && spaced(digits + 1) => {
+                    at += digits + 2;
+                    Some(ListMarker::Ordered { number: rest[..digits].parse().ok()?, delim })
+                }
+                _ => None,
+            }
+        };
+        // Neither a quote nor a list: an ordinary line.
+        if list.is_none() && quote_end == indent_len {
+            return None;
+        }
+        Some(Self {
+            indent: &line[..indent_len],
+            quote: &line[indent_len..quote_end],
+            inner: &line[quote_end..inner_end],
+            list,
+            len: if list.is_some() { at } else { quote_end },
+        })
+    }
+
+    /// The prefix the next item starts with.
+    fn next(&self) -> String {
+        let (inner, list) = match self.list {
+            Some(list) => (self.inner, list.written(true)),
+            None => ("", String::new()),
+        };
+        format!("{}{}{inner}{list}", self.indent, self.quote)
+    }
+
+    /// What an empty item's line becomes when Return ends it: the same item a
+    /// level out if it was nested, else the line without its list marker —
+    /// which, inside a quote, leaves the quote, and outside one leaves nothing.
+    fn ended(&self) -> String {
+        let Some(list) = self.list else {
+            return String::new();
+        };
+        // What nests a list: indentation before a quote's markers outside a
+        // quote, and after them inside one.
+        if self.quote.is_empty() {
+            if self.indent.is_empty() {
+                return String::new();
+            }
+            return format!("{}{}", outdent(self.indent), list.written(false));
+        }
+        if self.inner.is_empty() {
+            return format!("{}{}", self.indent, self.quote);
+        }
+        format!("{}{}{}{}", self.indent, self.quote, outdent(self.inner), list.written(false))
+    }
+}
+
+impl ListMarker {
+    /// The marker as it starts an item — the following number when `advance`.
+    /// A task's box is always unticked: a new item, or one that stepped out
+    /// empty, has nothing done yet.
+    fn written(self, advance: bool) -> String {
+        match self {
+            ListMarker::Bullet { mark, task } => format!("{mark} {}", if task { "[ ] " } else { "" }),
+            ListMarker::Ordered { number, delim } => {
+                format!("{}{delim} ", if advance { number + 1 } else { number })
+            }
+        }
+    }
+}
+
+/// `indent` one level shallower: a tab if it ends in one, else back to the
+/// previous multiple of four spaces.
+fn outdent(indent: &str) -> &str {
+    if let Some(rest) = indent.strip_suffix('\t') {
+        return rest;
+    }
+    let cut = match indent.len() % 4 {
+        0 => 4,
+        partial => partial,
+    };
+    &indent[..indent.len().saturating_sub(cut)]
+}
+
 /// Pure core of [`toggle_marker`]: given the full text and a selection byte
 /// range `[start, end)`, returns the new text and the byte range to re-select,
 /// or `None` when the selection has no non-whitespace core to wrap.
@@ -386,6 +543,38 @@ impl App {
         self.commit_editor_text(edited);
     }
 
+    /// Return in the editor — see [`on_return`]. A caption is one line and a
+    /// selection is being replaced, so both get the plain break.
+    pub(super) fn editor_return(&mut self) {
+        let plain = text_editor::Action::Edit(text_editor::Edit::Enter);
+        let Some(editing) = &mut self.editing else {
+            return;
+        };
+        let cursor = editing.content.cursor();
+        if cursor.selection.is_some() || editing.target == EditTarget::Label {
+            return self.editor_action(plain);
+        }
+        let row = cursor.position.line;
+        let line = editing.content.line(row).map(|line| line.text.into_owned()).unwrap_or_default();
+        let edit = match on_return(&line, cursor.position.column) {
+            ReturnKey::Plain => return self.editor_action(plain),
+            ReturnKey::Continue(prefix) => text_editor::Edit::Paste(std::sync::Arc::new(format!("\n{prefix}"))),
+            ReturnKey::End(line_now) => {
+                // Select the whole line, then write what it becomes over it.
+                editing.content.move_to(text_editor::Cursor {
+                    position: text_editor::Position { line: row, column: line.len() },
+                    selection: Some(text_editor::Position { line: row, column: 0 }),
+                });
+                if line_now.is_empty() {
+                    text_editor::Edit::Delete
+                } else {
+                    text_editor::Edit::Paste(std::sync::Arc::new(line_now))
+                }
+            }
+        };
+        self.editor_action(text_editor::Action::Edit(edit));
+    }
+
     /// Wraps the editor selection in a Markdown marker (`**` bold, `*` italic).
     pub(super) fn wrap_selection(&mut self, marker: &str) {
         let edited = if let Some(editing) = &mut self.editing {
@@ -605,6 +794,73 @@ impl App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Return at the end of `line`.
+    fn ret(line: &str) -> ReturnKey {
+        on_return(line, line.len())
+    }
+
+    fn cont(prefix: &str) -> ReturnKey {
+        ReturnKey::Continue(prefix.to_owned())
+    }
+
+    fn end(line: &str) -> ReturnKey {
+        ReturnKey::End(line.to_owned())
+    }
+
+    #[test]
+    fn return_continues_a_list_with_its_marker() {
+        assert_eq!(ret("- passport"), cont("- "));
+        assert_eq!(ret("* passport"), cont("* "));
+        assert_eq!(ret("+ passport"), cont("+ "));
+        assert_eq!(ret("\t- nested"), cont("\t- "));
+        assert_eq!(ret("  - nested"), cont("  - "));
+    }
+
+    #[test]
+    fn an_ordered_list_counts_on_and_a_task_starts_unticked() {
+        assert_eq!(ret("1. first"), cont("2. "));
+        assert_eq!(ret("9) ninth"), cont("10) "));
+        assert_eq!(ret("- [x] done"), cont("- [ ] "));
+        assert_eq!(ret("- [ ] todo"), cont("- [ ] "));
+    }
+
+    #[test]
+    fn a_quote_carries_on_and_so_does_a_list_inside_it() {
+        assert_eq!(ret("> said"), cont("> "));
+        assert_eq!(ret("> > nested"), cont("> > "));
+        assert_eq!(ret("> - item"), cont("> - "));
+    }
+
+    #[test]
+    fn return_on_an_empty_item_ends_or_outdents_it() {
+        // Top level: the marker goes, and with it the list.
+        assert_eq!(ret("- "), end(""));
+        assert_eq!(ret("1. "), end(""));
+        assert_eq!(ret("- [ ] "), end(""));
+        assert_eq!(ret("> "), end(""));
+        // Nested: one level out, keeping its marker.
+        assert_eq!(ret("\t- "), end("- "));
+        assert_eq!(ret("\t\t- "), end("\t- "));
+        assert_eq!(ret("    - "), end("- "));
+        assert_eq!(ret("  2. "), end("2. "));
+        // Inside a quote: the list ends, the quote stays.
+        assert_eq!(ret("> - "), end("> "));
+    }
+
+    #[test]
+    fn plain_lines_and_lookalikes_break_plainly() {
+        assert_eq!(ret("Packing list"), ReturnKey::Plain);
+        assert_eq!(ret("**bold** start"), ReturnKey::Plain);
+        assert_eq!(ret("---"), ReturnKey::Plain);
+        assert_eq!(ret("-dash"), ReturnKey::Plain);
+        assert_eq!(ret("2024. was a year"), cont("2025. "), "a number then `. ` is a list item, as in Markdown");
+        assert_eq!(ret("12345678901. too long"), ReturnKey::Plain);
+        // The caret inside the marker: a plain break, which moves the item down.
+        assert_eq!(on_return("- passport", 1), ReturnKey::Plain);
+        // The caret mid-item still continues: the rest moves to the new item.
+        assert_eq!(on_return("- pass port", 6), cont("- "));
+    }
 
     /// `<sel>` marks the selection range; returns the new text with the
     /// re-selected range marked the same way, or `"<none>"` for a no-op.

@@ -77,6 +77,11 @@ fn text_of(app: &App, index: usize) -> Option<&str> {
     app.nodes[index].text.as_deref()
 }
 
+/// Presses Return in the open editor along the real path.
+fn press_return(app: &mut App) {
+    send(app, Message::EditorReturn);
+}
+
 // --- Selection ---
 
 #[test]
@@ -919,6 +924,23 @@ fn auto_size_still_widens_a_card_that_needs_it() {
     send(&mut app, Message::StopEditing);
 
     assert!(app.nodes[0].width > 250.0, "got {}", app.nodes[0].width);
+}
+
+#[test]
+fn return_writes_a_list_and_return_on_an_empty_item_ends_it() {
+    let mut app = app_with(vec![text_node("a", "")], Vec::new());
+    send(&mut app, Message::StartEditing { index: 0, at: None });
+
+    type_text(&mut app, "Packing");
+    press_return(&mut app);
+    type_text(&mut app, "- passport");
+    press_return(&mut app);
+    type_text(&mut app, "charger");
+    press_return(&mut app);
+    press_return(&mut app);
+    type_text(&mut app, "Shoes?");
+
+    assert_eq!(text_of(&app, 0), Some("Packing\n- passport\n- charger\nShoes?"));
 }
 
 #[test]
