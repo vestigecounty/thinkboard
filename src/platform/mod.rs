@@ -51,6 +51,19 @@ pub const UI_FONT_NAME: &str = "Segoe UI";
 #[cfg(not(any(target_os = "macos", windows)))]
 pub const UI_FONT_NAME: &str = "sans-serif";
 
+/// The system's monospace family, for code — the face [`UI_FONT_FILES`] loads
+/// for it. Set as the generic `monospace` in both font systems, whose own
+/// defaults name faces that aren't installed (Courier New, Noto Sans Mono) and
+/// so fell back to *different* faces: inline code was laid out in one and
+/// drawn in another, overlapping the word after it. `None` where we load no
+/// mono face of our own.
+#[cfg(target_os = "macos")]
+pub const UI_MONO_NAME: Option<&str> = Some(".SF NS Mono");
+#[cfg(windows)]
+pub const UI_MONO_NAME: Option<&str> = Some("Consolas");
+#[cfg(not(any(target_os = "macos", windows)))]
+pub const UI_MONO_NAME: Option<&str> = None;
+
 /// System font files to register with iced/cosmic-text: an upright face
 /// (regular/bold via the weight axis), a real italic face, and a monospace
 /// face for code. Missing files are ignored; an empty list means "use whatever

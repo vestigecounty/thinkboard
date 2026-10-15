@@ -2849,16 +2849,9 @@ impl Board<'_> {
         let mut byte: Vec<usize> = run.text.char_indices().map(|(b, _)| b).collect();
         byte.push(run.text.len());
 
-        let (family, features) = if run.mono {
-            (self.theme.font_mono, self.theme.font_features_mono)
-        } else {
-            (self.theme.font_text, self.theme.font_features)
-        };
-        // The same features the run is drawn with, or a hit's box would be
-        // measured against different letterforms than the ones under it.
-        let width = |text: &str| {
-            crate::text_raster::measure(text, f32::MAX, run.size, 1.0, family, features).0
-        };
+        // Measured as the run is set — face, weight, slant, features — or a
+        // hit's box sits against different letterforms than the ones under it.
+        let width = |text: &str| crate::text_raster::run_advance(text, run, self.theme);
 
         let mut hits = Vec::new();
         let mut cs = 0;

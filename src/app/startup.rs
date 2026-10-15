@@ -195,8 +195,9 @@ pub(crate) fn run() -> iced::Result {
 }
 
 /// Gives iced's font system the same system UI faces the raster path loads, so
-/// the live text path resolves the italic/mono faces (not a generic fallback)
-/// and a bold that isn't SF Mono (`text_raster::register_variable_weights`).
+/// the live text path resolves the italic/mono faces (not a generic fallback),
+/// a bold that isn't SF Mono, and the same `monospace` the bitmaps use
+/// (`text_raster::register_ui_families`).
 ///
 /// Written straight into the global font system rather than handed to the
 /// builder like the theme's fonts below, because the weight aliases have to be
@@ -210,10 +211,7 @@ pub(super) fn load_ui_fonts() {
             fonts.load_font(bytes.into());
         }
     }
-    crate::text_raster::register_variable_weights(
-        fonts.raw().db_mut(),
-        crate::platform::UI_FONT_NAME,
-    );
+    crate::text_raster::register_ui_families(fonts.raw().db_mut());
 }
 
 /// `daemon` renders per window: the main window shows the board, the settings

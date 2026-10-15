@@ -397,7 +397,7 @@ fn with_raster<R>(f: impl FnOnce(&mut Raster) -> R) -> R {
         }
         // "Via the weight axis" only once the axis has a face to be asked
         // through — see `register_variable_weights`.
-        register_variable_weights(&mut db, crate::platform::UI_FONT_NAME);
+        register_ui_families(&mut db);
         // Always pull in installed system fonts: they're the raster db's only
         // source of glyph fallback, so scripts the UI font lacks (CJK, emoji,
         // symbols) resolve to an installed face instead of rendering as tofu.
@@ -419,9 +419,24 @@ fn with_raster<R>(f: impl FnOnce(&mut Raster) -> R) -> R {
 }
 
 /// Weights a variable face is registered at besides its own: the CSS steps a
-/// theme's `weight_bold` lands on, and 700, which the editor and the settings
-/// headings ask for by name.
-const VARIABLE_WEIGHTS: &[u16] = &[500, 600, 700, 800];
+/// theme's `weight_bold` lands on, 700, which the editor and the settings
+/// headings ask for by name — and 400, for a face whose own default isn't:
+/// SF Mono's is 295, so code at a regular weight never matched it.
+const VARIABLE_WEIGHTS: &[u16] = &[400, 500, 600, 700, 800];
+
+/// Readies the platform's UI families in `db`: every variable face given its
+/// weights, and the mono family made the generic `monospace`
+/// (see `platform::UI_MONO_NAME`). Run on both font databases — this one and
+/// iced's — so the two resolve a family to the same face.
+pub fn register_ui_families(db: &mut fontdb::Database) {
+    register_variable_weights(db, crate::platform::UI_FONT_NAME);
+    if let Some(mono) = crate::platform::UI_MONO_NAME
+        && db.faces().any(|face| face.families.iter().any(|(name, _)| name == mono))
+    {
+        register_variable_weights(db, mono);
+        db.set_monospace_family(mono);
+    }
+}
 
 /// Registers every variable face of `family` again at each weight in
 /// [`VARIABLE_WEIGHTS`] its `wght` axis reaches — the same bytes under a second
@@ -437,7 +452,7 @@ const VARIABLE_WEIGHTS: &[u16] = &[500, 600, 700, 800];
 /// the *requested* weight through its `wght` axis, so the alias is a real bold,
 /// not a faux one — the stamped copies rely on the same thing.
 ///
-/// Used on both font databases: this one, and iced's (`startup::load_ui_fonts`).
+/// Used on both font databases, through [`register_ui_families`].
 pub fn register_variable_weights(db: &mut fontdb::Database, family: &str) {
     let in_family =
         |face: &fontdb::FaceInfo| face.families.iter().any(|(name, _)| name == family);
@@ -469,6 +484,40 @@ pub fn register_variable_weights(db: &mut fontdb::Database, family: &str) {
 /// for it.
 pub fn warm_up() {
     with_raster(|_| ());
+}
+
+/// How wide `text` is when set as `run` is set — the run's face, weight,
+/// slant, features and size — for placing something over part of a run, as a
+/// search hit is placed over its word.
+///
+/// Measured in the body's regular weight instead, a hit in a heading or in
+/// bold landed short of its word, the gap growing with the text before it:
+/// "Thin" then a highlighted "Board", the k under the fill.
+pub fn run_advance(text: &str, run: &TextRun, theme: &Theme) -> f32 {
+    if text.is_empty() {
+        return 0.0;
+    }
+    let (family, features) = if run.mono {
+        (theme.font_mono.map(Family::Name).unwrap_or(Family::Monospace), theme.font_features_mono)
+    } else {
+        (
+            theme.font_text.map(Family::Name).unwrap_or(Family::Name(crate::platform::UI_FONT_NAME)),
+            theme.font_features,
+        )
+    };
+    let weight = if run.bold { theme.weight_bold } else { theme.weight_normal };
+    let mut attrs = with_features(Attrs::new().family(family), features).weight(Weight(weight));
+    if run.italic {
+        attrs = attrs.style(Style::Italic);
+    }
+    with_raster(|raster| {
+        let font_system = &mut raster.font_system;
+        let mut buffer = Buffer::new(font_system, Metrics::new(run.size, run.size * LINE_HEIGHT));
+        buffer.set_size(font_system, None, None);
+        buffer.set_text(font_system, text, &attrs, Shaping::Advanced, None);
+        buffer.shape_until_scroll(font_system, false);
+        buffer.layout_runs().map(|line| line.line_w).fold(0.0, f32::max)
+    })
 }
 
 /// A text node rendered to a bitmap.
@@ -1464,6 +1513,44 @@ mod measure_tests {
         );
     }
 
+    /// A style that changes inside a word reaches the shaper. cosmic-text's
+    /// ASCII fast path shaped a word in its first character's style, so the
+    /// bold here vanished and inline code after a space was set in the body
+    /// face — patched in `vendor/cosmic-text`. Measures with the machine's own
+    /// faces, so macOS only, like the test above.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_style_inside_a_word_is_kept() {
+        let theme = Theme::default();
+        let width = |text: &str| measure_markdown(text, 2000.0, 16.0, &theme).0;
+        assert!(width("x**bold**y") > width("xboldy") + 1.0, "the bold went missing");
+        assert!(
+            width("a `.canvas`") > width("a .canvas") + 5.0,
+            "inline code after a space was set in the body face",
+        );
+    }
+
+    /// A hit inside a bold run is placed against bold letterforms — measured
+    /// in the regular weight, it fell short of its word.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_bold_run_is_measured_bold() {
+        let theme = Theme::default();
+        let run = |bold| TextRun {
+            text: "ThinkBoard".to_owned(),
+            x: 0.0,
+            y: 0.0,
+            width: 0.0,
+            size: 24.0,
+            color: theme.text,
+            bold,
+            italic: false,
+            mono: false,
+            link: None,
+        };
+        assert!(run_advance("Think", &run(true), &theme) > run_advance("Think", &run(false), &theme) + 1.0);
+    }
+
     #[test]
     fn the_themes_features_reach_the_shaper() {
         use cosmic_text::FeatureTag;
@@ -1498,3 +1585,4 @@ mod measure_tests {
     }
 
 }
+

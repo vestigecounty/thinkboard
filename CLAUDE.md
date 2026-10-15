@@ -48,6 +48,14 @@ real one — use it for any run that might write settings.
     `WGPU_DX12_PRESENTATION_SYSTEM=visual` can pick the DirectComposition
     swapchain (transparent overlay on Windows).
 
+  - `cosmic-text` (0.15.0, the only 0.15 — iced 0.14 pins it) — its ASCII
+    shaping fast path shaped a whole word in its first character's style, so
+    a style change *inside* a word vanished: `x**bold**y` had no bold, and
+    inline code after a space (no line break is allowed before a `.`, so
+    ` .canvas` joins the word before it) was laid out in the body face. The
+    patch keeps the fast path for words in one style only. Its tests and
+    benches aren't vendored, so their targets are cut from its manifest.
+
   They're checked in, so a clone needs no extra setup. Re-vendoring means
   re-applying these patches.
 
@@ -384,6 +392,14 @@ the family ships (`text_raster::family_weights`), and the picker's rows ask iced
 for the same weight. Without that, choosing one of those silently renders the
 board in the system font. It's the same failure `synth_weight_faces` exists to
 prevent for a theme's embedded fonts.
+
+The platform's own faces need the same help. SF Pro and SF Mono are variable
+fonts registered once at their default weight (SF Mono's is 295), so
+`register_ui_families` registers them again at each weight the app asks for
+(the same bytes, a second face record), and makes SF Mono the generic
+`monospace` in **both** font systems — whose own defaults name faces that
+aren't installed, and fell back to different ones, so inline code was laid out
+in one face and drawn in another.
 
 That is also why `use_font` reads the font database, so **`set_embedded_fonts`
 has to be called before it** in `App::new` — that entry point only takes effect

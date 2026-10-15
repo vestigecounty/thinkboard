@@ -97,6 +97,9 @@ iced_graphics = { path = "vendor/iced_graphics" }
 # the DirectComposition swapchain (transparent overlay on Windows): see
 # vendor/iced_wgpu/src/window/compositor.rs
 iced_wgpu = { path = "vendor/iced_wgpu" }
+# A style change inside a word (`x**bold**y`, inline code after a space) was
+# dropped by the ASCII shaping fast path: see vendor/cosmic-text/src/shape.rs
+cosmic-text = { path = "vendor/cosmic-text" }
 
 # Criterion supplies its own `main`, so the default libtest harness is off.
 [[bench]]
