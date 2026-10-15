@@ -2196,6 +2196,14 @@ impl App {
     /// here — outside it, redraws are sparse and event-driven (hover), so their
     /// inter-frame gaps are idle time, not render cost.
     fn animating(&self) -> bool {
+        self.transitioning() || self.ghosts_expiring()
+    }
+
+    /// [`App::animating`] less the ghosts' countdown: everything on its way to
+    /// rest. The countdown is a clock rather than a transition — run to its
+    /// end, it ends with the cards it was counting gone — so the offscreen tour
+    /// settles on this instead, and shoots the ghosts while there are some.
+    fn transitioning(&self) -> bool {
         self.inertia.is_some()
             || self.zoom_animation.is_some()
             || self.camera_focus.is_some()
@@ -2204,7 +2212,6 @@ impl App {
             || self.picker_anim.is_some()
             || self.layout_anim.is_some()
             || !self.ai.flows.is_empty()
-            || self.ghosts_expiring()
             || self.ghosts_fading_in()
             || matches!(self.phase, Phase::Entering { .. } | Phase::Exiting { .. })
     }

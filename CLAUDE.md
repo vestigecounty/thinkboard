@@ -707,7 +707,21 @@ shows as late), and `save` tiles them into one numbered sheet with a `.txt`
 legend of card size, editor box, line count and caret per frame. Read the
 legend first; it says which of the three fell behind.
 
-Five things it has to do that a runtime does for free, each learned from a
+Every event settles, so a click that starts something long — an answer
+streaming in — has finished it by the time the click returns. `start` clicks
+and returns with it still going, and `film_while` films until a condition
+says it's over. `click_label` finds a widget by its text, through iced's
+`Operation::text`, rather than by offsets into a menu that moves whenever it
+gains an item.
+
+The AI scenes ask a **`Provider`**: an OpenAI-compatible endpoint on a loopback
+port, answering from a script, so the real client is what runs — the streamed
+events, the `---` that splits an answer, the sentence a refused request turns
+into. Nothing leaves the machine and no key is needed. It refuses a model it
+doesn't list with a 404, as OpenAI does, which is how `ai_setup` shows what a
+new config's model name does on a hosted provider.
+
+Seven things it has to do that a runtime does for free, each learned from a
 shot that lied:
 
 - **Deliver a redraw to the tree that draws.** An iced 0.14 button keeps its
@@ -728,6 +742,12 @@ shot that lied:
   prepared, which offscreen only a read-back does. Ticking a bitmap's warm-up
   without presenting never started its upload, and the card it was warming
   for drew blank.
+- **Enter a Tokio runtime.** reqwest registers with Tokio's reactor wherever
+  its future is polled, and panics with none entered; `pump` enters iced's
+  own executor around every poll.
+- **Not wait out a countdown.** `settle` waits on `App::transitioning` —
+  `animating` less the ghosts' ten-second countdown, which run to its end
+  removes the very cards a shot was settling to show.
 
 ## Platform notes
 

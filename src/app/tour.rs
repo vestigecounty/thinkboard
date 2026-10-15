@@ -29,7 +29,10 @@
 //! Ignored by default: it needs a GPU adapter, which CI doesn't promise, and
 //! it is a thing to look at rather than a thing that fails.
 
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::LazyLock;
 use std::task::{Context, Poll, Waker};
 use std::time::{Duration, Instant};
 
@@ -37,6 +40,7 @@ use iced::advanced::renderer::Headless;
 use iced::futures::stream::{BoxStream, StreamExt};
 use iced::keyboard::{self, Key, Modifiers, key};
 use iced::{Event, Rectangle, mouse};
+use iced_runtime::core::widget::Operation;
 use iced_runtime::core::widget::operation::Outcome;
 use iced_runtime::core::{clipboard, renderer};
 use iced_runtime::user_interface::{self, UserInterface};
@@ -55,6 +59,13 @@ const QUIET: Duration = Duration::from_millis(60);
 /// How long [`Tour::shot`] leaves iced's image worker between its two frames.
 const UPLOAD_GRACE: Duration = Duration::from_millis(250);
 
+/// The runtime a window runs tasks on — Tokio, by iced's `tokio` feature.
+/// The tour polls tasks itself, but a request made with `reqwest` registers
+/// with Tokio's reactor wherever it's polled, and with none entered it panics
+/// on the spot.
+static RUNTIME: LazyLock<iced::executor::Default> =
+    LazyLock::new(|| iced::executor::Default::new().expect("a Tokio runtime"));
+
 /// A driven app and the offscreen renderer it draws into.
 struct Tour {
     app: App,
@@ -66,6 +77,8 @@ struct Tour {
     window: window::Id,
     /// Tasks `update` returned that haven't finished yet.
     tasks: Vec<BoxStream<'static, Action<Message>>>,
+    /// When the pending answer's dots last stepped (see [`Tour::timers`]).
+    dots: Instant,
     out: PathBuf,
     shots: usize,
 }
@@ -108,6 +121,7 @@ impl Tour {
             modifiers: Modifiers::empty(),
             window,
             tasks: Vec::new(),
+            dots: Instant::now(),
             out,
             shots: 0,
         };
@@ -118,9 +132,24 @@ impl Tour {
 
     // --- The runtime, as far as these scenes need one ---
 
-    /// Runs `events` through the widget tree and the raw-event handlers, then
-    /// applies everything they published.
+    /// Runs `events` through the widget tree and the raw-event handlers,
+    /// applies everything they published, and settles.
     fn feed(&mut self, events: Vec<Event>) {
+        self.deliver(events);
+        self.settle();
+        // And a frame, as a window would draw one — though nothing is read
+        // back. Drawing isn't only output: the editor highlights in its draw,
+        // and a run of keystrokes with no frame between them is an editor
+        // asked to catch up on several edits at once, which a person typing
+        // rarely makes it do. (That is how the tour found `change_line`
+        // skipping lines; it is also why a tour that never drew showed it far
+        // more often than anyone would see it.)
+        self.draw();
+    }
+
+    /// [`Tour::feed`] short of settling: whatever the events start is still
+    /// under way when it returns.
+    fn deliver(&mut self, events: Vec<Event>) {
         let cursor = mouse::Cursor::Available(self.cursor);
         let mut messages = Vec::new();
         let statuses = {
@@ -143,15 +172,6 @@ impl Tour {
         for message in messages {
             self.send(message);
         }
-        self.settle();
-        // And a frame, as a window would draw one — though nothing is read
-        // back. Drawing isn't only output: the editor highlights in its draw,
-        // and a run of keystrokes with no frame between them is an editor
-        // asked to catch up on several edits at once, which a person typing
-        // rarely makes it do. (That is how the tour found `change_line`
-        // skipping lines; it is also why a tour that never drew showed it far
-        // more often than anyone would see it.)
-        self.draw();
     }
 
     /// Delivers one message, as the runtime would — keeping its task.
@@ -170,6 +190,7 @@ impl Tour {
 
     /// Polls every unfinished task once; true if any of them moved.
     fn pump(&mut self) -> bool {
+        let _runtime = RUNTIME.enter();
         let mut context = Context::from_waker(Waker::noop());
         let mut moved = false;
         let mut i = 0;
@@ -187,6 +208,16 @@ impl Tour {
             }
         }
         moved
+    }
+
+    /// The timers `subscription` runs, as far as these scenes need them: the
+    /// dots in an answer still waiting for its first word, which nothing else
+    /// steps.
+    fn timers(&mut self) {
+        if !self.app.ai.pending.is_empty() && self.dots.elapsed() >= ai::DOTS_INTERVAL {
+            self.dots = Instant::now();
+            self.send(Message::AiTick);
+        }
     }
 
     fn act(&mut self, action: Action<Message>) {
@@ -225,7 +256,10 @@ impl Tour {
         let mut quiet_since = Instant::now();
         loop {
             let mut busy = self.pump();
-            if self.app.animating() {
+            self.timers();
+            // Not `animating`: the ghosts' countdown would be waited out, and
+            // the shot taken of a board they'd just left.
+            if self.app.transitioning() {
                 self.send(Message::Tick(Instant::now()));
                 // Every animation frame is drawn *and presented*, as
                 // `window::frames` drives a window — some of what animates
@@ -254,6 +288,37 @@ impl Tour {
                 eprintln!("tour: still busy after 15 s; shooting anyway");
                 break;
             }
+        }
+    }
+
+    /// Settles until `done` says so — for a reply with pauses in it longer
+    /// than [`QUIET`], which [`Tour::settle`] would take for the end of it.
+    fn settle_until(&mut self, done: impl Fn(&App) -> bool) {
+        let deadline = Instant::now() + Duration::from_secs(20);
+        self.settle();
+        while !done(&self.app) {
+            if Instant::now() > deadline {
+                eprintln!("tour: still waiting after 20 s; shooting anyway");
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(5));
+            self.settle();
+        }
+    }
+
+    /// Lets `time` pass as a window would: tasks run, timers fire, and every
+    /// frame is drawn — the ghosts' countdown included, which is what a wait
+    /// is usually for.
+    fn wait(&mut self, time: Duration) {
+        let until = Instant::now() + time;
+        while Instant::now() < until {
+            self.pump();
+            self.timers();
+            if self.app.animating() {
+                self.send(Message::Tick(Instant::now()));
+                let _ = self.render();
+            }
+            std::thread::sleep(Duration::from_millis(16));
         }
     }
 
@@ -356,11 +421,33 @@ impl Tour {
     /// would play it out before the first frame.
     fn film(&mut self, strip: &mut Strip, label: &str) {
         let start = Instant::now();
-        while self.app.animating() && start.elapsed() < Duration::from_secs(3) {
+        while self.app.transitioning() && start.elapsed() < Duration::from_secs(3) {
             self.pump();
             self.send(Message::Tick(Instant::now()));
             self.frame(strip, &format!("{label} +{} ms", start.elapsed().as_millis()));
             std::thread::sleep(Duration::from_millis(40));
+        }
+        self.settle();
+        self.frame(strip, &format!("{label}: settled"));
+    }
+
+    /// Frames of whatever `going` says is under way, one every `every` — for a
+    /// process with pauses in it, like an answer arriving a word at a time,
+    /// which [`Tour::film`] would call finished between two words.
+    fn film_while(&mut self, strip: &mut Strip, label: &str, every: Duration, going: impl Fn(&App) -> bool) {
+        let start = Instant::now();
+        while going(&self.app) && start.elapsed() < Duration::from_secs(10) {
+            let next = Instant::now() + every;
+            while Instant::now() < next {
+                self.pump();
+                self.timers();
+                if self.app.transitioning() {
+                    self.send(Message::Tick(Instant::now()));
+                    let _ = self.render();
+                }
+                std::thread::sleep(Duration::from_millis(8));
+            }
+            self.frame(strip, &format!("{label} +{} ms", start.elapsed().as_millis()));
         }
         self.settle();
         self.frame(strip, &format!("{label}: settled"));
@@ -550,6 +637,51 @@ impl Tour {
 
     // --- Where things are ---
 
+    /// The centre of the text `label` as it's laid out now — a menu item, a
+    /// button, a panel row — found by asking the tree, the way an
+    /// accessibility tool would, rather than by arithmetic over a menu that
+    /// moves whenever it gains an item. The last match wins, since what's
+    /// drawn last is what's on top.
+    fn label(&mut self, label: &str) -> Point {
+        struct Find<'a> {
+            label: &'a str,
+            found: Option<Rectangle>,
+        }
+        impl Operation for Find<'_> {
+            fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn Operation)) {
+                operate(self);
+            }
+            fn text(&mut self, _id: Option<&iced::widget::Id>, bounds: Rectangle, text: &str) {
+                if text == self.label {
+                    self.found = Some(bounds);
+                }
+            }
+        }
+        let mut find = Find { label, found: None };
+        let Self { app, renderer, cache, .. } = self;
+        let mut ui = UserInterface::build(app.view(), VIEWPORT, cache.take().unwrap_or_default(), renderer);
+        ui.operate(renderer, &mut find);
+        *cache = Some(ui.into_cache());
+        find.found.unwrap_or_else(|| panic!("nothing on screen reads {label:?}")).center()
+    }
+
+    /// Clicks whatever reads `label`.
+    fn click_label(&mut self, label: &str) {
+        let at = self.label(label);
+        self.click(at);
+    }
+
+    /// Clicks whatever reads `label` and returns with what the click started
+    /// still going — for filming it. A [`Tour::click`] settles, and an answer
+    /// that has settled has finished arriving.
+    fn start(&mut self, label: &str) {
+        let at = self.label(label);
+        self.move_to(at);
+        self.press(mouse::Button::Left);
+        self.deliver(vec![Event::Mouse(mouse::Event::ButtonReleased(mouse::Button::Left))]);
+        self.draw();
+    }
+
     /// The on-screen centre of node `index`.
     fn node_center(&self, index: usize) -> Point {
         let node = &self.app.nodes[index];
@@ -686,6 +818,151 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
         }
         std::thread::sleep(Duration::from_millis(1));
     }
+}
+
+/// An OpenAI-compatible endpoint on a loopback port, answering from a
+/// [`Script`].
+///
+/// The AI scenes need something to ask, and it has to be the real client that
+/// asks it: the streamed `data:` lines, the `---` that splits an answer into
+/// notes, the sentence a refused request turns into — those are what a person
+/// sees, and a message sent straight to `update` would skip every one. Nothing
+/// leaves the machine and no key is needed.
+struct Provider {
+    /// The base URL to configure, `/v1` included.
+    url: String,
+}
+
+/// What a [`Provider`] says.
+struct Script {
+    /// What `GET /models` lists: id, display name, context window. A request
+    /// for any other model is refused with a 404, as OpenAI refuses one.
+    models: &'static [(&'static str, Option<&'static str>, Option<u64>)],
+    /// Streamed answers, each under a cue: a request gets the one whose cue
+    /// comes latest in its prompt, which ends with the note asked about.
+    answers: &'static [(&'static str, &'static str)],
+    /// The same for suggestions — one per line, as `ai::suggest` asks.
+    suggestions: &'static [(&'static str, &'static str)],
+    /// Refuse every request as an unrecognised key.
+    reject_key: bool,
+}
+
+/// A local model's pause before its first word, long enough to see the board
+/// waiting on it.
+const FIRST_WORD: Duration = Duration::from_millis(1200);
+/// Between words, about a fast local model's pace.
+const NEXT_WORD: Duration = Duration::from_millis(35);
+/// How long suggestions and the model list take to come back.
+const LOOKUP: Duration = Duration::from_millis(700);
+
+impl Provider {
+    fn start(script: &'static Script) -> Self {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        let url = format!("http://{}/v1", listener.local_addr().expect("its address"));
+        std::thread::spawn(move || {
+            for stream in listener.incoming().flatten() {
+                std::thread::spawn(move || serve(stream, script));
+            }
+        });
+        Self { url }
+    }
+
+    /// A URL nothing answers at — a local runtime that isn't running.
+    fn absent() -> String {
+        let listener = TcpListener::bind("127.0.0.1:0").expect("a loopback port");
+        format!("http://{}/v1", listener.local_addr().expect("its address"))
+    }
+}
+
+/// Answers one request on `stream`, then closes it.
+fn serve(mut stream: TcpStream, script: &Script) {
+    let Some((head, body)) = read_request(&mut stream) else {
+        return;
+    };
+    if script.reject_key {
+        let error = "Incorrect API key provided. You can find your API key in your account settings.";
+        return respond(&mut stream, "401 Unauthorized", &serde_json::json!({ "error": { "message": error, "code": "invalid_api_key" } }));
+    }
+    if head.split_whitespace().nth(1).is_some_and(|path| path.ends_with("/models")) {
+        std::thread::sleep(LOOKUP);
+        let data: Vec<serde_json::Value> = script
+            .models
+            .iter()
+            .map(|(id, name, context)| serde_json::json!({ "id": id, "name": name, "context_length": context }))
+            .collect();
+        return respond(&mut stream, "200 OK", &serde_json::json!({ "data": data }));
+    }
+    let request: serde_json::Value = serde_json::from_slice(&body).unwrap_or_default();
+    let model = request["model"].as_str().unwrap_or_default();
+    if !script.models.iter().any(|(id, ..)| *id == model) {
+        let error = format!("The model `{model}` does not exist or you do not have access to it.");
+        return respond(&mut stream, "404 Not Found", &serde_json::json!({ "error": { "message": error, "code": "model_not_found" } }));
+    }
+    let prompt = request.pointer("/messages/1/content").and_then(|c| c.as_str()).unwrap_or_default();
+    if request["stream"] != true {
+        std::thread::sleep(LOOKUP);
+        let content = cued(script.suggestions, prompt);
+        return respond(&mut stream, "200 OK", &serde_json::json!({ "choices": [{ "message": { "content": content } }] }));
+    }
+    // Server-sent events, a word to an event; no length, so the body ends
+    // where the connection does.
+    let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
+    if stream.write_all(head.as_bytes()).is_err() {
+        return;
+    }
+    std::thread::sleep(FIRST_WORD);
+    for word in cued(script.answers, prompt).split_inclusive(' ') {
+        let event = serde_json::json!({ "choices": [{ "delta": { "content": word } }] });
+        if stream.write_all(format!("data: {event}\n\n").as_bytes()).is_err() {
+            return;
+        }
+        std::thread::sleep(NEXT_WORD);
+    }
+    let _ = stream.write_all(b"data: [DONE]\n\n");
+}
+
+/// The reply under whichever of `table`'s cues comes latest in `prompt`.
+fn cued(table: &'static [(&'static str, &'static str)], prompt: &str) -> &'static str {
+    table
+        .iter()
+        .filter_map(|(cue, reply)| prompt.rfind(cue).map(|at| (at, *reply)))
+        .max_by_key(|(at, _)| *at)
+        .map_or("", |(_, reply)| reply)
+}
+
+/// A request's head and body, read as far as its `Content-Length` says.
+fn read_request(stream: &mut TcpStream) -> Option<(String, Vec<u8>)> {
+    let mut buffer = Vec::new();
+    let mut chunk = [0; 4096];
+    let end = loop {
+        if let Some(at) = buffer.windows(4).position(|w| w == b"\r\n\r\n") {
+            break at + 4;
+        }
+        let read = stream.read(&mut chunk).ok().filter(|&n| n > 0)?;
+        buffer.extend_from_slice(&chunk[..read]);
+    };
+    let head = String::from_utf8_lossy(&buffer[..end]).into_owned();
+    let length = head
+        .lines()
+        .filter_map(|line| line.split_once(':'))
+        .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+        .and_then(|(_, value)| value.trim().parse().ok())
+        .unwrap_or(0);
+    let mut body = buffer.split_off(end);
+    while body.len() < length {
+        let read = stream.read(&mut chunk).ok().filter(|&n| n > 0)?;
+        body.extend_from_slice(&chunk[..read]);
+    }
+    Some((head, body))
+}
+
+fn respond(stream: &mut TcpStream, status: &str, body: &serde_json::Value) {
+    let body = body.to_string();
+    let _ = write!(
+        stream,
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len(),
+    );
 }
 
 /// An app as a first launch builds it — default config, the theme that config
@@ -1364,6 +1641,233 @@ fn arranging() {
     tour.shot("resized");
 }
 
+/// What the stand-in providers serve. None of these is the model a new config
+/// names: that one is a local runtime's, and a hosted provider wouldn't have it.
+const MODELS: &[(&str, Option<&str>, Option<u64>)] = &[
+    ("google/gemma-3-27b-it", Some("Google: Gemma 3 27B"), Some(131_072)),
+    ("meta-llama/llama-3.3-70b-instruct", Some("Meta: Llama 3.3 70B Instruct"), Some(131_072)),
+    ("mistralai/mistral-small-3.2-24b-instruct", Some("Mistral: Mistral Small 3.2 24B"), Some(131_072)),
+    ("qwen/qwen3-30b-a3b", Some("Qwen: Qwen3 30B A3B"), Some(40_960)),
+];
+
+/// A provider that knows about the trip board.
+static TRIP: Script = Script {
+    models: MODELS,
+    answers: &[
+        ("eat", "**Cervejaria Ramiro** — seafood, worth the queue; go early on a weekday.\n---\n**Taberna da Rua das Flores** — small plates and no bookings, so arrive by seven.\n---\n**Time Out Market** — a quick lunch, half the city's kitchens under one roof."),
+        ("Sintra", "Take the train from **Rossio**: about 40 minutes, every 20 or so. Go early — by eleven the queue for *Pena Palace* is long, and the 434 bus up the hill fills fast.\n\nA full day covers Pena, the Moorish Castle and *Quinta da Regaleira*. Book Pena's tickets online the day before."),
+    ],
+    suggestions: &[("Lisbon", "Tram 28 before the crowds\nFado night in Alfama\nLX Factory on a Sunday")],
+    reject_key: false,
+};
+
+/// A provider that refuses the key it's given.
+static REJECTING: Script = Script { models: MODELS, answers: &[], suggestions: &[], reject_key: true };
+
+/// A trip being planned: the trip, and two questions about it.
+fn trip_board(_: &ColorTheme) -> CanvasDocument {
+    use thinkboard_core::fixtures::{edge, node};
+    let card = |id: &str, text: &str, (x, y, width, height): (f32, f32, f32, f32)| CanvasNode {
+        text: Some(text.to_owned()),
+        x,
+        y,
+        width,
+        height,
+        ..node(id)
+    };
+    CanvasDocument {
+        nodes: vec![
+            card("trip", "# Trip to Lisbon\n\nA long weekend in **October**, two of us.", (-520.0, -60.0, 300.0, 120.0)),
+            card("eat", "Where should we eat?", (-120.0, -200.0, 240.0, 60.0)),
+            card("sintra", "How do we get to *Sintra*?", (-120.0, 140.0, 240.0, 60.0)),
+        ],
+        edges: vec![edge("trip", "eat"), edge("trip", "sintra")],
+        extra: serde_json::Map::new(),
+    }
+}
+
+/// Zoom 1, with the trip's note a sixth of the way in.
+fn frame_trip(tour: &mut Tour) {
+    let factor = 1.0 / tour.app.camera.zoom;
+    tour.send(Message::ZoomBy { factor, cursor: Point::new(720.0, 450.0) });
+    tour.settle();
+    let trip = tour.find("# Trip to Lisbon");
+    let delta = Point::new(240.0, 450.0) - tour.node_center(trip);
+    tour.send(Message::Pan { delta, track: false });
+    tour.settle();
+}
+
+/// Points the app at `url` with a model it serves — the way `ai_setup` gets
+/// there by hand.
+fn configure(tour: &mut Tour, url: &str) {
+    tour.app.config.ai_url = url.to_owned();
+    tour.app.config.ai_model = "qwen/qwen3-30b-a3b".to_owned();
+}
+
+/// A note dragged out of `parent`'s right-hand port, written, and finished.
+fn branch(tour: &mut Tour, parent: usize, offset: (f32, f32), text: &str) {
+    let node = &tour.app.nodes[parent];
+    let port = tour.app.camera.to_screen(Point::new(node.x + node.width, node.y + node.height / 2.0));
+    tour.move_to(Point::new(port.x - 10.0, port.y));
+    tour.drag(port, Point::new(port.x + offset.0, port.y + offset.1));
+    tour.type_text(text);
+    tour.named(key::Named::Escape);
+}
+
+/// Asks about the note `index` from its menu.
+fn ask(tour: &mut Tour, index: usize) {
+    tour.right_click(tour.node_center(index));
+    tour.click_label("Ask AI");
+}
+
+/// Asking for the first time: no provider yet, then one chosen in settings —
+/// still naming the model a new config ships with, which it doesn't serve —
+/// and the model picked from the provider's own list.
+fn ai_setup() {
+    let provider = Provider::start(&TRIP);
+    let mut tour = Tour::new("ai_setup", first_launch(trip_board));
+    frame_trip(&mut tour);
+    let eat = tour.find("Where should");
+    tour.right_click(tour.node_center(eat));
+    tour.shot("no-provider-note-menu");
+    tour.named(key::Named::Escape);
+    tour.chord(Modifiers::COMMAND | Modifiers::SHIFT, "p");
+    tour.type_text("ask");
+    tour.shot("no-provider-palette");
+    tour.named(key::Named::Escape);
+    let empty = Point::new(1100.0, 780.0);
+    tour.right_click(empty);
+    tour.shot("no-provider-board-menu");
+    tour.named(key::Named::Escape);
+
+    // Settings, AI, "Custom", and the URL typed in. The pick list is set by
+    // its message, as in `settings`: its menu is an overlay of its own.
+    tour.palette("settings");
+    for _ in 0..2 {
+        tour.swipe(Point::new(720.0, 500.0), 0.0, -520.0);
+    }
+    tour.send(Message::Settings(settings::Msg::PickPreset("Custom".to_owned())));
+    tour.send(Message::Settings(settings::Msg::Edit(settings::Field::AiUrl, provider.url.clone())));
+    tour.send(Message::Settings(settings::Msg::Commit));
+    // The fields the choice revealed, below where it was made.
+    tour.swipe(Point::new(720.0, 500.0), 0.0, -300.0);
+    tour.shot("provider-chosen");
+    tour.named(key::Named::Escape);
+
+    tour.right_click(tour.node_center(eat));
+    tour.shot("note-menu");
+    tour.click_label("Ask AI");
+    tour.settle_until(|app| app.ai.streams.is_empty());
+    tour.shot("model-not-served");
+
+    tour.palette("model");
+    tour.shot("model-picker-fetching");
+    tour.settle_until(|app| app.model_picker.as_ref().is_some_and(|p| !p.loading));
+    tour.shot("model-picker");
+    tour.type_text("qwen");
+    tour.shot("model-picker-filtered");
+    tour.named(key::Named::Enter);
+    ask(&mut tour, eat);
+    tour.settle_until(|app| app.ai.streams.is_empty());
+    tour.shot("answered");
+}
+
+/// An answer: the board waiting on its first word, the words arriving, and
+/// the notes it splits into at each `---` — then a second question, asked
+/// from the palette, answered in prose.
+fn ai_answers() {
+    let provider = Provider::start(&TRIP);
+    let mut tour = Tour::new("ai_answers", first_launch(trip_board));
+    configure(&mut tour, &provider.url);
+    frame_trip(&mut tour);
+    let eat = tour.find("Where should");
+    let at = tour.node_center(eat);
+    tour.right_click(at);
+    tour.start("Ask AI");
+    let region = Rectangle::new(Point::new(at.x - 140.0, at.y - 180.0), Size::new(980.0, 560.0));
+    let mut strip = tour.strip("arriving", region);
+    tour.film_while(&mut strip, "asked", Duration::from_millis(150), |app| !app.ai.streams.is_empty());
+    tour.save(strip, 4);
+    tour.shot("answered");
+
+    let sintra = tour.find("How do we get");
+    tour.click(tour.node_center(sintra));
+    tour.palette("ask");
+    tour.settle_until(|app| app.ai.streams.is_empty());
+    tour.shot("asked-from-the-palette");
+    tour.click(Point::new(1100.0, 860.0));
+    tour.shot("deselected");
+}
+
+/// Suggestions: switched on from the board's menu, asked for by branching a
+/// note, then watched — fading while ignored, back on hover, one taken. And a
+/// second batch left alone until it goes.
+fn ai_suggestions() {
+    let provider = Provider::start(&TRIP);
+    let mut tour = Tour::new("ai_suggestions", first_launch(trip_board));
+    configure(&mut tour, &provider.url);
+    frame_trip(&mut tour);
+    let empty = Point::new(1100.0, 780.0);
+    tour.right_click(empty);
+    tour.click_label("AI suggestions");
+    tour.shot("switched-on");
+    tour.named(key::Named::Escape);
+
+    let trip = tour.find("# Trip to Lisbon");
+    branch(&mut tour, trip, (260.0, 260.0), "Pastéis de nata at Manteigaria");
+    tour.shot("asking-for-ideas");
+    tour.settle_until(|app| app.ghosts.cards.iter().any(|g| !g.placeholder));
+    tour.shot("ideas");
+    tour.wait(Duration::from_secs(6));
+    tour.shot("ideas-fading");
+    let second = tour.app.camera.to_screen(tour.app.ghosts.cards[1].rect.center());
+    tour.move_to(second);
+    tour.shot("hovering-an-idea");
+    tour.click(second);
+    tour.shot("one-taken");
+    tour.move_to(empty);
+    tour.wait(Duration::from_secs(11));
+    tour.shot("the-rest-stay");
+
+    branch(&mut tour, trip, (260.0, -330.0), "Book the *Alfama* flat");
+    tour.settle_until(|app| app.ghosts.cards.iter().any(|g| !g.placeholder));
+    tour.shot("second-batch");
+    tour.wait(Duration::from_secs(11));
+    tour.shot("left-alone");
+}
+
+/// When asking fails: nothing listening at the URL (a local runtime not
+/// started yet), a key the provider refuses, and suggestions asked of an
+/// endpoint that isn't there.
+fn ai_errors() {
+    let mut tour = Tour::new("ai_errors", first_launch(trip_board));
+    configure(&mut tour, &Provider::absent());
+    frame_trip(&mut tour);
+    let eat = tour.find("Where should");
+    ask(&mut tour, eat);
+    tour.settle_until(|app| app.ai.streams.is_empty());
+    tour.shot("nothing-listening");
+
+    let rejecting = Provider::start(&REJECTING);
+    configure(&mut tour, &rejecting.url);
+    let sintra = tour.find("How do we get");
+    ask(&mut tour, sintra);
+    tour.settle_until(|app| app.ai.streams.is_empty());
+    tour.shot("key-rejected");
+    tour.palette("model");
+    tour.settle_until(|app| app.model_picker.as_ref().is_some_and(|p| !p.loading));
+    tour.shot("model-list-key-rejected");
+    tour.named(key::Named::Escape);
+
+    configure(&mut tour, &Provider::absent());
+    tour.app.config.ai_completions = true;
+    let trip = tour.find("# Trip to Lisbon");
+    branch(&mut tour, trip, (260.0, 330.0), "Pastéis de nata");
+    tour.shot("ideas-asked");
+    tour.settle_until(|app| app.ghosts.cards.is_empty());
+    tour.shot("ideas-failed");
+}
+
 const SCENES: &[(&str, fn())] = &[
     ("first_run", first_run),
     ("build_a_board", build_a_board),
@@ -1381,6 +1885,10 @@ const SCENES: &[(&str, fn())] = &[
     ("themes", themes),
     ("card_kinds", card_kinds),
     ("arranging", arranging),
+    ("ai_setup", ai_setup),
+    ("ai_answers", ai_answers),
+    ("ai_suggestions", ai_suggestions),
+    ("ai_errors", ai_errors),
 ];
 
 #[test]
