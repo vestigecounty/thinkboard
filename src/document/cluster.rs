@@ -143,7 +143,20 @@ fn fit_font_size(text: &str, bounds: Rectangle, theme: &Theme) -> f32 {
     let avail_w = (bounds.width - PADDING * 2.0).max(20.0);
     let avail_h = (bounds.height - PADDING * 2.0).max(20.0);
 
+    // No bigger than lets the widest word fit the column. Past that the shaper
+    // breaks words mid-letter rather than overflow — "Bud / get: ~€9 / 00" in
+    // a tall, narrow cluster — and a broken word *fits*, so the height test
+    // alone grew the type until it filled the box. Width scales with size, so
+    // one measurement gives the cap.
+    const AT: f32 = 100.0;
+    let column = avail_w - 2.0 * text_raster::MD_PADDING;
+    let widest = text_raster::widest_word(text, AT, theme);
+    let word_cap = if widest > 0.0 { AT * column / widest } else { f32::MAX };
+
     let fits = |size: f32| {
+        if size > word_cap {
+            return false;
+        }
         let (w, h) = text_raster::measure_markdown(text, avail_w, size, theme);
         w <= avail_w && h <= avail_h
     };
@@ -266,15 +279,19 @@ mod tests {
     }
 
     /// The plain binary search the seeded fit replaced: the reference answer.
+    /// Under the same rule — no word broken — checked word by word rather than
+    /// through the cap, so it doesn't just repeat the arithmetic it checks.
     fn exhaustive_fit(text: &str, bounds: Rectangle, theme: &Theme) -> f32 {
         let avail_w = (bounds.width - PADDING * 2.0).max(20.0);
         let avail_h = (bounds.height - PADDING * 2.0).max(20.0);
+        let column = avail_w - 2.0 * text_raster::MD_PADDING;
+        let unbroken = |size: f32| text_raster::widest_word(text, size, theme) <= column;
         let mut lo = 8.0;
         let mut hi = avail_h;
         for _ in 0..22 {
             let mid = (lo + hi) / 2.0;
             let (w, h) = text_raster::measure_markdown(text, avail_w, mid, theme);
-            if w <= avail_w && h <= avail_h {
+            if w <= avail_w && h <= avail_h && unbroken(mid) {
                 lo = mid;
             } else {
                 hi = mid;
@@ -314,6 +331,20 @@ mod tests {
                     &text[..text.len().min(20)]
                 );
             }
+        }
+    }
+
+    #[test]
+    fn a_narrow_cluster_never_breaks_a_word() {
+        // A tall, narrow card: by height alone the type grew until words split
+        // mid-letter — "Bud / get: ~€9 / 00".
+        let theme = Theme::default();
+        let bounds = Rectangle::new(Point::new(0.0, 0.0), Size::new(330.0, 640.0));
+        for text in ["Budget: ~€900", "Retire the old dashboard", "# Trip to Lisbon"] {
+            let size = fit_font_size(text, bounds, &theme);
+            let column = (bounds.width - PADDING * 2.0) - 2.0 * text_raster::MD_PADDING;
+            let widest = text_raster::widest_word(text, size, &theme);
+            assert!(widest <= column + 0.5, "{text:?} at {size}: a {widest}px word in a {column}px column");
         }
     }
 

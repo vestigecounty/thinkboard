@@ -700,17 +700,49 @@ pub fn measure_markdown(text: &str, wrap_width: f32, font_size: f32, theme: &The
 }
 
 fn measure_markdown_uncached(text: &str, wrap_width: f32, font_size: f32, theme: &Theme) -> (f32, f32) {
+    let wrap_px = (wrap_width - 2.0 * MD_PADDING).max(1.0);
+    let (width, height) = lay_out_markdown(text, wrap_px, Wrap::WordOrGlyph, font_size, theme);
+    // Re-add the padding trimmed from the wrap so the card encloses it.
+    (width + 2.0 * MD_PADDING, height)
+}
+
+/// The width of the widest word of `text` rendered as Markdown at `font_size`
+/// — what a column has to be for nothing to break mid-word. Each word in its
+/// own style, so a heading's word is measured at heading size.
+///
+/// Wrapping only between words, into a column too narrow for any, puts every
+/// word on a line of its own; the widest line is the answer. Cached with the
+/// other measurements, under a wrap no card has.
+pub fn widest_word(text: &str, font_size: f32, theme: &Theme) -> f32 {
+    const EVERY_WORD_ALONE: f32 = 0.0;
+    let key = (text.trim().to_owned(), bucket(EVERY_WORD_ALONE), bucket(font_size));
+    if let Some(hit) = MEASURE_CACHE.lock().unwrap().get_or_insert_with(HashMap::new).get(&key) {
+        return hit.0;
+    }
+    let (width, _) = lay_out_markdown(text, 1.0, Wrap::Word, font_size, theme);
+    let mut guard = MEASURE_CACHE.lock().unwrap();
+    let cache = guard.get_or_insert_with(HashMap::new);
+    if cache.len() >= MEASURE_CACHE_CAP {
+        cache.clear();
+    }
+    cache.insert(key, (width, 0.0));
+    width
+}
+
+/// Lays out `text` as Markdown in a `wrap_px` column and returns its widest
+/// line and its height.
+fn lay_out_markdown(text: &str, wrap_px: f32, wrap: Wrap, font_size: f32, theme: &Theme) -> (f32, f32) {
     let spans = markdown::parse(text.trim());
     let line_px = font_size * LINE_HEIGHT;
     if spans.is_empty() {
         return (0.0, line_px);
     }
-    let wrap_px = (wrap_width - 2.0 * MD_PADDING).max(1.0);
 
     with_raster(|raster| {
         let font_system = &mut raster.font_system;
         let mut buffer = Buffer::new(font_system, Metrics::new(font_size, line_px));
         buffer.set_size(font_system, Some(wrap_px), None);
+        buffer.set_wrap(font_system, wrap);
         let rich: Vec<(&str, Attrs)> = spans
             .iter()
             .map(|span| (span.text.as_str(), span_attrs(span, font_size, theme)))
@@ -725,8 +757,7 @@ fn measure_markdown_uncached(text: &str, wrap_width: f32, font_size: f32, theme:
             width = width.max(run.line_w);
             height = height.max(run.line_top + run.line_height);
         }
-        // Re-add the padding trimmed from the wrap so the card encloses it.
-        (width + 2.0 * MD_PADDING, height)
+        (width, height)
     })
 }
 

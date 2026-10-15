@@ -254,7 +254,8 @@ fn find(parent: &mut [usize], mut x: usize) -> usize {
 
 /// The group's main note: a text root (no incoming edges) with the most
 /// outgoing edges; failing that the highest-degree text node; failing that
-/// the first member.
+/// the first member. A tie goes to the note read first — topmost, then
+/// leftmost.
 fn select_main(
     members: &[usize],
     nodes: &[CanvasNode],
@@ -271,10 +272,17 @@ fn select_main(
     let roots: Vec<usize> = pool.iter().copied().filter(|&i| incoming[i] == 0).collect();
     let candidates = if roots.is_empty() { pool } else { &roots };
 
+    // `max_by_key` alone hands a tie to the *last* candidate: a column of notes
+    // each linked once from a parent outside the group was summed up by its
+    // bottom note, which is the least likely to say what the column is about.
+    let degree = |i: usize| outgoing[i] + incoming[i];
+    let read_first = |a: usize, b: usize| {
+        nodes[b].y.total_cmp(&nodes[a].y).then(nodes[b].x.total_cmp(&nodes[a].x))
+    };
     candidates
         .iter()
         .copied()
-        .max_by_key(|&i| outgoing[i] + incoming[i])
+        .max_by(|&a, &b| degree(a).cmp(&degree(b)).then(read_first(a, b)))
         .unwrap_or(members[0])
 }
 
@@ -376,6 +384,21 @@ mod tests {
         let grouping = group(&nodes, &edges);
         assert_eq!(grouping.groups.len(), 1);
         assert_eq!(grouping.groups[0].main, 0);
+    }
+
+    #[test]
+    fn a_column_of_equals_is_named_by_its_first_note() {
+        // Three notes stacked, each linked once from a parent too far away to
+        // join them: a three-way tie, which went to the last in the file.
+        let nodes = vec![
+            text_node("first", 400.0, 0.0, 200.0, 60.0),
+            text_node("second", 400.0, 100.0, 200.0, 60.0),
+            text_node("third", 400.0, 200.0, 200.0, 60.0),
+            text_node("parent", -500.0, 100.0, 200.0, 60.0),
+        ];
+        let edges = vec![edge("parent", "first"), edge("parent", "second"), edge("parent", "third")];
+        let grouping = group(&nodes, &edges);
+        assert_eq!(group_with(&grouping, 0).main, 0);
     }
 
     #[test]
