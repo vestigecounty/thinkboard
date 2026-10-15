@@ -922,6 +922,35 @@ fn auto_size_still_widens_a_card_that_needs_it() {
 }
 
 #[test]
+fn a_card_grows_down_from_its_top_edge() {
+    // Grown about its centre, each new line pushed the top up half a line and
+    // the text already written crept upward as you typed.
+    let mut app = app_with(vec![text_node("a", "")], Vec::new());
+    let top = app.nodes[0].y;
+
+    send(&mut app, Message::StartEditing { index: 0, at: None });
+    type_text(&mut app, "one\ntwo\nthree\nfour\nfive");
+    assert!(app.nodes[0].height > 100.0, "it grew: {}", app.nodes[0].height);
+    assert_eq!(app.nodes[0].y, top);
+    send(&mut app, Message::StopEditing);
+    assert_eq!(app.nodes[0].y, top);
+}
+
+#[test]
+fn ending_an_edit_leaves_a_heading_card_where_it_was() {
+    // A heading is typed at body size and rendered large; sized to the source
+    // alone while editing, the card jumped on Esc.
+    let mut app = app_with(vec![text_node("a", "")], Vec::new());
+
+    send(&mut app, Message::StartEditing { index: 0, at: None });
+    type_text(&mut app, "# Trip to Lisbon in May\n\nFlights first");
+    let editing = (app.nodes[0].width, app.nodes[0].height);
+    send(&mut app, Message::StopEditing);
+
+    assert_eq!((app.nodes[0].width, app.nodes[0].height), editing);
+}
+
+#[test]
 fn a_card_stops_growing_at_the_height_ceiling() {
     // Past it the raster loses resolution in proportion, so the card scrolls
     // instead of growing.

@@ -192,9 +192,10 @@ impl App {
     }
 
     /// Fits the node to its text. While editing (`rendered = false`) it sizes
-    /// to the raw source so the editor fits; on commit (`rendered = true`) it
-    /// sizes to the rendered Markdown so the read view fits. Runs on every
-    /// edit, so the card resizes live while typing.
+    /// to whichever is bigger of the raw source, so the editor fits, and the
+    /// rendered Markdown it will become; on commit (`rendered = true`) to the
+    /// rendered Markdown alone, so the read view fits. Runs on every edit, so
+    /// the card resizes live while typing.
     pub(super) fn autosize_node(&mut self, index: usize, rendered: bool) {
         let Some(node) = self.nodes.get(index) else {
             return;
@@ -249,7 +250,16 @@ impl App {
         let (text_width, text_height) = if rendered {
             text_raster::measure_markdown(&text, wrap, FONT_SIZE, &self.theme)
         } else {
-            text_raster::measure_source_card(&text, wrap, FONT_SIZE, &self.theme)
+            // And no smaller than the read view it's about to become. A heading
+            // is typed at body size but rendered large, so sized to the source
+            // alone the card jumped on Esc — 284×61 to 409×93 for a one-line
+            // heading over a body line. Sized to both, ending the edit leaves it
+            // where it is (bar the trailing blank line the commit trims).
+            let (source_width, source_height) =
+                text_raster::measure_source_card(&text, wrap, FONT_SIZE, &self.theme);
+            let (read_width, read_height) =
+                text_raster::measure_markdown(&text, wrap, FONT_SIZE, &self.theme);
+            (source_width.max(read_width), source_height.max(read_height))
         };
 
         // Auto-size grows a card, never narrows it. A width is something the
@@ -274,11 +284,14 @@ impl App {
             (width, height) = crate::snap::fit_size(width, height, grid);
         }
 
+        // Height grows downward from the top edge, snapped or not, the way a
+        // page does. Grown about its centre, every new line pushed the top up
+        // half a line — the text already written crept upward as you typed,
+        // and a long note climbed over whatever sat above it.
         let node = &mut self.nodes[index];
         if (width - node.width).abs() > 0.5 || (height - node.height).abs() > 0.5 {
             if !snapped {
                 node.x -= (width - node.width) / 2.0;
-                node.y -= (height - node.height) / 2.0;
             }
             node.width = width;
             node.height = height;
