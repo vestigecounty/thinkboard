@@ -1074,7 +1074,7 @@ fn editor_key_binding(
             // Cmd/Ctrl+Enter commits (Enter alone is a newline, since notes are
             // multi-line).
             (_, Key::Named(Named::Enter)) => {
-                return Some(text_editor::Binding::Custom(Message::StopEditing));
+                return Some(text_editor::Binding::Custom(Message::FinishEditing));
             }
             // Cmd/Ctrl+Backspace deletes the word to the left.
             (_, Key::Named(Named::Backspace)) => {

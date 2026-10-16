@@ -2443,3 +2443,94 @@ fn what_another_app_copied_is_pasted_whole_and_in_view() {
     *clipboard::system::held() = None;
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
+
+// --- The board by keyboard ---
+
+/// A card left, two to its right — one up, one down — as in the tour's trip.
+fn plan() -> Vec<CanvasNode> {
+    vec![
+        CanvasNode { x: -520.0, y: -60.0, width: 300.0, height: 120.0, ..text_node("trip", "Trip") },
+        CanvasNode { x: -120.0, y: -200.0, width: 240.0, height: 60.0, ..text_node("eat", "Where should we eat?") },
+        CanvasNode { x: -120.0, y: 140.0, width: 240.0, height: 60.0, ..text_node("sintra", "Sintra") },
+    ]
+}
+
+fn selected_ids(app: &App) -> Vec<&str> {
+    app.selected.iter().map(|&i| app.nodes[i].id.as_str()).collect()
+}
+
+#[test]
+fn the_arrows_move_the_selection_from_card_to_card() {
+    use thinkboard_core::navigate::Toward;
+    let mut app = app_with(plan(), Vec::new());
+    app.camera.viewport = Size::new(1440.0, 900.0);
+    // Nothing selected: the card nearest the middle of the view.
+    app.camera.offset = Vector::new(370.0, 0.0); // the trip at the middle
+    send(&mut app, Message::SelectToward { toward: Toward::Right, extend: false });
+    assert_eq!(selected_ids(&app), ["trip"]);
+    send(&mut app, Message::SelectToward { toward: Toward::Right, extend: false });
+    assert_eq!(selected_ids(&app), ["eat"]);
+    send(&mut app, Message::SelectToward { toward: Toward::Down, extend: false });
+    assert_eq!(selected_ids(&app), ["sintra"]);
+    // Shift adds to it rather than moving it.
+    send(&mut app, Message::SelectToward { toward: Toward::Up, extend: true });
+    assert_eq!(selected_ids(&app), ["sintra", "eat"]);
+}
+
+#[test]
+fn enter_edits_at_the_end_and_esc_leaves_the_card_selected() {
+    let mut app = app_with(plan(), Vec::new());
+    send(&mut app, Message::SelectNode(Some(1)));
+    send(&mut app, Message::EditSelected);
+    let editing = app.editing.as_ref().expect("editing");
+    let cursor = editing.content.cursor().position;
+    assert_eq!((cursor.line, cursor.column), (0, "Where should we eat?".len()), "the caret at the end");
+    type_text(&mut app, " Near Alfama.");
+    send(&mut app, Message::FinishEditing);
+    assert_eq!(text_of(&app, 1), Some("Where should we eat? Near Alfama."));
+    assert_eq!(selected_ids(&app), ["eat"], "where you are after Esc");
+}
+
+#[test]
+fn tab_adds_a_linked_note_beside_the_selected_card() {
+    let mut app = app_with(plan(), Vec::new());
+    send(&mut app, Message::SelectNode(Some(1)));
+    send(&mut app, Message::AddLinkedNote);
+    assert_eq!(app.nodes.len(), 4);
+    let (eat, new) = (&app.nodes[1], &app.nodes[3]);
+    assert!(new.x > eat.x + eat.width, "to its right");
+    assert!(app.edges.iter().any(|e| e.from_node == "eat" && e.to_node == new.id), "linked from it");
+    assert_eq!(selected_ids(&app), [new.id.as_str()]);
+    // Its editor opens as a drag-created note's does; written and closed with
+    // Esc, it stays selected for the next Tab.
+    send(&mut app, Message::StartEditing { index: 3, at: None });
+    type_text(&mut app, "Tascas");
+    send(&mut app, Message::FinishEditing);
+    assert_eq!(text_of(&app, 3), Some("Tascas"));
+    assert_eq!(app.selected, [3]);
+}
+
+#[test]
+fn a_run_of_nudges_is_one_undo_step() {
+    use thinkboard_core::navigate::Toward;
+    let mut app = app_with(plan(), Vec::new());
+    send(&mut app, Message::SelectNode(Some(1)));
+    for _ in 0..3 {
+        send(&mut app, Message::NudgeSelection(Toward::Right));
+    }
+    assert_eq!(app.nodes[1].x, -120.0 + 30.0);
+    send(&mut app, Message::Undo);
+    assert_eq!(app.nodes[1].x, -120.0, "all three at once");
+    assert!(!app.history.can_undo());
+    assert_eq!(selected_ids(&app), ["eat"], "and still on the card that moved");
+}
+
+#[test]
+fn closing_find_selects_what_it_found() {
+    let mut app = app_with(plan(), Vec::new());
+    send(&mut app, Message::OpenSearch);
+    send(&mut app, Message::SearchInput("sintra".to_owned()));
+    send(&mut app, Message::CloseSearch);
+    assert_eq!(selected_ids(&app), ["sintra"]);
+}
+

@@ -521,6 +521,22 @@ A failed answer stays on the board as a note, which is deliberate: it's where
 the question was asked, and deleting it is the editor's ordinary delete. A
 failure partway through is added under what had arrived, not written over it.
 
+## The board by keyboard
+
+Without the mouse, a card can be reached, edited, linked, moved, coloured and
+put away (`app::navigate`). Nothing used to select one, so everything that acts
+on a selection was out of a keyboard's reach. **The arrows go spatially**
+(`thinkboard_core::navigate::nearest`): a board has no reading order to tab
+through, so → is the card beside this one, a card off to the side counting
+twice its distance. Shift+arrow adds to the selection, ⌥+arrow nudges (a run of
+nudges is one undo step), Enter edits with the caret at the end, Tab adds a
+note linked to the right, ⌘= ⌘− ⌘0 zoom and fit. Ending an edit from the
+keyboard (`FinishEditing`: Esc, ⌘Enter) leaves the card selected, as does
+closing the find bar on a hit; undo keeps the selection by id.
+
+**Esc still dismisses the overlay** once nothing is open over it — the user's
+call. Deselecting first would make putting the board away a two-key job.
+
 ## Link routing
 
 Three styles, named by `config.link_style` and dispatched in exactly one place,

@@ -2444,35 +2444,24 @@ fn long_notes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// Keyboard only: after launch, not one click — the palette, the find bar,
-/// the editor and the board's own keys, and what each leaves selected. What a
-/// shot can't show (the selection, the camera, whether a key did anything) is
-/// in `notes.txt`, a line per key.
+/// Keyboard only: after launch, not one click — moving from card to card,
+/// editing, adding linked notes, nudging, zooming, colouring from the palette,
+/// finding and acting on what was found, and the settings form. What each key
+/// changed (the selection, the editor, the camera) is in `notes.txt`.
 fn keyboard_only() {
     let mut tour = Tour::new("keyboard_only", first_launch(trip_board));
     frame_trip(&mut tour);
-    // What a key did: the selection, the editor, the camera.
-    let state = |tour: &Tour| {
-        let selected: Vec<String> = tour
-            .app
-            .selected
-            .iter()
-            .filter_map(|&i| tour.app.nodes.get(i))
-            .map(|n| n.text.as_deref().unwrap_or_default().lines().next().unwrap_or_default().to_owned())
-            .collect();
-        let editing = tour
-            .app
-            .editing
-            .as_ref()
-            .and_then(|e| tour.app.nodes.get(e.index))
-            .map(|n| n.text.as_deref().unwrap_or_default().lines().next().unwrap_or_default().to_owned());
+    let first_line = |node: &CanvasNode| node.text.as_deref().unwrap_or_default().lines().next().unwrap_or_default().to_owned();
+    let state = move |tour: &Tour| {
+        let selected: Vec<String> = tour.app.selected.iter().filter_map(|&i| tour.app.nodes.get(i)).map(first_line).collect();
+        let editing = tour.app.editing.as_ref().and_then(|e| tour.app.nodes.get(e.index)).map(first_line);
         let camera = tour.app.camera;
         format!(
-            "selected {selected:?}, editing {editing:?}, camera at ({:.0}, {:.0}) zoom {:.2}, {} cards",
-            camera.offset.x, camera.offset.y, camera.zoom, tour.app.nodes.len()
+            "selected {selected:?}, editing {editing:?}, camera at ({:.0}, {:.0}) zoom {:.2}, {} cards, {} links",
+            camera.offset.x, camera.offset.y, camera.zoom, tour.app.nodes.len(), tour.app.edges.len()
         )
     };
-    let try_key = |tour: &mut Tour, what: &str, press: &dyn Fn(&mut Tour)| {
+    let key = |tour: &mut Tour, what: &str, press: &dyn Fn(&mut Tour)| {
         let before = state(tour);
         press(tour);
         let after = state(tour);
@@ -2481,55 +2470,58 @@ fn keyboard_only() {
     tour.note(&format!("start: {}", state(&tour)));
     tour.shot("start");
 
-    // Getting around the board.
-    try_key(&mut tour, "→ arrow", &|t| t.named(key::Named::ArrowRight));
-    try_key(&mut tour, "↓ arrow", &|t| t.named(key::Named::ArrowDown));
-    try_key(&mut tour, "⌘= (zoom in)", &|t| t.chord(Modifiers::COMMAND, "="));
-    try_key(&mut tour, "⌘- (zoom out)", &|t| t.chord(Modifiers::COMMAND, "-"));
-    try_key(&mut tour, "⌘0 (fit)", &|t| t.chord(Modifiers::COMMAND, "0"));
+    // From card to card.
+    key(&mut tour, "→ (nothing selected yet)", &|t| t.named(key::Named::ArrowRight));
+    key(&mut tour, "→", &|t| t.named(key::Named::ArrowRight));
+    key(&mut tour, "↓", &|t| t.named(key::Named::ArrowDown));
+    tour.shot("moved-to-sintra");
 
-    // Picking a card.
-    try_key(&mut tour, "Tab", &|t| t.named(key::Named::Tab));
-    try_key(&mut tour, "Tab again", &|t| t.named(key::Named::Tab));
-    try_key(&mut tour, "Enter", &|t| t.named(key::Named::Enter));
-    try_key(&mut tour, "Space", &|t| t.key(Key::Named(key::Named::Space), Some(" ")));
+    // Editing it, and the next note beside it.
+    key(&mut tour, "Enter", &|t| t.named(key::Named::Enter));
+    key(&mut tour, "typed \" By train.\"", &|t| t.type_text(" By train."));
+    key(&mut tour, "Esc", &|t| t.named(key::Named::Escape));
+    key(&mut tour, "Tab", &|t| t.named(key::Named::Tab));
+    key(&mut tour, "typed \"Book the 9:10\"", &|t| t.type_text("Book the 9:10"));
+    tour.shot("a-linked-note");
+    key(&mut tour, "Esc", &|t| t.named(key::Named::Escape));
+    tour.shot("after-the-linked-note");
 
-    // Adding a note the only way there is: the palette.
-    try_key(&mut tour, "⌘⇧P, \"add node\", Enter", &|t| t.palette("add node"));
-    try_key(&mut tour, "typed \"Pack an umbrella\"", &|t| t.type_text("Pack an umbrella"));
-    tour.shot("added-from-the-palette");
-    try_key(&mut tour, "Esc", &|t| t.named(key::Named::Escape));
-    tour.shot("after-adding");
-    try_key(&mut tour, "Delete (whatever's selected)", &|t| t.named(key::Named::Backspace));
-
-    // Finding a card, then doing something with it.
-    try_key(&mut tour, "⌘F, \"sintra\"", &|t| {
-        t.chord(Modifiers::COMMAND, "f");
-        t.type_text("sintra");
+    // Moving it, and taking that back.
+    key(&mut tour, "⌥→ ×3", &|t| {
+        t.hold(Modifiers::ALT);
+        for _ in 0..3 {
+            t.named(key::Named::ArrowRight);
+        }
+        t.hold(Modifiers::empty());
     });
-    tour.shot("found");
-    try_key(&mut tour, "Enter (next hit)", &|t| t.named(key::Named::Enter));
-    try_key(&mut tour, "Esc (close the find bar)", &|t| t.named(key::Named::Escape));
-    try_key(&mut tour, "Enter (edit what was found?)", &|t| t.named(key::Named::Enter));
-    tour.shot("after-find");
+    key(&mut tour, "⌘Z", &|t| t.chord(Modifiers::COMMAND, "z"));
 
-    // What the palette offers with nothing selected.
-    tour.chord(Modifiers::COMMAND | Modifiers::SHIFT, "p");
-    tour.type_text("selection");
-    tour.shot("palette-needs-a-selection");
-    tour.named(key::Named::Escape);
-    tour.chord(Modifiers::COMMAND | Modifiers::SHIFT, "p");
-    tour.type_text("colour");
-    tour.shot("palette-colour");
-    tour.named(key::Named::Escape);
+    // Colouring from the palette.
+    key(&mut tour, "⌘⇧P \"colour green\"", &|t| t.palette("colour green"));
+    tour.shot("coloured");
 
-    // Settings, by keyboard: Tab through the form, type into a field.
+    // Zooming.
+    key(&mut tour, "⌘−", &|t| t.chord(Modifiers::COMMAND, "-"));
+    key(&mut tour, "⌘=", &|t| t.chord(Modifiers::COMMAND, "="));
+    key(&mut tour, "⌘0", &|t| t.chord(Modifiers::COMMAND, "0"));
+    tour.shot("fitted");
+
+    // Finding a card and acting on it.
+    key(&mut tour, "⌘F \"eat\"", &|t| {
+        t.chord(Modifiers::COMMAND, "f");
+        t.type_text("eat");
+    });
+    key(&mut tour, "Esc (closes the find bar)", &|t| t.named(key::Named::Escape));
+    key(&mut tour, "Enter", &|t| t.named(key::Named::Enter));
+    tour.shot("editing-what-was-found");
+    key(&mut tour, "Esc", &|t| t.named(key::Named::Escape));
+
+    // The settings form.
     tour.palette("settings");
-    tour.shot("settings");
-    try_key(&mut tour, "Tab in settings", &|t| t.named(key::Named::Tab));
-    try_key(&mut tour, "typed \"x\" in settings", &|t| t.type_text("x"));
-    tour.shot("settings-after-tab");
-    tour.note(&format!("theme field now reads {:?}, font field {:?}", tour.app.config.theme, tour.app.config.font));
+    tour.named(key::Named::Tab);
+    tour.shot("settings-first-field");
+    tour.named(key::Named::Tab);
+    tour.shot("settings-second-field");
     tour.named(key::Named::Escape);
     tour.shot("end");
 }

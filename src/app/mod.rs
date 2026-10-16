@@ -61,6 +61,7 @@ mod startup;
 mod sync;
 mod font_picker;
 mod model_picker;
+mod navigate;
 mod theme_picker;
 mod theme_store;
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
@@ -153,6 +154,25 @@ fn settings_key_event(
         })
     )
     .then_some(Message::CloseSettingsOverlay)
+}
+
+/// Tab and Shift+Tab move between the settings form's text fields — the
+/// only widgets in it iced lets take focus; its toggles and lists are reached
+/// from the palette's setting commands. Only a Tab nothing else used.
+fn settings_tab_event(
+    event: iced::Event,
+    status: iced::event::Status,
+    _window: window::Id,
+) -> Option<Message> {
+    use iced::keyboard::key::{Key, Named};
+    match event {
+        iced::Event::Keyboard(iced::keyboard::Event::KeyPressed { key: Key::Named(Named::Tab), modifiers, .. })
+            if status == iced::event::Status::Ignored =>
+        {
+            Some(Message::FocusSettingsField { back: modifiers.shift() })
+        }
+        _ => None,
+    }
 }
 
 /// Bridges native workspace/Space-change notifications into `SpaceChanged`
@@ -256,6 +276,14 @@ pub(crate) enum Message {
     SetNodeColor(Option<String>),
     /// Makes the selected image card the overlay's background.
     UseAsOverlayBackground,
+    /// The board by keyboard (see `navigate`): an arrow moves the selection to
+    /// the nearest card that way, or with Shift adds it; ⌥+arrow nudges the
+    /// selected cards; Enter edits; Tab adds a linked note; ⌘0 fits the board.
+    SelectToward { toward: thinkboard_core::navigate::Toward, extend: bool },
+    NudgeSelection(thinkboard_core::navigate::Toward),
+    EditSelected,
+    AddLinkedNote,
+    FitBoard,
     /// Asks the AI about the selected node(s) (tinting them the trigger color).
     AskAi,
     /// A streamed AI event for the response node with the given id.
@@ -311,6 +339,8 @@ pub(crate) enum Message {
     /// Place the deferred caret once the editor has laid out (see [`Editing::pending_caret`]).
     PlaceEditorCaret,
     StopEditing,
+    /// Ends the edit from the keyboard (Esc, ⌘Enter), leaving the card selected.
+    FinishEditing,
     EditorAction(text_editor::Action),
     /// Return in the editor: a line break that carries a list or quote marker
     /// onto the new line, as Obsidian's does (see `edit::on_return`).
@@ -405,6 +435,8 @@ pub(crate) enum Message {
     /// Swallow a click (e.g. on the settings modal panel) so it doesn't fall
     /// through to the backdrop.
     Noop,
+    /// Tab in the settings form: the next text field, or with Shift the last.
+    FocusSettingsField { back: bool },
     /// Open the settings window (from the tray), or focus it if already open.
     OpenSettings,
     /// A settings-form edit (see `settings::Msg`); applied and persisted.
@@ -651,6 +683,9 @@ struct App {
     /// Pre-edit snapshot captured while editing an existing node, committed
     /// to the undo stack only if the text actually changed.
     edit_undo: Option<DocSnapshot>,
+    /// When ⌥+arrow last moved the selection, so a run of nudges is one undo
+    /// step.
+    last_nudge: Option<Instant>,
     /// The document before a drag or resize began, committed when it ends if
     /// anything moved — one step for the whole gesture, rather than one per
     /// mouse-move.
@@ -868,6 +903,7 @@ impl App {
             layout_anim: None,
             history: History::new(MAX_UNDO),
             edit_undo: None,
+            last_nudge: None,
             gesture_undo: None,
             fresh_undo: None,
             phase: if windowed {
@@ -978,6 +1014,14 @@ impl App {
             }
             Message::SetNodeColor(color) => self.set_node_color(color),
             Message::UseAsOverlayBackground => self.use_as_overlay_background(),
+            Message::SelectToward { toward, extend } => self.select_toward(toward, extend),
+            Message::NudgeSelection(toward) => self.nudge_selection(toward),
+            Message::EditSelected => return self.edit_selected(),
+            Message::AddLinkedNote => {
+                self.dismiss_ghosts();
+                self.add_linked_note();
+            }
+            Message::FitBoard => self.fit_board(),
             Message::GroupSelection => {
                 self.close_context_menu();
                 return self.group_selection();
@@ -1127,6 +1171,7 @@ impl App {
             }
             Message::PlaceEditorCaret => self.place_editor_caret(),
             Message::StopEditing => return self.stop_editing(),
+            Message::FinishEditing => return self.finish_editing(),
             Message::EditorAction(action) => self.editor_action(action),
             Message::EditorReturn => self.editor_return(),
             Message::WrapSelection(marker) => self.wrap_selection(marker),
@@ -1316,6 +1361,14 @@ impl App {
             // --- Window lifecycle ---
             Message::OpenUrl(url) => platform::open_url(&url),
             Message::Noop => {}
+            Message::FocusSettingsField { back } => {
+                use iced::advanced::widget::operation::focusable;
+                return if back {
+                    iced::advanced::widget::operate(focusable::focus_previous())
+                } else {
+                    iced::advanced::widget::operate(focusable::focus_next())
+                };
+            }
             Message::Exit => {
                 if !self.overlay {
                     return self.save_and_exit();
@@ -1900,8 +1953,14 @@ impl App {
         if let Some(c) = color.filter(|c| !view::NODE_PALETTE.contains(&c.as_str())) {
             self.last_picked_color = Some(c);
         }
+        // Picked from the menu, the selection goes with it so the new colour
+        // shows unoutlined. From the palette it stays: that's a keyboard, and
+        // the next key should still have the cards to act on.
+        let from_menu = self.context_menu.is_some();
         self.close_context_menu();
-        self.selected.clear();
+        if from_menu {
+            self.selected.clear();
+        }
     }
 
     /// Writes the link menu's label back onto its link — as one undo step, and
@@ -1976,6 +2035,12 @@ impl App {
     }
 
     fn close_search(&mut self) -> Task<Message> {
+        // What was found is where you are: the card it's on becomes the
+        // selection, so the next key — Enter, an arrow, Delete — acts on it.
+        if let Some(index) = self.search.as_ref().and_then(|s| s.matches.get(s.current)).map(|m| m.node) {
+            self.selected = vec![index];
+            self.selected_edge = None;
+        }
         if let Some(search) = self.search.take() {
             for index in search
                 .matches
@@ -2060,6 +2125,10 @@ impl App {
             CommandId::ToggleSetting(field) => {
                 Message::Settings(settings::Msg::Toggle(field, !self.setting_bool(field)))
             }
+            CommandId::FitBoard => Message::FitBoard,
+            CommandId::EditNote => Message::EditSelected,
+            CommandId::AddLinkedNote => Message::AddLinkedNote,
+            CommandId::Colour(code) => Message::SetNodeColor(code.map(str::to_owned)),
             CommandId::NextOverlayBackdrop => {
                 let next = config::OverlayBackdrop::of(&self.config).next();
                 Message::Settings(settings::Msg::Pick(settings::Field::OverlayBackdrop, next.label().to_owned()))
@@ -2407,6 +2476,9 @@ impl App {
         // is open over it, whose own Esc would otherwise close both.
         if self.settings_overlay && self.model_picker.is_none() {
             listeners.push(settings_key_event);
+        }
+        if (self.settings_overlay || self.settings_window.is_some()) && self.model_picker.is_none() {
+            listeners.push(settings_tab_event);
         }
         // Drag a `.canvas` onto the window to open it.
         listeners.push(canvas_file::drop_event);

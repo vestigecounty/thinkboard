@@ -42,8 +42,16 @@ pub(crate) enum CommandId {
     ToggleAutoLayout,
     ToggleSetting(Field),
     /// Steps the overlay's background to the next one offered — a choice of
-    /// three, which a toggle can't be.
+    /// four, which a toggle can't be.
     NextOverlayBackdrop,
+    /// The board-by-keyboard actions (see `app::navigate`), here so they can
+    /// be found — and their keys learned from the hint beside them.
+    FitBoard,
+    EditNote,
+    AddLinkedNote,
+    /// Colours the selection: an Obsidian preset code, or `None` for none —
+    /// the node menu's swatches, for a keyboard.
+    Colour(Option<&'static str>),
 }
 
 impl CommandId {
@@ -68,7 +76,12 @@ impl CommandId {
             CommandId::AskAi if !app.config.ai_enabled() => Some(NO_PROVIDER),
             CommandId::ChooseModel if !app.config.ai_enabled() => Some(NO_PROVIDER),
             CommandId::AskAi if app.selected.is_empty() => Some("Select a note to ask about"),
-            CommandId::Copy | CommandId::DeleteSelected | CommandId::Distribute
+            CommandId::Copy
+            | CommandId::DeleteSelected
+            | CommandId::Distribute
+            | CommandId::EditNote
+            | CommandId::AddLinkedNote
+            | CommandId::Colour(_)
                 if app.selected.is_empty() =>
             {
                 Some("Select a note first")
@@ -124,6 +137,16 @@ static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
         cmd(ChooseFont, "Change font…", "typeface family typography text serif mono", ""),
         cmd(ChooseModel, "Change AI model…", "llm gpt claude openrouter fireworks provider", ""),
         cmd(AddNode, "Add node", "new note card", ""),
+        cmd(AddLinkedNote, "Add linked note", "new child connected card link", "⇥"),
+        cmd(EditNote, "Edit note", "write text change", "↩"),
+        cmd(FitBoard, "Fit board to view", "zoom all overview everything", "⌘0"),
+        cmd(Colour(Some("1")), "Colour: red", "color tint card", ""),
+        cmd(Colour(Some("2")), "Colour: orange", "color tint card", ""),
+        cmd(Colour(Some("3")), "Colour: yellow", "color tint card", ""),
+        cmd(Colour(Some("4")), "Colour: green", "color tint card", ""),
+        cmd(Colour(Some("5")), "Colour: cyan", "color tint card blue", ""),
+        cmd(Colour(Some("6")), "Colour: purple", "color tint card violet", ""),
+        cmd(Colour(None), "Colour: none", "color tint card clear default", ""),
         cmd(AskAi, "Ask AI", "generate llm gpt", ""),
         cmd(Distribute, "Auto-layout selection", "distribute arrange tidy", ""),
         cmd(GroupSelection, "Group selection", "frame box enclose", ""),

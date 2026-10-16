@@ -18,6 +18,7 @@ pub mod layout;
 pub mod markdown;
 pub mod merge;
 pub mod model;
+pub mod navigate;
 pub mod obsidian;
 pub mod search;
 pub mod snap;

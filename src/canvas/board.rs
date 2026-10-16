@@ -127,7 +127,13 @@ enum Chord {
     Find,
     Palette,
     SwitchCanvas,
+    ZoomIn,
+    ZoomOut,
+    Fit,
 }
+
+/// How far ⌘= and ⌘− zoom, per press.
+const ZOOM_KEY_STEP: f32 = 1.25;
 
 /// The chord for a latin `letter`, or `None` if the board doesn't claim it —
 /// in which case the key falls through untouched.
@@ -145,6 +151,10 @@ fn chord(letter: char, shift: bool, has_selection: bool) -> Option<Chord> {
         // Switch boards: the vault browser where a vault is configured, the
         // ordinary open dialog where one isn't.
         ('o', false) => Chord::SwitchCanvas,
+        // Zoom as a browser does: = (and the + above it), −, and 0 for all of it.
+        ('=' | '+', _) => Chord::ZoomIn,
+        ('-' | '_', _) => Chord::ZoomOut,
+        ('0', _) => Chord::Fit,
         _ => return None,
     })
 }
@@ -796,7 +806,7 @@ impl canvas::Program<Message> for Board<'_> {
                 if self.context_menu {
                     Some(canvas::Action::publish(Message::CloseContextMenu).and_capture())
                 } else if self.editing.is_some() {
-                    Some(canvas::Action::publish(Message::StopEditing))
+                    Some(canvas::Action::publish(Message::FinishEditing))
                 } else if self.search.is_some() {
                     // The find bar's own subscription closes it on Esc — don't
                     // also dismiss the overlay.
@@ -822,6 +832,33 @@ impl canvas::Program<Message> for Board<'_> {
             {
                 Some(canvas::Action::publish(Message::DeleteSelected).and_capture())
             }
+            // The board by keyboard (see `app::navigate`) — not while editing,
+            // with a menu up, or with the find bar taking the keys. The
+            // arrows move the selection, or with ⌥ the cards; Enter edits;
+            // Tab adds a linked note.
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key: keyboard::Key::Named(named),
+                modifiers,
+                ..
+            }) if self.editing.is_none() && !self.context_menu && self.search.is_none() && !modifiers.command() => {
+                use keyboard::key::Named;
+                use thinkboard_core::navigate::Toward;
+                let toward = match named {
+                    Named::ArrowLeft => Some(Toward::Left),
+                    Named::ArrowRight => Some(Toward::Right),
+                    Named::ArrowUp => Some(Toward::Up),
+                    Named::ArrowDown => Some(Toward::Down),
+                    _ => None,
+                };
+                let message = match (named, toward) {
+                    (_, Some(toward)) if modifiers.alt() => Message::NudgeSelection(toward),
+                    (_, Some(toward)) => Message::SelectToward { toward, extend: modifiers.shift() },
+                    (Named::Enter, _) if !self.selected.is_empty() => Message::EditSelected,
+                    (Named::Tab, _) if !self.selected.is_empty() && !modifiers.shift() => Message::AddLinkedNote,
+                    _ => return None,
+                };
+                Some(canvas::Action::publish(message).and_capture())
+            }
             // The Cmd/Ctrl chords, none of which fire during an edit session —
             // the editor gets those keys for its own use. Matched on the
             // *latin* key for the physical position (the trick the editor and
@@ -840,6 +877,11 @@ impl canvas::Program<Message> for Board<'_> {
                     Chord::Find => Message::OpenSearch,
                     Chord::Palette => Message::OpenCommandPalette,
                     Chord::SwitchCanvas => Message::SwitchCanvas,
+                    Chord::ZoomIn | Chord::ZoomOut => Message::ZoomBy {
+                        factor: if letter == '=' || letter == '+' { ZOOM_KEY_STEP } else { 1.0 / ZOOM_KEY_STEP },
+                        cursor: Point::new(bounds.width / 2.0, bounds.height / 2.0),
+                    },
+                    Chord::Fit => Message::FitBoard,
                     Chord::Paste => Message::Paste {
                         // At the cursor, or the middle of the view when it is
                         // off-canvas.

@@ -159,6 +159,10 @@ impl App {
             })
             .collect();
 
+        // The selection, by id: what's still there stays selected, so undoing
+        // a nudge or a colour leaves you on the card you were working on.
+        let selected: Vec<String> = self.selected.iter().filter_map(|&i| self.nodes.get(i)).map(|n| n.id.clone()).collect();
+
         self.nodes = nodes;
         self.edges = edges;
         self.images = self.load_images(&self.nodes);
@@ -179,7 +183,7 @@ impl App {
         self.spawning.clear();
         self.pending_edit = None;
         self.fresh_node = None;
-        self.selected.clear();
+        self.selected = selected.iter().filter_map(|id| self.nodes.iter().position(|n| &n.id == id)).collect();
         self.selected_edge = None;
         self.hovered_edge = None;
         self.mark_dirty();
