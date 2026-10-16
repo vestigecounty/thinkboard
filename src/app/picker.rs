@@ -299,11 +299,15 @@ pub(super) fn view<'a>(
         for (i, entry) in rows.into_iter().enumerate() {
             let selected = i == state.selected;
             let title_color = if entry.enabled { text_c } else { muted };
+            // One line, whatever the panel's width: a row is a fixed height,
+            // and a title wrapped onto a second line drew it over the next row.
+            // A long one is cut where the hint begins instead.
             let mut line = row![
                 text(entry.title)
                     .size(14)
                     .font(entry.font.unwrap_or(font))
                     .color(title_color)
+                    .wrapping(text::Wrapping::None)
                     .width(Length::Fill)
             ]
             // A row is a fixed height, and `layout::padded` seats a button's
@@ -315,13 +319,14 @@ pub(super) fn view<'a>(
             // Only when there is one: an empty child would still take the
             // row's spacing, nudging every unshortcutted title off-centre.
             if !entry.detail.is_empty() {
-                line = line.push(text(entry.detail).size(12).font(font).color(muted));
+                line = line.push(text(entry.detail).size(12).font(font).color(muted).wrapping(text::Wrapping::None));
             }
             list = list.push(
                 button(line)
                     .width(Length::Fill)
                     .height(Length::Fixed(ROW_HEIGHT))
                     .padding(padding)
+                    .clip(true)
                     .on_press_maybe(entry.enabled.then_some(entry.press))
                     .style(move |_theme, status| super::chrome::menu_item(&ct, status, selected)),
             );

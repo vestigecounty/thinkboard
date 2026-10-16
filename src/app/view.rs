@@ -828,12 +828,15 @@ impl App {
                 .style(move |_theme, status| chrome_button_style(status, muted, accent))
         };
 
+        // Narrower in a narrow window, so the ‹ › × after it stay on screen —
+        // at a fixed 220 they went off its right edge below about 500 px.
+        let input_width = (self.camera.viewport.width - 300.0).clamp(60.0, 220.0);
         let input = text_input("Find on board…", &search.query)
             .id(super::SEARCH_INPUT.clone())
             .on_input(Message::SearchInput)
             .size(15)
             .font(font)
-            .width(220)
+            .width(input_width)
             .style(move |_theme, status| iced::widget::text_input::Style {
                 background: iced::Background::Color(input_bg),
                 border: iced::Border {

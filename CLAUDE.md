@@ -794,6 +794,9 @@ have published it, which is exactly the part a new user meets first.
 `TOUR_THEME` / `TOUR_THEME_CSS` render it in a named theme or an Obsidian
 stylesheet, to see the app as a particular user has it.
 
+`resize` changes the window's size, as dragging its corner does — the
+`small_windows` scene walks the panels and menus down to 360 px wide.
+
 For anything that changes frame to frame — editing above all — use a
 **strip** rather than shots: `strip` fixes a region, `frame` adds the very next
 frame after the last event (no extra redraw, so a value that lands a frame late

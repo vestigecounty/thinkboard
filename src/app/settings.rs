@@ -8,8 +8,8 @@
 //! back into the field on every keystroke would eat a trailing "." or "0".
 
 use iced::widget::{
-    Column, Space, button, column, container, pick_list, row, rule, scrollable, slider, text,
-    text_input, toggler,
+    Column, Space, button, column, container, pick_list, responsive, row, rule, scrollable, slider,
+    text, text_input, toggler,
 };
 use iced::{Alignment, Color, Element, Fill, Font, Padding, Task};
 
@@ -114,8 +114,43 @@ const DESC_SIZE: f32 = 14.0;
 const CONTENT_WIDTH: f32 = 760.0;
 const INPUT_WIDTH: f32 = 240.0;
 
-#[allow(clippy::vec_init_then_push)] // sequential rows + group headers read clearest this way
+/// The settings form, laid out for the room it's given.
+///
+/// Its fields were a fixed 240 px, so in a narrow window the Browse… buttons
+/// beside them went off the panel's edge and couldn't be clicked. Now the
+/// fields take what's left beside their label, and where even that isn't
+/// enough each label goes above its control.
 pub(super) fn view(app: &App) -> Element<'_, Message> {
+    responsive(move |size| form(app, Fit::for_width(size.width))).into()
+}
+
+/// How the form's rows fit the width they have.
+#[derive(Clone, Copy)]
+struct Fit {
+    /// Label above the control rather than beside it.
+    stacked: bool,
+    /// How wide a text field is.
+    input: f32,
+}
+
+impl Fit {
+    /// For a form `width` wide. Beside its label, a field shares the row
+    /// with the label and a button; stacked, only with the button.
+    fn for_width(width: f32) -> Fit {
+        /// The content's padding a side, as `form` sets it.
+        const PAD: f32 = 26.0;
+        /// Room for the label, the gaps and a Browse… button.
+        const BESIDE: f32 = 250.0;
+        const BUTTON: f32 = 110.0;
+        let content = width.min(CONTENT_WIDTH) - 2.0 * PAD;
+        let stacked = content - BESIDE < 140.0;
+        let input = if stacked { content - BUTTON } else { content - BESIDE };
+        Fit { stacked, input: input.clamp(80.0, INPUT_WIDTH) }
+    }
+}
+
+#[allow(clippy::vec_init_then_push)] // sequential rows + group headers read clearest this way
+fn form(app: &App, fit: Fit) -> Element<'_, Message> {
     let c = &app.config;
     // Theme font + muted color for the chrome; the widget colors come from the
     // window's custom theme (startup::settings_theme). Thin forwarding closures
@@ -123,7 +158,7 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     let font = app.theme.ui_font();
     let muted = app.theme.text_muted;
     let header = |title| header_row(title, font);
-    let setting = |label, editor, desc| setting_row(label, editor, desc, font, muted);
+    let setting = |label, editor, desc| setting_row(label, editor, desc, font, muted, fit.stacked);
 
     let mut items: Vec<Element<Message>> = Vec::new();
 
@@ -132,15 +167,15 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     items.push(header("General"));
     items.push(setting(
         "Board",
-        path_line(Field::Canvas, app.draft(Field::Canvas)),
+        path_line(Field::Canvas, app.draft(Field::Canvas), fit.input),
         "The .canvas file opened on launch. Restart to load a different one.",
     ));
     items.push(setting(
         "Vault",
-        path_line(Field::Vault, app.draft(Field::Vault)),
+        path_line(Field::Vault, app.draft(Field::Vault), fit.input),
         "Your Obsidian vault folder. Cmd/Ctrl+O then lists every board in it, and the board follows the vault's Obsidian theme. Leave blank to open boards by dialog only.",
     ));
-    items.push(hotkey_row(app, font, muted));
+    items.push(hotkey_row(app, font, muted, fit.stacked));
     items.push(setting(
         "Dismiss on background click",
         // Greyed in a window, which a click never dismisses — on there, it
@@ -184,17 +219,17 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     items.push(header("Appearance"));
     items.push(setting(
         "Theme",
-        line(Field::Theme, app.draft(Field::Theme), "ThinkBoard Dark"),
+        line(Field::Theme, app.draft(Field::Theme), "ThinkBoard Dark", fit.input),
         "A built-in scheme, or one of your own in the themes folder beside this config. Cmd/Ctrl+Shift+P → \"Change theme\" shows them with a preview. Blank uses the default.",
     ));
     items.push(setting(
         "Font",
-        line(Field::Font, app.draft(Field::Font), "Theme default"),
+        line(Field::Font, app.draft(Field::Font), "Theme default", fit.input),
         "The body typeface, by family name — any font installed on your system. Cmd/Ctrl+Shift+P → \"Change font\" lists them, each set in its own face. Blank uses the theme's.",
     ));
     items.push(setting(
         "Theme CSS",
-        path_line(Field::ThemeCss, app.draft(Field::ThemeCss)),
+        path_line(Field::ThemeCss, app.draft(Field::ThemeCss), fit.input),
         "An Obsidian theme.css to read node colors and fonts from. Set a vault above and this follows whichever theme Obsidian is using; pick a file here to override that.",
     ));
     items.push(setting(
@@ -229,7 +264,7 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     if OverlayBackdrop::of(c) == OverlayBackdrop::Image {
         items.push(setting(
             "Overlay image",
-            path_line(Field::OverlayImage, app.draft(Field::OverlayImage)),
+            path_line(Field::OverlayImage, app.draft(Field::OverlayImage), fit.input),
             "The picture behind the board — any image file. Right-click an image card and choose \"Use as overlay background\" to use that one.",
         ));
     }
@@ -269,17 +304,17 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     if provider {
         items.push(setting(
             "API URL",
-            line(Field::AiUrl, app.draft(Field::AiUrl), "http://localhost:1234/v1"),
+            line(Field::AiUrl, app.draft(Field::AiUrl), "http://localhost:1234/v1", fit.input),
             "OpenAI-compatible base URL (e.g. LM Studio); /chat/completions is appended.",
         ));
         items.push(setting(
             "Model",
-            model_line(app.draft(Field::AiModel)),
+            model_line(app.draft(Field::AiModel), fit.input),
             "The model the endpoint answers with. Choose lists the ones it serves, so you needn't type a name exactly.",
         ));
         items.push(setting(
             "API key",
-            key_line(Field::AiApiKey, app.draft(Field::AiApiKey)),
+            key_line(Field::AiApiKey, app.draft(Field::AiApiKey), fit.input),
             "Sent as a Bearer token. Required for hosted providers like OpenRouter; leave blank for local LM Studio.",
         ));
     }
@@ -496,19 +531,15 @@ fn setting_row<'a>(
     desc: &'static str,
     font: Font,
     muted: Color,
+    stacked: bool,
 ) -> Element<'a, Message> {
-    column![
-        row![
-            text(label).size(LABEL_SIZE).font(font),
-            Space::new().width(Fill),
-            editor
-        ]
-        .align_y(Alignment::Center)
-        .spacing(12),
-        text(desc).size(DESC_SIZE).color(muted).font(font),
-    ]
-    .spacing(5)
-    .into()
+    let label = text(label).size(LABEL_SIZE).font(font);
+    let top: Element<'a, Message> = if stacked {
+        column![label, editor].spacing(6).into()
+    } else {
+        row![label, Space::new().width(Fill), editor].align_y(Alignment::Center).spacing(12).into()
+    };
+    column![top, text(desc).size(DESC_SIZE).color(muted).font(font)].spacing(5).into()
 }
 
 fn toggle<'a>(field: Field, on: bool) -> Element<'a, Message> {
@@ -526,12 +557,12 @@ fn toggle_when<'a>(field: Field, on: bool, enabled: bool) -> Element<'a, Message
 }
 
 /// A freeform text field.
-fn line<'a>(field: Field, value: &'a str, placeholder: &'a str) -> Element<'a, Message> {
+fn line<'a>(field: Field, value: &'a str, placeholder: &'a str, width: f32) -> Element<'a, Message> {
     text_input(placeholder, value)
         .on_input(move |s| Message::Settings(Msg::Edit(field, s)))
         .on_submit(Message::Settings(Msg::Commit))
         .size(EDITOR_SIZE)
-        .width(INPUT_WIDTH)
+        .width(width)
         .into()
 }
 
@@ -568,13 +599,13 @@ fn choices<'a>(field: Field, options: Vec<String>, selected: String) -> Element<
 }
 
 /// A text field with a Browse… button that opens a native file dialog.
-fn path_line<'a>(field: Field, value: &'a str) -> Element<'a, Message> {
+fn path_line<'a>(field: Field, value: &'a str, width: f32) -> Element<'a, Message> {
     row![
         text_input("", value)
             .on_input(move |s| Message::Settings(Msg::Edit(field, s)))
             .on_submit(Message::Settings(Msg::Commit))
             .size(EDITOR_SIZE)
-            .width(INPUT_WIDTH),
+            .width(width),
         button(text("Browse…").size(EDITOR_SIZE))
             .padding([5, 12])
             .on_press(Message::Settings(Msg::Browse(field))),
@@ -585,14 +616,14 @@ fn path_line<'a>(field: Field, value: &'a str) -> Element<'a, Message> {
 }
 
 /// A masked (bulleted) text field with a Paste button, for the API key.
-fn key_line<'a>(field: Field, value: &'a str) -> Element<'a, Message> {
+fn key_line<'a>(field: Field, value: &'a str, width: f32) -> Element<'a, Message> {
     row![
         text_input("", value)
             .secure(true)
             .on_input(move |s| Message::Settings(Msg::Edit(field, s)))
             .on_submit(Message::Settings(Msg::Commit))
             .size(EDITOR_SIZE)
-            .width(INPUT_WIDTH),
+            .width(width),
         button(text("Paste").size(EDITOR_SIZE))
             .padding([5, 12])
             .on_press(Message::Settings(Msg::Paste(field))),
@@ -603,13 +634,13 @@ fn key_line<'a>(field: Field, value: &'a str) -> Element<'a, Message> {
 }
 
 /// The model field, with a button that lists what the endpoint serves.
-fn model_line(value: &str) -> Element<'_, Message> {
+fn model_line(value: &str, width: f32) -> Element<'_, Message> {
     row![
         text_input("", value)
             .on_input(|s| Message::Settings(Msg::Edit(Field::AiModel, s)))
             .on_submit(Message::Settings(Msg::Commit))
             .size(EDITOR_SIZE)
-            .width(INPUT_WIDTH),
+            .width(width),
         button(text("Choose…").size(EDITOR_SIZE))
             .padding([5, 12])
             .on_press(Message::Settings(Msg::ChooseModel)),
@@ -665,7 +696,7 @@ fn current_preset(url: &str) -> String {
 
 /// The summon-hotkey row: shows the current combo (or "Press a shortcut…" while
 /// recording) and a Record button that captures the next key combination.
-fn hotkey_row(app: &App, font: Font, muted: Color) -> Element<'_, Message> {
+fn hotkey_row(app: &App, font: Font, muted: Color, stacked: bool) -> Element<'_, Message> {
     let editor: Element<Message> = if app.hotkey_recording {
         row![
             text("Press a shortcut…  (Esc to cancel)")
@@ -698,6 +729,7 @@ fn hotkey_row(app: &App, font: Font, muted: Color) -> Element<'_, Message> {
         "Global summon/dismiss key. Click Set shortcut and press the combination.",
         font,
         muted,
+        stacked,
     )
 }
 

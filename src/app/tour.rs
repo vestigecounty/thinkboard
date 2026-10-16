@@ -83,6 +83,8 @@ struct Tour {
     saves: Instant,
     out: PathBuf,
     shots: usize,
+    /// The window's size: [`VIEWPORT`], unless a scene [`Tour::resize`]s it.
+    viewport: Size,
 }
 
 impl Tour {
@@ -127,6 +129,7 @@ impl Tour {
             saves: Instant::now(),
             out,
             shots: 0,
+            viewport: VIEWPORT,
         };
         // The board learns its size from the first event it sees.
         tour.redraw();
@@ -156,8 +159,8 @@ impl Tour {
         let cursor = mouse::Cursor::Available(self.cursor);
         let mut messages = Vec::new();
         let statuses = {
-            let Self { app, renderer, cache, .. } = self;
-            let mut ui = UserInterface::build(app.view(), VIEWPORT, cache.take().unwrap_or_default(), renderer);
+            let Self { app, renderer, cache, viewport, .. } = self;
+            let mut ui = UserInterface::build(app.view(), *viewport, cache.take().unwrap_or_default(), renderer);
             let (_, statuses) = ui.update(&events, cursor, renderer, &mut clipboard::Null, &mut messages);
             *cache = Some(ui.into_cache());
             statuses
@@ -267,8 +270,8 @@ impl Tour {
     }
 
     fn operate(&mut self, operation: Box<dyn iced_runtime::core::widget::Operation>) {
-        let Self { app, renderer, cache, .. } = self;
-        let mut ui = UserInterface::build(app.view(), VIEWPORT, cache.take().unwrap_or_default(), renderer);
+        let Self { app, renderer, cache, viewport, .. } = self;
+        let mut ui = UserInterface::build(app.view(), *viewport, cache.take().unwrap_or_default(), renderer);
         let mut current = Some(operation);
         while let Some(mut operation) = current.take() {
             ui.operate(renderer, operation.as_mut());
@@ -351,6 +354,16 @@ impl Tour {
         }
     }
 
+    /// Makes the window `size`, as dragging its corner does: the tree is laid
+    /// out at the new size, and the board hears of it from its own bounds.
+    fn resize(&mut self, size: Size) {
+        self.viewport = size;
+        self.cache = None;
+        self.cursor = Point::new(size.width / 2.0, size.height / 2.0);
+        self.feed(vec![Event::Window(window::Event::Resized(size))]);
+        self.redraw();
+    }
+
     /// The redraw the runtime sends before each frame.
     fn redraw(&mut self) {
         self.feed(vec![Event::Window(window::Event::RedrawRequested(Instant::now()))]);
@@ -387,8 +400,8 @@ impl Tour {
         let theme = startup::theme(&self.app);
         let style = startup::style(&self.app, &theme);
         let cursor = mouse::Cursor::Available(self.cursor);
-        let Self { app, renderer, cache, .. } = self;
-        let mut ui = UserInterface::build(app.view(), VIEWPORT, cache.take().unwrap_or_default(), renderer);
+        let Self { app, renderer, cache, viewport, .. } = self;
+        let mut ui = UserInterface::build(app.view(), *viewport, cache.take().unwrap_or_default(), renderer);
         let redraw = Event::Window(window::Event::RedrawRequested(Instant::now()));
         let _ = ui.update(&[redraw], cursor, renderer, &mut clipboard::Null, &mut Vec::new());
         ui.draw(renderer, &theme, &renderer::Style { text_color: style.text_color }, cursor);
@@ -401,8 +414,8 @@ impl Tour {
         self.draw();
         let style = startup::style(&self.app, &startup::theme(&self.app));
         let size = iced::Size::new(
-            (VIEWPORT.width * self.scale).round() as u32,
-            (VIEWPORT.height * self.scale).round() as u32,
+            (self.viewport.width * self.scale).round() as u32,
+            (self.viewport.height * self.scale).round() as u32,
         );
         let mut rgba = Headless::screenshot(&mut self.renderer, size, self.scale, style.background_color);
         // The overlay is see-through: what's under it is part of the picture.
@@ -707,8 +720,8 @@ impl Tour {
             }
         }
         let mut find = Find { label, found: None, scrolled: Vector::ZERO, next: Vector::ZERO };
-        let Self { app, renderer, cache, .. } = self;
-        let mut ui = UserInterface::build(app.view(), VIEWPORT, cache.take().unwrap_or_default(), renderer);
+        let Self { app, renderer, cache, viewport, .. } = self;
+        let mut ui = UserInterface::build(app.view(), *viewport, cache.take().unwrap_or_default(), renderer);
         ui.operate(renderer, &mut find);
         *cache = Some(ui.into_cache());
         find.found.unwrap_or_else(|| panic!("nothing on screen reads {label:?}")).center()
@@ -2526,6 +2539,71 @@ fn keyboard_only() {
     tour.shot("end");
 }
 
+/// Small windows: the board in a window made smaller and smaller — a small
+/// laptop's, a short one, a tall narrow one beside another app, and narrower
+/// still — with each of the things that float over it: the palette, the
+/// settings, the find bar, a card's menu near the edge, a picker and the
+/// editor. One sheet per size; the welcome board at the narrowest last.
+fn small_windows() {
+    const SIZES: [(f32, f32); 4] = [(1024.0, 640.0), (720.0, 480.0), (480.0, 720.0), (360.0, 600.0)];
+    let mut tour = Tour::new("small_windows", first_launch(sample_board));
+    for (width, height) in SIZES {
+        let size = Size::new(width, height);
+        tour.resize(size);
+        tour.settle();
+        let mut sheet = tour.strip(&format!("{}x{}", width as u32, height as u32), Rectangle::new(Point::ORIGIN, size));
+        tour.frame(&mut sheet, "board");
+        tour.chord(Modifiers::COMMAND | Modifiers::SHIFT, "p");
+        tour.frame(&mut sheet, "palette");
+        tour.named(key::Named::Escape);
+        tour.palette("settings");
+        tour.frame(&mut sheet, "settings");
+        tour.named(key::Named::Escape);
+        tour.chord(Modifiers::COMMAND, "f");
+        tour.type_text("trip");
+        tour.frame(&mut sheet, "find");
+        tour.named(key::Named::Escape);
+        // The card nearest the right edge, whose menu has least room.
+        let rightmost = (0..tour.app.nodes.len())
+            .filter(|&i| {
+                let at = tour.node_center(i);
+                at.x > 0.0 && at.x < width && at.y > 0.0 && at.y < height
+            })
+            .max_by(|&a, &b| tour.node_center(a).x.total_cmp(&tour.node_center(b).x));
+        if let Some(card) = rightmost {
+            tour.right_click(tour.node_center(card));
+            tour.frame(&mut sheet, "card menu");
+            tour.named(key::Named::Escape);
+        }
+        tour.palette("theme");
+        tour.frame(&mut sheet, "theme picker");
+        tour.named(key::Named::Escape);
+        if let Some(card) = rightmost {
+            tour.send(Message::SelectNode(Some(card)));
+            tour.named(key::Named::Enter);
+            tour.frame(&mut sheet, "editing");
+            tour.named(key::Named::Escape);
+        }
+        tour.save(sheet, 4);
+        tour.note(&format!(
+            "{}x{}: zoom {:.2} after the resize; {} of {} cards on screen",
+            width as u32,
+            height as u32,
+            tour.app.camera.zoom,
+            (0..tour.app.nodes.len()).filter(|&i| {
+                let at = tour.node_center(i);
+                at.x > 0.0 && at.x < width && at.y > 0.0 && at.y < height
+            }).count(),
+            tour.app.nodes.len(),
+        ));
+    }
+
+    let mut tour = Tour::new("small_windows_welcome", first_launch(canvas_file::scratch_document));
+    tour.resize(Size::new(360.0, 600.0));
+    tour.settle();
+    tour.shot("welcome-360x600");
+}
+
 const SCENES: &[(&str, fn())] = &[
     ("first_run", first_run),
     ("build_a_board", build_a_board),
@@ -2550,6 +2628,7 @@ const SCENES: &[(&str, fn())] = &[
     ("undo_and_clipboard", undo_and_clipboard),
     ("long_notes", long_notes),
     ("keyboard_only", keyboard_only),
+    ("small_windows", small_windows),
 ];
 
 #[test]
