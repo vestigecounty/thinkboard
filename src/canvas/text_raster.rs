@@ -733,33 +733,274 @@ pub fn widest_word(text: &str, font_size: f32, theme: &Theme) -> f32 {
 /// line and its height.
 fn lay_out_markdown(text: &str, wrap_px: f32, wrap: Wrap, font_size: f32, theme: &Theme) -> (f32, f32) {
     let spans = markdown::parse(text.trim());
-    let line_px = font_size * LINE_HEIGHT;
     if spans.is_empty() {
-        return (0.0, line_px);
+        return (0.0, font_size * LINE_HEIGHT);
     }
-
+    let setting = Setting { wrap_px, wrap, font_size, scale: 1.0, centered: false };
     with_raster(|raster| {
-        let font_system = &mut raster.font_system;
-        let mut buffer = Buffer::new(font_system, Metrics::new(font_size, line_px));
-        buffer.set_size(font_system, Some(wrap_px), None);
-        buffer.set_wrap(font_system, wrap);
-        let rich: Vec<(&str, Attrs)> = spans
-            .iter()
-            .map(|span| (span.text.as_str(), span_attrs(span, font_size, theme)))
-            .collect();
-        let default = base_attrs(theme);
-        buffer.set_rich_text(font_system, rich, &default, Shaping::Advanced, Some(Align::Left));
-        buffer.shape_until_scroll(font_system, false);
-
-        let mut width = 0.0f32;
-        let mut height = 0.0f32;
-        for run in buffer.layout_runs() {
-            width = width.max(run.line_w);
-            height = height.max(run.line_top + run.line_height);
-        }
-        (width, height)
+        let laid = lay_out(&mut raster.font_system, &spans, setting, theme);
+        (laid.width, laid.height)
     })
 }
+
+// --- A card's text laid out: flowing text, and tables as grids --------------
+//
+// Flowing text is one cosmic-text buffer, which wraps and aligns it. A table
+// can't be: its cells have to line up in columns whatever their text, and
+// a buffer has one wrap width and no tab stops but uniform ones. So a card is
+// laid out as blocks stacked a blank line apart — each stretch of text between
+// tables in a buffer of its own, each table cell in one — and the measuring,
+// the bitmap and the live text all take their places from [`lay_out`], or
+// they'd disagree about where a cell is.
+
+/// Padding between a table cell's text and its rules, and the rules' width,
+/// in logical px.
+const CELL_PAD_X: f32 = 8.0;
+const CELL_PAD_Y: f32 = 4.0;
+const RULE_WIDTH: f32 = 1.0;
+
+/// How a card's text is set: its column, how lines break, its body size and
+/// the scale it's laid out at (1 for logical px, a bitmap's scale for a
+/// snapshot), and whether flowing text is centred.
+#[derive(Clone, Copy)]
+struct Setting {
+    /// The text column, at `scale`.
+    wrap_px: f32,
+    wrap: Wrap,
+    /// The body font size, logical.
+    font_size: f32,
+    scale: f32,
+    centered: bool,
+}
+
+impl Setting {
+    fn font_px(self) -> f32 {
+        self.font_size * self.scale
+    }
+}
+
+/// A card's Markdown laid out at one scale.
+struct Laid {
+    pieces: Vec<Piece>,
+    /// Table rules, at the layout's scale, relative to its top-left.
+    rules: Vec<iced::Rectangle>,
+    /// The widest line or table, and the height of the whole.
+    width: f32,
+    height: f32,
+}
+
+/// One buffer and where its top-left goes.
+struct Piece {
+    buffer: Buffer,
+    x: f32,
+    y: f32,
+}
+
+/// The spans one block is made of: a stretch between tables, or one table.
+enum Block {
+    Flow(std::ops::Range<usize>),
+    Table(std::ops::Range<usize>),
+}
+
+/// Splits `spans` into blocks: runs of spans outside a table, and each table.
+fn blocks(spans: &[markdown::Span]) -> Vec<Block> {
+    let mut blocks = Vec::new();
+    let mut start = 0;
+    for i in 1..=spans.len() {
+        let table = |i: usize| spans.get(i).and_then(|span| span.cell).map(|cell| cell.table);
+        if i < spans.len() && table(i) == table(start) {
+            continue;
+        }
+        blocks.push(if table(start).is_some() { Block::Table(start..i) } else { Block::Flow(start..i) });
+        start = i;
+    }
+    blocks
+}
+
+/// Lays `spans` out, block under block, a blank line apart.
+fn lay_out(font_system: &mut FontSystem, spans: &[markdown::Span], setting: Setting, theme: &Theme) -> Laid {
+    let gap = setting.font_px() * LINE_HEIGHT;
+    let mut laid = Laid { pieces: Vec::new(), rules: Vec::new(), width: 0.0, height: 0.0 };
+    let blocks = blocks(spans);
+    for (i, block) in blocks.iter().enumerate() {
+        let y = if i == 0 { 0.0 } else { laid.height + gap };
+        let (width, height) = match block {
+            Block::Flow(range) => {
+                // The paragraph break before a table is the gap between them.
+                let before_table = matches!(blocks.get(i + 1), Some(Block::Table(_)));
+                let buffer = flow_buffer(font_system, spans, range.clone(), setting, theme, before_table);
+                let extent = buffer_extent(&buffer);
+                laid.pieces.push(Piece { buffer, x: 0.0, y });
+                extent
+            }
+            Block::Table(range) => lay_out_table(font_system, spans, range.clone(), setting, theme, y, &mut laid),
+        };
+        laid.width = laid.width.max(width);
+        laid.height = y + height;
+    }
+    laid
+}
+
+/// A stretch of flowing text in one buffer, as every card's text used to be.
+fn flow_buffer(
+    font_system: &mut FontSystem,
+    spans: &[markdown::Span],
+    range: std::ops::Range<usize>,
+    setting: Setting,
+    theme: &Theme,
+    trim_end: bool,
+) -> Buffer {
+    let font_px = setting.font_px();
+    let mut buffer = Buffer::new(font_system, Metrics::new(font_px, font_px * LINE_HEIGHT));
+    buffer.set_size(font_system, Some(setting.wrap_px), None);
+    buffer.set_wrap(font_system, setting.wrap);
+    // Tagged with their span, so laid-out glyphs can be traced back to their
+    // style (bold/italic/mono) and a quote's lines given their bar.
+    let mut rich: Vec<(&str, Attrs)> = range
+        .clone()
+        .map(|i| (spans[i].text.as_str(), span_attrs(&spans[i], font_px, theme).metadata(i)))
+        .collect();
+    if trim_end {
+        while rich.last().is_some_and(|(text, _)| text.trim_end_matches('\n').is_empty()) {
+            rich.pop();
+        }
+        if let Some((text, _)) = rich.last_mut() {
+            *text = text.trim_end_matches('\n');
+        }
+    }
+    let base = if setting.centered { Align::Center } else { Align::Left };
+    buffer.set_rich_text(font_system, rich, &base_attrs(theme), Shaping::Advanced, Some(base));
+    // When centering, still left-align list items and code blocks (they read
+    // poorly centered).
+    if setting.centered {
+        for (line, align) in buffer.lines.iter_mut().zip(line_alignments(&spans[range])) {
+            line.set_align(Some(align));
+        }
+    }
+    buffer.shape_until_scroll(font_system, false);
+    buffer
+}
+
+/// A buffer's widest line and its height. Headings vary line height, so the
+/// height is measured from the laid-out lines.
+fn buffer_extent(buffer: &Buffer) -> (f32, f32) {
+    buffer.layout_runs().fold((0.0f32, 0.0f32), |(width, height), run| {
+        (width.max(run.line_w), height.max(run.line_top + run.line_height))
+    })
+}
+
+/// Lays one table out as a grid at `y`, adding its cells and rules to `laid`;
+/// returns its width and height.
+///
+/// A column is as wide as its widest cell when the table fits the card. When it
+/// doesn't, each column keeps its widest *word* and the room left is shared in
+/// proportion to how much more each wanted — the way a browser sizes an
+/// automatic table — so a short column isn't squeezed to make room for a long
+/// one. Only a table too wide even for that breaks words, as the card's own
+/// text does.
+fn lay_out_table(
+    font_system: &mut FontSystem,
+    spans: &[markdown::Span],
+    range: std::ops::Range<usize>,
+    setting: Setting,
+    theme: &Theme,
+    y: f32,
+    laid: &mut Laid,
+) -> (f32, f32) {
+    use markdown::CellAlign;
+    let font_px = setting.font_px();
+    let line_px = font_px * LINE_HEIGHT;
+    let (pad_x, pad_y, rule) = (CELL_PAD_X * setting.scale, CELL_PAD_Y * setting.scale, RULE_WIDTH * setting.scale);
+
+    // Each cell's spans, in reading order; an empty cell has none, so the grid
+    // is as big as the furthest cell.
+    let mut cells: Vec<(markdown::Cell, Vec<usize>)> = Vec::new();
+    for i in range {
+        let Some(cell) = spans[i].cell else { continue };
+        match cells.last_mut() {
+            Some((last, members)) if (last.row, last.column) == (cell.row, cell.column) => members.push(i),
+            _ => cells.push((cell, vec![i])),
+        }
+    }
+    let rows = cells.iter().map(|(cell, _)| usize::from(cell.row) + 1).max().unwrap_or(0);
+    let columns = cells.iter().map(|(cell, _)| usize::from(cell.column) + 1).max().unwrap_or(0);
+
+    // Shaped once, then measured unwrapped (what a cell wants) and at its
+    // widest word (the least it can have without breaking one).
+    let mut shaped: Vec<(markdown::Cell, Buffer, f32, f32)> = cells
+        .into_iter()
+        .map(|(cell, members)| {
+            let mut buffer = Buffer::new(font_system, Metrics::new(font_px, line_px));
+            let rich: Vec<(&str, Attrs)> = members
+                .iter()
+                .map(|&i| (spans[i].text.as_str(), span_attrs(&spans[i], font_px, theme).metadata(i)))
+                .collect();
+            let align = match cell.align {
+                CellAlign::Left => Align::Left,
+                CellAlign::Center => Align::Center,
+                CellAlign::Right => Align::Right,
+            };
+            buffer.set_rich_text(font_system, rich, &base_attrs(theme), Shaping::Advanced, Some(align));
+            buffer.set_size(font_system, None, None);
+            buffer.shape_until_scroll(font_system, false);
+            let wants = buffer_extent(&buffer).0;
+            buffer.set_wrap(font_system, Wrap::Word);
+            buffer.set_size(font_system, Some(1.0), None);
+            buffer.shape_until_scroll(font_system, false);
+            let needs = buffer_extent(&buffer).0;
+            (cell, buffer, wants, needs)
+        })
+        .collect();
+
+    let mut wants = vec![2.0 * pad_x; columns];
+    let mut needs = vec![2.0 * pad_x; columns];
+    for (cell, _, want, need) in &shaped {
+        let column = usize::from(cell.column);
+        wants[column] = wants[column].max(want + 2.0 * pad_x);
+        needs[column] = needs[column].max(need + 2.0 * pad_x);
+    }
+    let (want, need): (f32, f32) = (wants.iter().sum(), needs.iter().sum());
+    let room = setting.wrap_px;
+    let widths: Vec<f32> = if setting.wrap == Wrap::Word {
+        // Asked for the narrowest it can be without breaking a word.
+        needs
+    } else if want <= room {
+        wants
+    } else if need >= room {
+        needs.iter().map(|need_one| need_one * room / need).collect()
+    } else {
+        let spare = (room - need) / (want - need);
+        needs.iter().zip(&wants).map(|(need_one, want_one)| need_one + (want_one - need_one) * spare).collect()
+    };
+
+    // The cells, wrapped to their columns, and each row as tall as its tallest.
+    let mut heights = vec![line_px + 2.0 * pad_y; rows];
+    for (cell, buffer, _, _) in &mut shaped {
+        buffer.set_wrap(font_system, setting.wrap);
+        buffer.set_size(font_system, Some((widths[usize::from(cell.column)] - 2.0 * pad_x).max(1.0)), None);
+        buffer.shape_until_scroll(font_system, false);
+        let row = usize::from(cell.row);
+        heights[row] = heights[row].max(buffer_extent(buffer).1 + 2.0 * pad_y);
+    }
+    let lefts: Vec<f32> = widths.iter().scan(0.0, |x, w| Some(std::mem::replace(x, *x + w))).collect();
+    let tops: Vec<f32> = heights.iter().scan(y, |top, h| Some(std::mem::replace(top, *top + h))).collect();
+    let (width, height): (f32, f32) = (widths.iter().sum(), heights.iter().sum());
+    for (cell, buffer, _, _) in shaped {
+        let (column, row) = (usize::from(cell.column), usize::from(cell.row));
+        laid.pieces.push(Piece { buffer, x: lefts[column] + pad_x, y: tops[row] + pad_y });
+    }
+
+    // A rule along every edge of every cell, the outer ones inside the table.
+    let along = |at: f32, extent: f32| (at - rule / 2.0).clamp(0.0, (extent - rule).max(0.0));
+    for edge in tops.iter().map(|top| top - y).chain([height]) {
+        laid.rules.push(iced::Rectangle { x: 0.0, y: y + along(edge, height), width, height: rule });
+    }
+    for edge in lefts.iter().copied().chain([width]) {
+        laid.rules.push(iced::Rectangle { x: along(edge, width), y, width: rule, height });
+    }
+    (width, height)
+}
+
 
 /// Renders `text` as Markdown (read mode): inline bold/italic/code, links in
 /// the accent color, and heading sizes. Centered within the wrapped column,
@@ -790,64 +1031,43 @@ pub fn snapshot_markdown(
     // flush against the card edge; the centered offset applies it to both
     // sides.
     let wrap_px = ((wrap_width - 2.0 * MD_PADDING) * k).max(1.0);
-    let font_px = font_size * k;
-    let line_px = font_px * LINE_HEIGHT;
+    let setting = Setting { wrap_px, wrap: Wrap::WordOrGlyph, font_size, scale: k, centered };
 
     with_raster(|raster| {
-        let font_system = &mut raster.font_system;
-
-        let mut buffer = Buffer::new(font_system, Metrics::new(font_px, line_px));
-        buffer.set_size(font_system, Some(wrap_px), None);
-
-        // Tagged with their span, so a laid-out line can be traced back to a
-        // quote and given its bar.
-        let rich: Vec<(&str, Attrs)> = spans
-            .iter()
-            .enumerate()
-            .map(|(i, span)| (span.text.as_str(), span_attrs(span, font_px, &theme).metadata(i)))
-            .collect();
-        let default = base_attrs(&theme);
-        let base = if centered { Align::Center } else { Align::Left };
-        buffer.set_rich_text(font_system, rich, &default, Shaping::Advanced, Some(base));
-        // When centering, still left-align list items and code blocks (they
-        // read poorly centered).
-        if centered {
-            for (line, align) in buffer.lines.iter_mut().zip(line_alignments(&spans)) {
-                line.set_align(Some(align));
-            }
-        }
-        buffer.shape_until_scroll(font_system, false);
-
-        // Headings vary line height, so measure the real laid-out extent.
-        let text_height = buffer
-            .layout_runs()
-            .map(|run| run.line_top + run.line_height)
-            .fold(0.0, f32::max);
+        let laid = lay_out(&mut raster.font_system, &spans, setting, &theme);
         // Both center the wrap column in the card (left content is left-aligned
         // within it), so the left inset matches plain/centered nodes.
         let offset_x = (pixel_width as f32 - wrap_px) / 2.0;
-        let offset_y = ((pixel_height as f32 - text_height) / 2.0).max(0.0);
+        let offset_y = ((pixel_height as f32 - laid.height) / 2.0).max(0.0);
 
-        let mut pixels = blit_buffer(
-            raster,
-            &buffer,
-            pixel_width,
-            pixel_height,
-            offset_x as i32,
-            offset_y as i32,
-            to_cosmic(theme.text),
-        );
+        let mut pixels = vec![0u8; (pixel_width * pixel_height * 4) as usize];
+        let rule = table_rule_color(&theme);
+        for r in &laid.rules {
+            fill_premultiplied(&mut pixels, pixel_width, (offset_x + r.x, offset_y + r.y, r.width, r.height), rule);
+        }
+        for piece in &laid.pieces {
+            blit_buffer(
+                raster,
+                &piece.buffer,
+                &mut pixels,
+                (pixel_width, pixel_height),
+                ((offset_x + piece.x) as i32, (offset_y + piece.y) as i32),
+                to_cosmic(theme.text),
+            );
+        }
         let bar = quote_bar_color(&theme);
-        for line in buffer.layout_runs() {
-            if line.glyphs.iter().any(|g| spans.get(g.metadata).is_some_and(|s| s.quote)) {
-                let x = offset_x - QUOTE_BAR_INSET * k;
-                let y = offset_y + line.line_top;
-                fill_premultiplied(
-                    &mut pixels,
-                    pixel_width,
-                    (x, y, QUOTE_BAR_WIDTH * k, line.line_height),
-                    bar,
-                );
+        for piece in &laid.pieces {
+            for line in piece.buffer.layout_runs() {
+                if line.glyphs.iter().any(|g| spans.get(g.metadata).is_some_and(|s| s.quote)) {
+                    let x = offset_x + piece.x - QUOTE_BAR_INSET * k;
+                    let y = offset_y + piece.y + line.line_top;
+                    fill_premultiplied(
+                        &mut pixels,
+                        pixel_width,
+                        (x, y, QUOTE_BAR_WIDTH * k, line.line_height),
+                        bar,
+                    );
+                }
             }
         }
 
@@ -878,6 +1098,12 @@ pub const QUOTE_BAR_WIDTH: f32 = 3.0;
 /// The quote bar's colour: the accent, softened, as Obsidian draws its own.
 pub fn quote_bar_color(theme: &Theme) -> Color {
     Color { a: 0.6, ..theme.accent }
+}
+
+/// A table's rules: the muted text colour, faint — a hairline that reads on a
+/// card of any colour, where a border colour chosen for the board might not.
+pub fn table_rule_color(theme: &Theme) -> Color {
+    Color { a: 0.55, ..theme.text_muted }
 }
 
 /// A positioned, styled run of Markdown text for the live (non-rasterized)
@@ -922,7 +1148,15 @@ fn bucket(value: f32) -> i32 {
     (value * 4.0).round() as i32
 }
 
-static LAYOUT_CACHE: Mutex<Option<HashMap<LayoutKey, Vec<TextRun>>>> = Mutex::new(None);
+/// What the live path draws a card's text from: its runs, and its tables'
+/// rules (logical px, relative to the card's top-left, like the runs).
+#[derive(Default)]
+struct Layout {
+    runs: Vec<TextRun>,
+    rules: Vec<iced::Rectangle>,
+}
+
+static LAYOUT_CACHE: Mutex<Option<HashMap<LayoutKey, Layout>>> = Mutex::new(None);
 const LAYOUT_CACHE_CAP: usize = 1024;
 
 /// Memoizes [`measure_markdown`] by `(trimmed text, wrap, font size)` → `(w, h)`
@@ -980,6 +1214,36 @@ pub fn with_markdown_layout<R>(
     center: bool,
     f: impl FnOnce(&[TextRun]) -> R,
 ) -> R {
+    with_layout(text, width, height, wrap_width, font_size, theme, center, |layout| f(&layout.runs))
+}
+
+/// The rules of the tables in `text`, laid out as [`with_markdown_layout`]
+/// lays out its runs — from the same cached layout.
+#[allow(clippy::too_many_arguments)]
+pub fn with_markdown_rules<R>(
+    text: &str,
+    width: f32,
+    height: f32,
+    wrap_width: f32,
+    font_size: f32,
+    theme: Theme,
+    center: bool,
+    f: impl FnOnce(&[iced::Rectangle]) -> R,
+) -> R {
+    with_layout(text, width, height, wrap_width, font_size, theme, center, |layout| f(&layout.rules))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn with_layout<R>(
+    text: &str,
+    width: f32,
+    height: f32,
+    wrap_width: f32,
+    font_size: f32,
+    theme: Theme,
+    center: bool,
+    f: impl FnOnce(&Layout) -> R,
+) -> R {
     let key = LayoutKey {
         text: text.to_owned(),
         width: bucket(width),
@@ -992,16 +1256,16 @@ pub fn with_markdown_layout<R>(
     // Fast path: a cache hit draws straight from the stored layout.
     {
         let mut guard = LAYOUT_CACHE.lock().unwrap();
-        if let Some(runs) = guard.get_or_insert_with(HashMap::new).get(&key) {
+        if let Some(layout) = guard.get_or_insert_with(HashMap::new).get(&key) {
             LAYOUT_HITS.fetch_add(1, Ordering::Relaxed);
-            return f(runs);
+            return f(layout);
         }
     }
 
     // Miss: shape once (locks the font system), then store and draw.
     LAYOUT_MISSES.fetch_add(1, Ordering::Relaxed);
     let started = Instant::now();
-    let runs = shape_markdown_logical(text, width, height, wrap_width, font_size, theme, center);
+    let layout = shape_markdown_logical(text, width, height, wrap_width, font_size, theme, center);
     LAYOUT_SHAPE_NS.fetch_add(started.elapsed().as_nanos() as u64, Ordering::Relaxed);
 
     let mut guard = LAYOUT_CACHE.lock().unwrap();
@@ -1009,11 +1273,12 @@ pub fn with_markdown_layout<R>(
     if cache.len() >= LAYOUT_CACHE_CAP {
         cache.clear();
     }
-    f(cache.entry(key).or_insert(runs))
+    f(cache.entry(key).or_insert(layout))
 }
 
 /// Shapes the Markdown at logical scale (1 px per logical unit) into styled
-/// runs. Line breaks are scale-invariant, so drawing scales these by zoom.
+/// runs and table rules. Line breaks are scale-invariant, so drawing scales
+/// these by zoom.
 fn shape_markdown_logical(
     text: &str,
     width: f32,
@@ -1022,78 +1287,61 @@ fn shape_markdown_logical(
     font_size: f32,
     theme: Theme,
     center: bool,
-) -> Vec<TextRun> {
+) -> Layout {
     let spans = markdown::parse(text.trim());
     if spans.is_empty() {
-        return Vec::new();
+        return Layout::default();
     }
     // Center only simple (plain/bold/italic) content; see `snapshot_markdown`.
     let centered = center && markdown::is_simple(text);
     let wrap_px = (wrap_width - 2.0 * MD_PADDING).max(1.0);
-    let line_px = font_size * LINE_HEIGHT;
+    let setting = Setting { wrap_px, wrap: Wrap::WordOrGlyph, font_size, scale: 1.0, centered };
 
     with_raster(|raster| {
-        let font_system = &mut raster.font_system;
-        let mut buffer = Buffer::new(font_system, Metrics::new(font_size, line_px));
-        buffer.set_size(font_system, Some(wrap_px), None);
-
-        // Tag each span with its index so laid-out glyphs can be traced back to
-        // their style (bold/italic/mono).
-        let rich: Vec<(&str, Attrs)> = spans
-            .iter()
-            .enumerate()
-            .map(|(i, span)| (span.text.as_str(), span_attrs(span, font_size, &theme).metadata(i)))
-            .collect();
-        let default = base_attrs(&theme);
-        let base = if centered { Align::Center } else { Align::Left };
-        buffer.set_rich_text(font_system, rich, &default, Shaping::Advanced, Some(base));
-        if centered {
-            for (line, align) in buffer.lines.iter_mut().zip(line_alignments(&spans)) {
-                line.set_align(Some(align));
-            }
-        }
-        buffer.shape_until_scroll(font_system, false);
-
-        let text_height = buffer
-            .layout_runs()
-            .map(|run| run.line_top + run.line_height)
-            .fold(0.0, f32::max);
+        let laid = lay_out(&mut raster.font_system, &spans, setting, &theme);
         // Column centered in the card (matches `snapshot_markdown`).
         let offset_x = (width - wrap_px) / 2.0;
-        let offset_y = ((height - text_height) / 2.0).max(0.0);
+        let offset_y = ((height - laid.height) / 2.0).max(0.0);
 
         let mut runs = Vec::new();
-        for run in buffer.layout_runs() {
-            let glyphs = run.glyphs;
-            let mut i = 0;
-            // Merge adjacent glyphs sharing a span (same style) into one run.
-            while i < glyphs.len() {
-                let meta = glyphs[i].metadata;
-                let mut j = i + 1;
-                while j < glyphs.len() && glyphs[j].metadata == meta {
-                    j += 1;
+        for piece in &laid.pieces {
+            for run in piece.buffer.layout_runs() {
+                let glyphs = run.glyphs;
+                let mut i = 0;
+                // Merge adjacent glyphs sharing a span (same style) into one run.
+                while i < glyphs.len() {
+                    let meta = glyphs[i].metadata;
+                    let mut j = i + 1;
+                    while j < glyphs.len() && glyphs[j].metadata == meta {
+                        j += 1;
+                    }
+                    let (first, last) = (&glyphs[i], &glyphs[j - 1]);
+                    if let Some(slice) = run.text.get(first.start..last.end).filter(|s| !s.is_empty()) {
+                        let span = spans.get(meta);
+                        runs.push(TextRun {
+                            text: slice.to_owned(),
+                            x: offset_x + piece.x + first.x,
+                            y: offset_y + piece.y + run.line_top,
+                            width: (last.x + last.w) - first.x,
+                            size: first.font_size,
+                            color: first.color_opt.map(from_cosmic).unwrap_or(theme.text),
+                            bold: span.is_some_and(|s| s.bold || s.heading > 0),
+                            italic: span.is_some_and(|s| s.italic),
+                            mono: span.is_some_and(|s| s.code),
+                            link: span.and_then(|s| s.url.clone()),
+                            quote: span.is_some_and(|s| s.quote),
+                        });
+                    }
+                    i = j;
                 }
-                let (first, last) = (&glyphs[i], &glyphs[j - 1]);
-                if let Some(slice) = run.text.get(first.start..last.end).filter(|s| !s.is_empty()) {
-                    let span = spans.get(meta);
-                    runs.push(TextRun {
-                        text: slice.to_owned(),
-                        x: offset_x + first.x,
-                        y: offset_y + run.line_top,
-                        width: (last.x + last.w) - first.x,
-                        size: first.font_size,
-                        color: first.color_opt.map(from_cosmic).unwrap_or(theme.text),
-                        bold: span.is_some_and(|s| s.bold || s.heading > 0),
-                        italic: span.is_some_and(|s| s.italic),
-                        mono: span.is_some_and(|s| s.code),
-                        link: span.and_then(|s| s.url.clone()),
-                        quote: span.is_some_and(|s| s.quote),
-                    });
-                }
-                i = j;
             }
         }
-        runs
+        let rules = laid
+            .rules
+            .iter()
+            .map(|rule| iced::Rectangle { x: offset_x + rule.x, y: offset_y + rule.y, ..*rule })
+            .collect();
+        Layout { runs, rules }
     })
 }
 
@@ -1257,16 +1505,16 @@ fn fill_premultiplied(pixels: &mut [u8], width: u32, (x, y, w, h): (f32, f32, f3
     }
 }
 
+/// Draws `buffer`'s glyphs into `pixels` (`size`, premultiplied RGBA) with its
+/// top-left at `offset`.
 fn blit_buffer(
     raster: &mut Raster,
     buffer: &Buffer,
-    pixel_width: u32,
-    pixel_height: u32,
-    offset_x: i32,
-    offset_y: i32,
+    pixels: &mut [u8],
+    (pixel_width, pixel_height): (u32, u32),
+    (offset_x, offset_y): (i32, i32),
     default: CosmicColor,
-) -> Vec<u8> {
-    let mut pixels = vec![0u8; (pixel_width * pixel_height * 4) as usize];
+) {
     buffer.draw(
         &mut raster.font_system,
         &mut raster.cache,
@@ -1296,7 +1544,6 @@ fn blit_buffer(
             }
         },
     );
-    pixels
 }
 
 #[cfg(test)]
@@ -1385,6 +1632,52 @@ mod scale_tests {
 #[cfg(test)]
 mod measure_tests {
     use super::*;
+
+    const TABLE: &str = "Plan:\n\n| Day | Morning | Evening |\n|---|---|---|\n| Fri | Land, check in | Alfama, fado |\n| Sat | Belém | Bairro Alto |\n\nAfter.";
+
+    #[test]
+    fn a_tables_cells_line_up_in_columns_and_rows() {
+        warm_up();
+        let theme = Theme::default();
+        let wrap = card_text_wrap(420.0);
+        let (runs, rules) = with_layout(TABLE, 420.0, 300.0, wrap, 17.0, theme, false, |layout| {
+            (layout.runs.clone(), layout.rules.clone())
+        });
+        let at = |text: &str| runs.iter().find(|run| run.text == text).unwrap_or_else(|| panic!("no run {text:?}"));
+        // A column's cells start at one x, whatever their width; a row's at one y.
+        assert_eq!(at("Day").x, at("Fri").x);
+        assert_eq!(at("Morning").x, at("Land, check in").x);
+        assert_eq!(at("Evening").x, at("Bairro Alto").x);
+        assert!(at("Day").x < at("Morning").x && at("Morning").x < at("Evening").x);
+        assert_eq!(at("Fri").y, at("Alfama, fado").y);
+        assert!(at("Day").y < at("Fri").y && at("Fri").y < at("Sat").y);
+        // The header is bold; the text around the table is above and below it.
+        assert!(at("Day").bold && !at("Fri").bold);
+        assert!(at("Plan:").y < at("Day").y && at("After.").y > at("Sat").y);
+        // A rule along every edge: four between and around three rows, four
+        // between and around three columns — and none wider than the column.
+        assert_eq!(rules.len(), 8);
+        let column = wrap - 2.0 * MD_PADDING;
+        assert!(rules.iter().all(|rule| rule.width <= column + 0.5), "{rules:?}");
+        // Measuring sees the table, as drawing does.
+        let (_, height) = measure_markdown(TABLE, wrap, 17.0, &theme);
+        assert!(height > at("After.").y - runs[0].y, "measured {height}");
+    }
+
+    #[test]
+    fn a_table_too_wide_for_its_card_shares_the_room_out() {
+        warm_up();
+        let theme = Theme::default();
+        let text = "| Short | A column with far more in it than the card has room for on one line |\n|---|---|\n| a | b |";
+        let wrap = card_text_wrap(260.0);
+        let rules = with_layout(text, 260.0, 300.0, wrap, 17.0, theme, false, |layout| layout.rules.clone());
+        let width = rules.iter().map(|rule| rule.x + rule.width).fold(0.0, f32::max)
+            - rules.iter().map(|rule| rule.x).fold(f32::MAX, f32::min);
+        assert!(width <= wrap - 2.0 * MD_PADDING + 0.5, "the table fits its card: {width}");
+        // And the short column keeps its word whole rather than being squeezed.
+        let runs = with_layout(text, 260.0, 300.0, wrap, 17.0, theme, false, |layout| layout.runs.clone());
+        assert!(runs.iter().any(|run| run.text == "Short"), "{:?}", runs.iter().map(|r| &r.text).collect::<Vec<_>>());
+    }
 
     #[test]
     fn measure_source_accounts_for_bold_widening() {
@@ -1663,6 +1956,7 @@ mod measure_tests {
             syntax: Syntax::Plain,
             quote: false,
             muted: false,
+            cell: None,
         };
         let (prose, code) = (span(false), span(true));
         assert_eq!(span_attrs(&prose, 17.0, &theme).font_features.features, SINGLE_STOREY_A);

@@ -2506,6 +2506,7 @@ impl Board<'_> {
                     // the card's own. See `draw_search_hits`.
                     self.draw_search_hits(frame, scrolled, text, FONT_SIZE, wrap, alpha, highlight);
                     self.draw_quote_bars(frame, scrolled, rect, text, FONT_SIZE, wrap, alpha);
+                    self.draw_table_rules(frame, scrolled, rect, text, FONT_SIZE, wrap, alpha);
                     frame.with_clip(rect, |clipped| {
                         self.draw_markdown_live(clipped, scrolled, text, FONT_SIZE, wrap, alpha, highlight);
                     });
@@ -2540,6 +2541,7 @@ impl Board<'_> {
                         // beneath the card's own. See `draw_search_hits`.
                         self.draw_search_hits(frame, rect, text, FONT_SIZE, wrap, alpha, highlight);
                         self.draw_quote_bars(frame, rect, rect, text, FONT_SIZE, wrap, alpha);
+                        self.draw_table_rules(frame, rect, rect, text, FONT_SIZE, wrap, alpha);
                         // Clip to the card so text that overflows a manually-undersized
                         // node doesn't spill past its border (the raster path is already
                         // node-sized, so it clips on its own).
@@ -3021,6 +3023,49 @@ impl Board<'_> {
                     );
                     if let Some(bar) = bar.intersection(&card) {
                         frame.fill_rectangle(bar.position(), bar.size(), Color { a: color.a * alpha, ..color });
+                    }
+                }
+            },
+        );
+    }
+
+    /// Draws the rules of a card's tables, for the live path — the bitmap path
+    /// paints its own (`text_raster::snapshot_markdown`). Before the clip and
+    /// clipped by arithmetic, like the quote bars and for the same reason; and
+    /// never thinner than a pixel on screen, or a table zoomed out loses its
+    /// grid to antialiasing.
+    #[allow(clippy::too_many_arguments)] // mirrors `draw_quote_bars`'
+    fn draw_table_rules(
+        &self,
+        frame: &mut Frame,
+        rect: Rectangle,
+        card: Rectangle,
+        text: &str,
+        font_size: f32,
+        wrap_width: f32,
+        alpha: f32,
+    ) {
+        if !text.contains('|') {
+            return; // no table, no layout to fetch
+        }
+        let zoom = self.camera.zoom;
+        let color = crate::text_raster::table_rule_color(self.theme);
+        crate::text_raster::with_markdown_rules(
+            text,
+            rect.width / zoom,
+            rect.height / zoom,
+            wrap_width,
+            font_size,
+            *self.theme,
+            self.config.center_node_text,
+            |rules| {
+                for rule in rules {
+                    let line = Rectangle::new(
+                        Point::new(rect.x + rule.x * zoom, rect.y + rule.y * zoom),
+                        Size::new((rule.width * zoom).max(1.0), (rule.height * zoom).max(1.0)),
+                    );
+                    if let Some(line) = line.intersection(&card) {
+                        frame.fill_rectangle(line.position(), line.size(), Color { a: color.a * alpha, ..color });
                     }
                 }
             },

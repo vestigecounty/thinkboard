@@ -3,11 +3,17 @@
 //! Flattens `pulldown-cmark` events into a linear run of [`Span`]s carrying
 //! inline style (bold/italic/code/link) and block context (heading level,
 //! list bullets, paragraph breaks). The rasterizer turns each span into a
-//! cosmic-text attribute run. This is intentionally simple: no tables, images,
-//! or block backgrounds yet — those come later.
+//! cosmic-text attribute run. A table's cells are spans too, each marked with
+//! where it sits ([`Cell`]), which the desktop lays out as a grid. This is
+//! intentionally simple: no images or block backgrounds yet.
 
 use crate::syntax::{self, Syntax};
-use pulldown_cmark::{CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Parser, Tag, TagEnd};
+
+/// What Markdown this module reads, beyond CommonMark: task lists and tables,
+/// both of which Obsidian renders. `is_simple` parses with the same set, or a
+/// table would read to it as a paragraph of pipes.
+const EXTENSIONS: Options = Options::ENABLE_TASKLISTS.union(Options::ENABLE_TABLES);
 
 /// A run of text sharing one style.
 #[derive(Debug, Clone, PartialEq)]
@@ -30,6 +36,52 @@ pub struct Span {
     pub quote: bool,
     /// Set back from the body text: a finished task, a quote.
     pub muted: bool,
+    /// The table cell this span is in, if it's in one.
+    pub cell: Option<Cell>,
+}
+
+/// Where a span sits in a table. Cells come in reading order — the header row,
+/// then each row left to right — and an empty cell has no spans, so a
+/// renderer sizes the grid from the largest row and column it sees.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Cell {
+    /// Which table on the card, counting from 0, so two tables one after the
+    /// other stay two grids.
+    pub table: u16,
+    pub row: u16,
+    pub column: u16,
+    /// In the header row: set bold, as Obsidian does.
+    pub header: bool,
+    /// The column's alignment, from its delimiter (`:---`, `:---:`, `---:`).
+    pub align: CellAlign,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CellAlign {
+    Left,
+    Center,
+    Right,
+}
+
+/// The table being read: which one, its columns' alignments, and the cell the
+/// next span goes in.
+struct Table {
+    id: u16,
+    aligns: Vec<Alignment>,
+    row: u16,
+    column: u16,
+    header: bool,
+}
+
+impl Table {
+    fn cell(&self) -> Cell {
+        let align = match self.aligns.get(usize::from(self.column)) {
+            Some(Alignment::Center) => CellAlign::Center,
+            Some(Alignment::Right) => CellAlign::Right,
+            _ => CellAlign::Left,
+        };
+        Cell { table: self.id, row: self.row, column: self.column, header: self.header, align }
+    }
 }
 
 /// Parses `source` into styled spans. Block breaks are encoded as spans of
@@ -52,6 +104,8 @@ pub fn parse(source: &str) -> Vec<Span> {
     // Fenced code is buffered across text events, then tokenized as a whole so
     // multi-line strings and block comments highlight correctly.
     let mut code_block: Option<CodeLang> = None;
+    let mut table: Option<Table> = None;
+    let mut tables = 0u16;
 
     let plain =
         |text: &str, code: bool, bold: bool, italic: bool, heading: u8, url: Option<String>| Span {
@@ -65,22 +119,25 @@ pub fn parse(source: &str) -> Vec<Span> {
             syntax: Syntax::Plain,
             quote: false,
             muted: false,
+            cell: None,
         };
-    // Quote and done-task styling is a property of where a span falls, so it
-    // is stamped on here rather than threaded through every constructor. A
-    // macro, not a closure: a closure would hold `out` for the whole loop, and
-    // a task marker has to reach back into it.
-    fn add(out: &mut Vec<Span>, span: Span, quote: bool, muted: bool) {
+    // Quote, done-task and table-cell styling is a property of where a span
+    // falls, so it is stamped on here rather than threaded through every
+    // constructor. A macro, not a closure: a closure would hold `out` for the
+    // whole loop, and a task marker has to reach back into it.
+    fn add(out: &mut Vec<Span>, span: Span, quote: bool, muted: bool, cell: Option<Cell>) {
         if !span.text.is_empty() {
-            out.push(Span { quote, muted: span.muted || muted, ..span });
+            let bold = span.bold || cell.is_some_and(|cell| cell.header);
+            out.push(Span { quote, muted: span.muted || muted, cell, bold, ..span });
         }
     }
 
-    for event in Parser::new_ext(source, Options::ENABLE_TASKLISTS) {
+    for event in Parser::new_ext(source, EXTENSIONS) {
         let (quoted, set_back) = (quote_depth > 0, quote_depth > 0 || task_done);
+        let cell = table.as_ref().map(Table::cell);
         macro_rules! push {
             ($span:expr) => {
-                add(&mut out, $span, quoted, set_back)
+                add(&mut out, $span, quoted, set_back, cell)
             };
         }
         match event {
@@ -98,6 +155,15 @@ pub fn parse(source: &str) -> Vec<Span> {
                 Tag::Item => {
                     let indent = "    ".repeat(list_depth.saturating_sub(1));
                     push!(plain(&format!("{indent}\u{2022} "), false, false, false, 0, None));
+                }
+                Tag::Table(aligns) => {
+                    table = Some(Table { id: tables, aligns, row: 0, column: 0, header: false });
+                    tables += 1;
+                }
+                Tag::TableHead => {
+                    if let Some(table) = &mut table {
+                        table.header = true;
+                    }
                 }
                 _ => {}
             },
@@ -128,6 +194,7 @@ pub fn parse(source: &str) -> Vec<Span> {
                                 syntax,
                                 quote: false,
                                 muted: false,
+                                cell: None,
                             });
                         }
                     }
@@ -143,6 +210,18 @@ pub fn parse(source: &str) -> Vec<Span> {
                     push!(plain("\n", false, false, false, 0, None));
                 }
                 TagEnd::Paragraph => push!(plain("\n\n", false, false, false, 0, None)),
+                TagEnd::TableCell => {
+                    if let Some(table) = &mut table {
+                        table.column += 1;
+                    }
+                }
+                // The header holds its cells directly, without a row of its own.
+                TagEnd::TableHead | TagEnd::TableRow => {
+                    if let Some(table) = &mut table {
+                        (table.row, table.column, table.header) = (table.row + 1, 0, false);
+                    }
+                }
+                TagEnd::Table => table = None,
                 _ => {}
             },
             Event::Text(text) => match &mut code_block {
@@ -274,7 +353,7 @@ fn url_end(text: &str, start: usize) -> usize {
 /// Checked against the raw events (not our span model) so block constructs the
 /// spans flatten away are still caught.
 pub fn is_simple(source: &str) -> bool {
-    for event in Parser::new(source.trim()) {
+    for event in Parser::new_ext(source.trim(), EXTENSIONS) {
         match event {
             Event::Start(Tag::Paragraph | Tag::Emphasis | Tag::Strong)
             | Event::End(TagEnd::Paragraph | TagEnd::Emphasis | TagEnd::Strong)
@@ -321,6 +400,28 @@ fn heading_level(level: HeadingLevel) -> u8 {
 
 /// Drops leading/trailing whitespace-only spans so the block never starts or
 /// ends with blank lines.
+/// `spans` with each table written out as rows of text — cells separated by
+/// `" | "`, a row to a line — for a renderer that draws spans as they come and
+/// has no grid. Without it a table's cells would run together into one word.
+pub fn flatten_tables(spans: Vec<Span>) -> Vec<Span> {
+    let mut out = Vec::with_capacity(spans.len());
+    let mut last: Option<Cell> = None;
+    for span in spans {
+        let gap = match (last, span.cell) {
+            (Some(was), Some(is)) if was.table == is.table && was.row == is.row && was.column != is.column => " | ",
+            (Some(was), Some(is)) if was.table == is.table && was.row != is.row => "\n",
+            (Some(_), _) => "\n\n",
+            _ => "",
+        };
+        if !gap.is_empty() {
+            out.push(Span { text: gap.to_owned(), bold: false, link: false, url: None, cell: None, ..span.clone() });
+        }
+        last = span.cell;
+        out.push(Span { cell: None, ..span });
+    }
+    out
+}
+
 fn trim_blank_edges(spans: &mut Vec<Span>) {
     while spans.first().is_some_and(|s| s.text.trim().is_empty()) {
         spans.remove(0);
@@ -336,6 +437,41 @@ mod tests {
 
     fn text_of(spans: &[Span]) -> String {
         spans.iter().map(|s| s.text.as_str()).collect()
+    }
+
+    #[test]
+    fn a_tables_cells_say_where_they_sit() {
+        let spans = parse("Plan:\n\n| Day | Where |\n|---|:---:|\n| Fri | **Alfama** |\n| Sat | Belém |\n\nAfter.");
+        let cells: Vec<(&str, u16, u16, bool)> = spans
+            .iter()
+            .filter_map(|s| s.cell.map(|c| (s.text.as_str(), c.row, c.column, c.header)))
+            .collect();
+        assert_eq!(
+            cells,
+            [
+                ("Day", 0, 0, true),
+                ("Where", 0, 1, true),
+                ("Fri", 1, 0, false),
+                ("Alfama", 1, 1, false),
+                ("Sat", 2, 0, false),
+                ("Belém", 2, 1, false),
+            ]
+        );
+        // The header is bold, the column's alignment comes from its delimiter,
+        // and what's around the table isn't in it.
+        assert!(spans.iter().filter(|s| s.cell.is_some_and(|c| c.header)).all(|s| s.bold));
+        assert!(spans.iter().filter(|s| s.cell.is_some_and(|c| c.column == 1)).all(|s| s.cell.unwrap().align == CellAlign::Center));
+        assert_eq!(spans.first().unwrap().text, "Plan:");
+        assert_eq!(spans.last().unwrap().text, "After.");
+        assert!(spans.first().unwrap().cell.is_none() && spans.last().unwrap().cell.is_none());
+        assert!(!is_simple("| a | b |\n|---|---|\n| 1 | 2 |"), "a table isn't centred like a paragraph");
+    }
+
+    #[test]
+    fn a_table_flattens_to_rows_of_text() {
+        let spans = flatten_tables(parse("| a | b |\n|---|---|\n| 1 | 2 |\n\nAfter."));
+        assert_eq!(text_of(&spans), "a | b\n1 | 2\n\nAfter.");
+        assert!(spans.iter().all(|s| s.cell.is_none()));
     }
 
     #[test]

@@ -341,10 +341,11 @@ impl From<markdown::Span> for MarkdownSpan {
     }
 }
 
-/// Parse note text into styled spans for rendering.
+/// Parse note text into styled spans for rendering. A table arrives as rows
+/// of text, its cells separated by `" | "` — the spans carry no grid.
 #[uniffi::export]
 pub fn parse_markdown(source: String) -> Vec<MarkdownSpan> {
-    markdown::parse(&source).into_iter().map(MarkdownSpan::from).collect()
+    markdown::flatten_tables(markdown::parse(&source)).into_iter().map(MarkdownSpan::from).collect()
 }
 
 #[cfg(test)]

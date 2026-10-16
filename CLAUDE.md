@@ -153,6 +153,15 @@ clicking the editor at the same point: the editor shows the source, with its
 markers and body-size headings, so the same point is a different line further
 down a note — and on a scrolled card, a paragraph that wasn't on screen.
 
+**A table is laid out as a grid, not as text.** A cosmic-text buffer has one
+wrap width and only uniform tab stops, so cells can't line up in it. A card's
+text is laid out by `text_raster::lay_out` as blocks stacked a blank line apart
+— each stretch between tables in one buffer, each table cell in its own — and
+the measuring, the bitmap and the live runs all take their places from it. The
+parser marks a cell's spans with where it sits (`markdown::Cell`); the iOS
+bindings, which draw spans as text, get them back as rows (`flatten_tables`).
+The grid's rules are drawn like the quote bars: before the clip, by arithmetic.
+
 ## Drawing inside a clip
 
 **A mesh filled inside `frame.with_clip` is painted over by the parent's own
