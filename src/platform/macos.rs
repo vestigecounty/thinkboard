@@ -9,6 +9,7 @@
 //! any Space — including fullscreen ones — and take key input without
 //! activating the app (so no Space switch happens).
 
+use std::cell::RefCell;
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicI32, Ordering};
@@ -24,7 +25,8 @@ use objc2_app_kit::{
     NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
     NSWorkspaceActiveSpaceDidChangeNotification,
 };
-use objc2_foundation::NSNotification;
+use objc2::rc::Allocated;
+use objc2_foundation::{NSNotification, NSRect, NSString};
 
 /// `kCGScreenSaverWindowLevel`: reliably above fullscreen apps.
 const OVERLAY_LEVEL: isize = 1000;
@@ -71,6 +73,212 @@ pub fn set_overlay_opaque(opaque: bool) {
             let _: () = msg_send![&*window, setBackgroundColor: &*background];
         }
     }
+}
+
+// ---------------------------------------------------------------------------
+// A picture under the overlay: a window of our own just beneath it
+//
+// A see-through overlay is composited over every window under it, every frame,
+// and those windows count as visible, so their apps keep drawing; over a busy
+// desktop a ProMotion display drops to 60 Hz. An opaque window holding a
+// picture covers them, so the board above is blended over that and nothing
+// else. The wallpaper is any app's to read (`desktopImageURLForScreen:`), where
+// the windows on screen would take the Screen Recording permission.
+//
+// **The wallpaper is read once per launch**, from the Space the app started
+// on. Each Space can have its own, and following them meant reading — and on a
+// Space not seen yet, blurring — at the moment of summoning, which is the one
+// moment that has to be instant. Every picture is prepared once, in the
+// background, as soon as it's chosen.
+// ---------------------------------------------------------------------------
+
+use crate::platform::BackdropPicture;
+
+/// The picture window under the overlay, made on first use, and what it's
+/// showing. AppKit objects, so the main thread's.
+struct PictureWindow {
+    window: Retained<AnyObject>,
+    layer: Retained<AnyObject>,
+    showing: Option<BackdropPicture>,
+}
+
+/// A picture as PNG, filled in by a background thread — `None` inside if it
+/// couldn't be read, and the window shows black under the board's dim.
+type Prepared = std::sync::Arc<OnceLock<Option<Vec<u8>>>>;
+
+/// The picture chosen, and every one prepared this launch.
+type Pictures = (Option<BackdropPicture>, Vec<(BackdropPicture, Prepared)>);
+
+thread_local! {
+    static PICTURE_WINDOW: RefCell<Option<PictureWindow>> = const { RefCell::new(None) };
+    static PICTURES: RefCell<Pictures> = const { RefCell::new((None, Vec::new())) };
+}
+
+/// `NSWindowBelow`, for `orderWindow:relativeTo:`.
+const ORDER_BELOW: isize = -1;
+/// `NSWindowStyleMaskNonactivatingPanel`, on a borderless panel: like the
+/// overlay, it has to be admitted onto any Space without activating anything.
+const NONACTIVATING_PANEL: usize = 1 << 7;
+/// `NSBackingStoreBuffered`.
+const BUFFERED: usize = 2;
+
+pub const SUPPORTS_BACKDROP_PICTURE: bool = true;
+
+pub fn set_backdrop_picture(picture: BackdropPicture) {
+    let _ = prepared(&picture);
+    PICTURES.with(|pictures| pictures.borrow_mut().0 = Some(picture));
+}
+
+pub fn show_backdrop_picture(alpha: f32) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    PICTURE_WINDOW.with(|slot| {
+        let mut slot = slot.borrow_mut();
+        if alpha <= 0.0 {
+            if let Some(picture) = &*slot {
+                let _: () = unsafe { msg_send![&*picture.window, orderOut: Option::<&AnyObject>::None] };
+            }
+            return;
+        }
+        let Some(chosen) = PICTURES.with(|pictures| pictures.borrow().0.clone()) else {
+            return;
+        };
+        let Some(overlay) = NSApplication::sharedApplication(mtm).windows().into_iter().find(is_our_window) else {
+            return;
+        };
+        let frame = overlay.frame();
+        let window = slot.get_or_insert_with(|| make_picture_window(frame));
+        if window.showing.as_ref() != Some(&chosen) {
+            // Normally long done: preparing starts the moment it's chosen.
+            // Only a summon in the first moments after that waits for it.
+            if let Some(png) = prepared(&chosen).wait() {
+                unsafe {
+                    let data: Retained<AnyObject> =
+                        msg_send![class!(NSData), dataWithBytes: png.as_ptr().cast::<c_void>(), length: png.len()];
+                    let image: Allocated<AnyObject> = msg_send![class!(NSImage), alloc];
+                    let image: Option<Retained<AnyObject>> = msg_send![image, initWithData: &*data];
+                    if let Some(image) = image {
+                        let _: () = msg_send![&*window.layer, setContents: &*image];
+                    }
+                }
+            }
+            window.showing = Some(chosen);
+        }
+        let number: isize = unsafe { msg_send![&*overlay, windowNumber] };
+        unsafe {
+            let _: () = msg_send![&*window.window, setFrame: frame, display: false];
+            let _: () = msg_send![&*window.window, setAlphaValue: f64::from(alpha)];
+            let _: () = msg_send![&*window.window, orderWindow: ORDER_BELOW, relativeTo: number];
+        }
+    });
+}
+
+/// `picture`, prepared or being prepared — started now, in the background, if
+/// this is the first time it's asked for. Main thread, where the wallpaper's
+/// file is looked up.
+fn prepared(picture: &BackdropPicture) -> Prepared {
+    PICTURES.with(|pictures| {
+        let mut pictures = pictures.borrow_mut();
+        if let Some((_, prepared)) = pictures.1.iter().find(|(p, _)| p == picture) {
+            return prepared.clone();
+        }
+        let prepared = Prepared::default();
+        pictures.1.push((picture.clone(), prepared.clone()));
+        // The wallpaper heavily — it's there for the colour and the light, not
+        // the picture — and a picture of your own lightly, so it's still the
+        // picture you chose.
+        let (source, size, sigma) = match picture {
+            BackdropPicture::Wallpaper => (main_screen_wallpaper(), 640, 12.0),
+            BackdropPicture::File(path) => (Some(path.to_string_lossy().into_owned()), 1280, 2.5),
+        };
+        let filling = prepared.clone();
+        std::thread::spawn(move || {
+            let _ = filling.set(source.as_deref().and_then(|path| blur_picture(path, size, sigma)));
+        });
+        prepared
+    })
+}
+
+/// The wallpaper file of the main screen's current Space.
+fn main_screen_wallpaper() -> Option<String> {
+    let mtm = MainThreadMarker::new()?;
+    let screen = NSScreen::mainScreen(mtm).or_else(|| NSScreen::screens(mtm).firstObject())?;
+    wallpaper_path(&screen)
+}
+
+/// A borderless panel holding the picture: opaque, at the overlay's level,
+/// taking no clicks, following it onto every Space.
+fn make_picture_window(frame: NSRect) -> PictureWindow {
+    unsafe {
+        let window: Allocated<AnyObject> = msg_send![class!(NSPanel), alloc];
+        let window: Retained<AnyObject> = msg_send![
+            window,
+            initWithContentRect: frame,
+            styleMask: NONACTIVATING_PANEL,
+            backing: BUFFERED,
+            defer: false
+        ];
+        let _: () = msg_send![&*window, setReleasedWhenClosed: false];
+        // A panel hides when its app stops being active, by default — which
+        // is every time the overlay hands the keyboard back.
+        let _: () = msg_send![&*window, setHidesOnDeactivate: false];
+        let _: () = msg_send![&*window, setLevel: OVERLAY_LEVEL];
+        let _: () = msg_send![&*window, setIgnoresMouseEvents: true];
+        let _: () = msg_send![&*window, setHasShadow: false];
+        let behavior = NSWindowCollectionBehavior::MoveToActiveSpace
+            | NSWindowCollectionBehavior::FullScreenAuxiliary
+            | NSWindowCollectionBehavior::IgnoresCycle;
+        let _: () = msg_send![&*window, setCollectionBehavior: behavior];
+        let _: () = msg_send![&*window, setOpaque: true];
+        let black: Retained<AnyObject> = msg_send![class!(NSColor), blackColor];
+        let _: () = msg_send![&*window, setBackgroundColor: &*black];
+        let view: Retained<AnyObject> = msg_send![&*window, contentView];
+        let _: () = msg_send![&*view, setWantsLayer: true];
+        let layer: Retained<AnyObject> = msg_send![&*view, layer];
+        // Filling the screen at its own proportions, as the desktop shows it.
+        let _: () = msg_send![&*layer, setContentsGravity: &*NSString::from_str("resizeAspectFill")];
+        PictureWindow { window, layer, showing: None }
+    }
+}
+
+/// The wallpaper file of `screen`'s current Space.
+fn wallpaper_path(screen: &AnyObject) -> Option<String> {
+    unsafe {
+        let workspace = NSWorkspace::sharedWorkspace();
+        let url: Option<Retained<AnyObject>> = msg_send![&*workspace, desktopImageURLForScreen: screen];
+        let path: Option<Retained<NSString>> = msg_send![&*url?, path];
+        Some(path?.to_string())
+    }
+}
+
+/// The picture at `path`, scaled to fit `size` and blurred by `sigma`, as PNG.
+///
+/// `sips` decodes whatever format it's in (HEIC, for a dynamic wallpaper) at
+/// the size asked for, which is all a blur needs: the layer scales it back up,
+/// and a blur survives that unharmed. `None` if it can't be read.
+fn blur_picture(path: &str, size: u32, sigma: f32) -> Option<Vec<u8>> {
+    use std::hash::{Hash, Hasher};
+    let mut hasher = std::collections::hash_map::DefaultHasher::new();
+    path.hash(&mut hasher);
+    let png = std::env::temp_dir().join(format!("thinkboard-picture-{}-{:x}.png", std::process::id(), hasher.finish()));
+    let converted = std::process::Command::new("sips")
+        .args(["-s", "format", "png", "-Z", &size.to_string(), path, "--out"])
+        .arg(&png)
+        .output()
+        .is_ok_and(|output| output.status.success());
+    let decoded = converted.then(|| ::image::open(&png).ok()).flatten();
+    let _ = std::fs::remove_file(&png);
+    let Some(decoded) = decoded else {
+        eprintln!("overlay background: couldn't read {path}");
+        return None;
+    };
+    let blurred = ::image::imageops::blur(&decoded.to_rgba8(), sigma);
+    let mut bytes = Vec::new();
+    ::image::DynamicImage::ImageRgba8(blurred)
+        .write_to(&mut std::io::Cursor::new(&mut bytes), ::image::ImageFormat::Png)
+        .ok()?;
+    Some(bytes)
 }
 
 /// The main screen's top safe-area inset (px) — the MacBook notch / menu-bar

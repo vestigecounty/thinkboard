@@ -13,7 +13,7 @@ use iced::widget::{
 };
 use iced::{Alignment, Color, Element, Fill, Font, Padding, Task};
 
-use crate::config::{Config, LinkStyle};
+use crate::config::{Config, LinkStyle, OverlayBackdrop};
 
 use super::{App, Message};
 
@@ -35,7 +35,8 @@ pub(crate) enum Field {
     // cross-platform so a hand-set value is honored if copied between machines.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     SummonGesture,
-    OverlayTransparent,
+    OverlayBackdrop,
+    OverlayImage,
     Windowed,
     // macOS-only menu-bar icon appearance; plumbing stays cross-platform so a
     // hand-set value is honored if a config is copied between machines.
@@ -216,6 +217,23 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         "Let a node be resized smaller than its text; the overflow scrolls via a drag bar (editing re-grows it).",
     ));
     items.push(setting(
+        "Overlay background",
+        choices(
+            Field::OverlayBackdrop,
+            OverlayBackdrop::offered().iter().map(|b| b.label().to_owned()).collect(),
+            OverlayBackdrop::of(c).label().to_owned(),
+        ),
+        OVERLAY_BACKGROUND,
+    ));
+    // The picture, once there's a choice to be made about it.
+    if OverlayBackdrop::of(c) == OverlayBackdrop::Image {
+        items.push(setting(
+            "Overlay image",
+            path_line(Field::OverlayImage, app.draft(Field::OverlayImage)),
+            "The picture behind the board — any image file. Right-click an image card and choose \"Use as overlay background\" to use that one.",
+        ));
+    }
+    items.push(setting(
         "Overlay dim",
         feel_slider(Field::OverlayDim, c.overlay_dim, 1.0),
         "How much the overlay dims the desktop (0 none, 1 solid black).",
@@ -278,11 +296,6 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
     items.push(advanced_header(app.settings_advanced_open, font));
     if app.settings_advanced_open {
         items.push(header("Rendering"));
-        items.push(setting(
-            "Transparent overlay",
-            toggle(Field::OverlayTransparent, c.overlay_transparent),
-            TRANSPARENT_OVERLAY,
-        ));
         items.push(setting(
             "Rasterize text",
             toggle(Field::RasterizeText, c.rasterize_text),
@@ -466,13 +479,13 @@ fn advanced_header(open: bool, font: Font) -> Element<'static, Message> {
     .into()
 }
 
-/// What the transparent-overlay row says. See-through is the Dashboard look,
-/// and it costs: the board is blended over every window under it, every frame,
-/// which on a ProMotion display over a busy desktop drops it to 60 Hz.
-const TRANSPARENT_OVERLAY: &str = if crate::platform::LIVE_TRANSPARENCY {
-    "Desktop shows through the board. Turn off if moving the board stutters over other windows."
+/// What the overlay-background row says. The live desktop is the Dashboard
+/// look, and it costs: the board is blended over every window under it, every
+/// frame, which on a ProMotion display over a busy desktop drops it to 60 Hz.
+const OVERLAY_BACKGROUND: &str = if crate::platform::SUPPORTS_BACKDROP_PICTURE {
+    "What's behind the board. Transparent shows the desktop live, and can stutter over busy windows; the others cover them. The wallpaper is read when the app starts. Overlay only."
 } else {
-    "Desktop shows through the board. Turn off if it renders black, or stutters over other windows. Restart to apply."
+    "What's behind the board. Theme colour if transparent renders black, or stutters over other windows. Restart to apply. Overlay only."
 };
 
 /// A settings row: `label ........ editor`, with a secondary description below
@@ -727,6 +740,7 @@ pub(crate) fn config_text(config: &Config, field: Field) -> String {
         Field::Font => config.font.clone(),
         Field::SummonHotkey => config.summon_hotkey.clone(),
         Field::ThemeCss => config.theme_css.clone().unwrap_or_default(),
+        Field::OverlayImage => config.overlay_image.clone(),
         Field::AiUrl => config.ai_url.clone(),
         Field::AiModel => config.ai_model.clone(),
         Field::AiApiKey => config.ai_key().to_owned(),
@@ -773,7 +787,12 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
         (Field::DoubleClickAddsNote, Value::Bool(b)) => config.double_click_adds_note = b,
         (Field::PersistAcrossSpaces, Value::Bool(b)) => config.persist_across_spaces = b,
         (Field::SummonGesture, Value::Bool(b)) => config.summon_gesture = b,
-        (Field::OverlayTransparent, Value::Bool(b)) => config.overlay_transparent = b,
+        (Field::OverlayImage, Value::Text(s)) => config.overlay_image = s.trim().to_owned(),
+        (Field::OverlayBackdrop, Value::Text(label)) => {
+            if let Some(backdrop) = OverlayBackdrop::offered().into_iter().find(|b| b.label() == label) {
+                backdrop.set(config);
+            }
+        }
         (Field::Windowed, Value::Bool(b)) => config.windowed = b,
         (Field::TrayIconMonochrome, Value::Bool(b)) => config.tray_icon_monochrome = b,
         (Field::CenterNodeText, Value::Bool(b)) => config.center_node_text = b,
@@ -832,7 +851,7 @@ impl App {
         use Field::*;
         self.settings_drafts.clear();
         for field in [
-            Canvas, SummonHotkey, ThemeCss, AiUrl, AiModel, AiApiKey, MinZoom, MaxZoom,
+            Canvas, SummonHotkey, ThemeCss, OverlayImage, AiUrl, AiModel, AiApiKey, MinZoom, MaxZoom,
             ZoomSmoothing, WheelZoomStep, PinchZoomStep, AutosaveDebounceMs, ClusterZoom,
             AutoZoomTrigger, AutoZoomLevel, NewNodeMinWidth, NewNodeMinHeight, MaxNodeWidth,
             LayoutRankGap, LayoutNodeGap, MaxAiNodes,
@@ -943,8 +962,8 @@ impl App {
     fn after_setting_change(&mut self, field: Field) -> Task<Message> {
         // Where the overlay can change in place, it does; elsewhere the row
         // says it waits for a restart.
-        if field == Field::OverlayTransparent && self.overlay {
-            crate::platform::set_overlay_opaque(!self.config.overlay_transparent);
+        if matches!(field, Field::OverlayBackdrop | Field::OverlayImage) && self.overlay {
+            self.apply_backdrop();
         }
         self.cache.clear();
         // Keys are per endpoint, so changing the endpoint changes which one the
@@ -1025,7 +1044,6 @@ impl App {
             Field::PersistAcrossSpaces => c.persist_across_spaces,
             Field::SummonGesture => c.summon_gesture,
             Field::CenterNodeText => c.center_node_text,
-            Field::OverlayTransparent => c.overlay_transparent,
             Field::TrayIconMonochrome => c.tray_icon_monochrome,
             Field::RasterizeText => c.rasterize_text,
             Field::NodeScrollbars => c.node_scrollbars,
@@ -1035,15 +1053,18 @@ impl App {
     }
 
     /// Applies a resolved "Browse…" dialog result to its field.
-    pub(super) fn settings_browsed(&mut self, field: Field, path: Option<std::path::PathBuf>) {
+    pub(super) fn settings_browsed(&mut self, field: Field, path: Option<std::path::PathBuf>) -> Task<Message> {
         let Some(path) = path else {
-            return;
+            return Task::none();
         };
         let text = path.to_string_lossy().into_owned();
         self.settings_drafts.insert(field, text.clone());
         apply(&mut self.config, field, Value::Text(text));
         self.config.sanitize();
         self.persist_config();
+        // As a typed path is, once committed: a stylesheet chosen here used
+        // to wait for a restart to be applied.
+        self.after_setting_change(field)
     }
 
     /// Closes the settings window's state (its drafts and the Advanced
@@ -1068,8 +1089,9 @@ mod tests {
     fn apply_writes_each_value_kind() {
         let mut c = Config::default();
 
-        apply(&mut c, Field::OverlayTransparent, Value::Bool(false));
-        assert!(!c.overlay_transparent);
+        apply(&mut c, Field::OverlayBackdrop, Value::Text("Theme colour".to_owned()));
+        assert_eq!(OverlayBackdrop::of(&c), OverlayBackdrop::Theme);
+        assert!(!c.overlay_transparent, "kept in step, for an older build");
 
         apply(&mut c, Field::OverlayDim, Value::Num(0.25));
         assert_eq!(c.overlay_dim, 0.25);
@@ -1118,6 +1140,6 @@ mod tests {
         assert!(is_number(Field::MinZoom));
         assert!(is_number(Field::MaxAiNodes));
         assert!(!is_number(Field::AiModel));
-        assert!(!is_number(Field::OverlayTransparent));
+        assert!(!is_number(Field::OverlayBackdrop));
     }
 }

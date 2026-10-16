@@ -55,6 +55,34 @@ pub fn set_overlay_opaque(opaque: bool) {
     backend::set_overlay_opaque(opaque);
 }
 
+/// Whether this platform can put a picture under the overlay
+/// (`config::OverlayBackdrop::Wallpaper` / `Image`): a window of its own,
+/// placed under the board's. macOS, for now.
+pub const SUPPORTS_BACKDROP_PICTURE: bool = backend::SUPPORTS_BACKDROP_PICTURE;
+
+/// What the picture under the overlay is of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum BackdropPicture {
+    /// The desktop's wallpaper — one per launch, from the Space the app
+    /// started on.
+    Wallpaper,
+    /// An image file of your own.
+    File(std::path::PathBuf),
+}
+
+/// Chooses the picture under the overlay and starts preparing it in the
+/// background, once per picture, so the summon that shows it doesn't wait.
+/// Main thread only; a no-op where [`SUPPORTS_BACKDROP_PICTURE`] is false.
+pub fn set_backdrop_picture(picture: BackdropPicture) {
+    backend::set_backdrop_picture(picture);
+}
+
+/// Shows the chosen picture under the overlay at `alpha` — faded with the
+/// board as it comes and goes — or puts it away at 0. Main thread only.
+pub fn show_backdrop_picture(alpha: f32) {
+    backend::show_backdrop_picture(alpha);
+}
+
 /// The system UI font family for live and rasterized text — the fallback
 /// family when a theme names none. Its faces come from [`UI_FONT_FILES`].
 #[cfg(target_os = "macos")]

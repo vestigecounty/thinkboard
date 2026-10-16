@@ -41,6 +41,9 @@ pub(crate) enum CommandId {
     GroupSelection,
     ToggleAutoLayout,
     ToggleSetting(Field),
+    /// Steps the overlay's background to the next one offered — a choice of
+    /// three, which a toggle can't be.
+    NextOverlayBackdrop,
 }
 
 impl CommandId {
@@ -79,6 +82,7 @@ impl CommandId {
             CommandId::ToggleSetting(
                 Field::DismissOnBackgroundClick | Field::PersistAcrossSpaces | Field::SummonGesture,
             ) if !app.overlay => Some("Overlay only"),
+            CommandId::NextOverlayBackdrop if !app.overlay => Some("Overlay only"),
             CommandId::ToggleSetting(Field::DoubleClickAddsNote)
                 if app.config.click_dismisses(app.overlay) =>
             {
@@ -137,7 +141,7 @@ static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
         cmd(ToggleSetting(Field::CenterNodeText), "Toggle center node text", "setting", ""),
         cmd(ToggleSetting(Field::NodeScrollbars), "Toggle node scrollbars", "setting scroll resize", ""),
         cmd(ToggleSetting(Field::RasterizeText), "Toggle rasterize text", "setting", ""),
-        cmd(ToggleSetting(Field::OverlayTransparent), "Toggle transparent overlay", "setting", ""),
+        cmd(NextOverlayBackdrop, "Change overlay background", "setting transparent see-through wallpaper blur opaque", ""),
         cmd(ToggleSetting(Field::AiThinking), "Toggle AI thinking", "setting reasoning", ""),
         cmd(
             ToggleSetting(Field::DismissOnBackgroundClick),

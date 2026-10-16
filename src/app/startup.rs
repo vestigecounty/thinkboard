@@ -286,7 +286,7 @@ pub(super) fn window_settings(config: &crate::config::Config, windowed: bool) ->
         // the setting then does as the overlay comes up — so turning it back
         // on doesn't need a window that was never made able to be.
         settings.transparent = crate::platform::OVERLAY_TRANSPARENT
-            && (crate::platform::LIVE_TRANSPARENCY || config.overlay_transparent);
+            && (crate::platform::LIVE_TRANSPARENCY || crate::config::OverlayBackdrop::shown(config).see_through());
         settings.decorations = false;
         settings.resizable = false;
         settings.level = window::Level::AlwaysOnTop;
@@ -382,7 +382,7 @@ pub(super) fn style(app: &App, theme: &Theme) -> iced::theme::Style {
     use iced::theme::Base;
 
     let mut style = theme.base();
-    if app.overlay && crate::platform::OVERLAY_TRANSPARENT && app.config.overlay_transparent {
+    if app.overlay && crate::platform::OVERLAY_TRANSPARENT && crate::config::OverlayBackdrop::shown(&app.config).see_through() {
         // Let the desktop show through; the canvas paints the dim itself.
         // Where the platform can't composite it, keep the opaque themed
         // background so the overlay reads as a dark canvas, not a black void.

@@ -846,9 +846,20 @@ shot that lied:
   ProMotion display over a busy desktop it alternates 60 and 120 Hz, while the
   same board over an empty Space, opaque, or in a window holds 120. A frame
   costs ~5 ms either way, and a `CADisplayLink` frame clock changed nothing —
-  it isn't ours to optimize. Transparency is the window's opaque flag, which
-  `platform::set_overlay_opaque` switches live, so the setting takes effect
-  without a restart there (the window is always made see-through-capable).
+  it isn't ours to optimize. So the overlay's background is a choice
+  (`config::OverlayBackdrop`): transparent; the theme's colour, which is the
+  window's opaque flag (`platform::set_overlay_opaque`, switched live — the
+  window is always made see-through-capable); or a **picture** — the desktop's
+  wallpaper, or an image of your own (from Settings, or an image card's "Use
+  as overlay background") — in an opaque panel of our own under the board's,
+  covering everything else. The wallpaper is any app's to read
+  (`desktopImageURLForScreen:`); the windows on screen would take the Screen
+  Recording permission. Every picture is prepared **once, in the background,
+  as soon as it's chosen**, and the wallpaper is read once per launch, from the
+  Space the app started on: following each Space's own meant reading (and on a
+  new Space, blurring) at the moment of summoning, and the lag that added was
+  worse than a stale picture. macOS's live behind-window blur was tried too:
+  no faster than the desktop, a second slower to summon, and greyed colours.
 - **Linux** — Wayland can't hide a window in place, so hiding *closes* the
   window and summoning opens a fresh one. Tray uses `ksni` (pure-Rust D-Bus, no
   GTK) so the zig cross-build works; the dialogs use the xdg-portal backend for

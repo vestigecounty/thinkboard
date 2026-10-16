@@ -41,3 +41,12 @@ pub const LIVE_TRANSPARENCY: bool = false;
 
 /// Nothing to switch (see [`LIVE_TRANSPARENCY`]).
 pub fn set_overlay_opaque(_opaque: bool) {}
+
+/// No window of our own under the overlay here.
+pub const SUPPORTS_BACKDROP_PICTURE: bool = false;
+
+/// Nothing to choose (see [`SUPPORTS_BACKDROP_PICTURE`]).
+pub fn set_backdrop_picture(_picture: super::BackdropPicture) {}
+
+/// Nothing to show (see [`SUPPORTS_BACKDROP_PICTURE`]).
+pub fn show_backdrop_picture(_alpha: f32) {}

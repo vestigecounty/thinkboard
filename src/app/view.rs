@@ -696,6 +696,18 @@ impl App {
                     .into(),
             );
         }
+        // An image card can be what's behind the overlay.
+        if self.selected_image_file().is_some() {
+            items.push(sep().into());
+            items.push(
+                button(text("Use as overlay background").size(14))
+                    .width(Fill)
+                    .on_press(Message::UseAsOverlayBackground)
+                    .padding([6, 12])
+                    .style(item_style)
+                    .into(),
+            );
+        }
         items.push(sep().into());
         // "Distribute" (Mermaid-style auto-layout) only applies to more than
         // one node.
@@ -956,15 +968,16 @@ impl App {
             ContextMenuKind::Canvas { .. } => (200.0, column(None, 5, 4)),
             ContextMenuKind::Node => {
                 // Counted off the same conditions `node_menu` builds from:
-                // under the colour row (24px swatches + [6,12] padding), Ask AI
-                // and Group each bring the rule above them, a rule always
-                // precedes Delete, and a multi-selection's layout row brings one
-                // more.
+                // under the colour row (24px swatches + [6,12] padding), Ask AI,
+                // Group and the overlay background each bring the rule above
+                // them, a rule always precedes Delete, and a multi-selection's
+                // layout row brings one more.
                 let ai = usize::from(self.config.ai_enabled());
                 let group = usize::from(self.groupable_selection());
+                let background = usize::from(self.selected_image_file().is_some());
                 let layout = usize::from(self.selected.len() > 1);
-                let rows = ai + group + layout + 1;
-                let rules = ai + group + layout + 1;
+                let rows = ai + group + background + layout + 1;
+                let rules = ai + group + background + layout + 1;
                 (self.node_menu_width(), column(Some(36.0), rows, rules))
             }
             // The colour row, then a label field, the arrow chips and Delete —

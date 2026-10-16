@@ -44,7 +44,18 @@ pub struct Config {
     /// Whether the overlay is transparent (desktop shows through). Default on,
     /// but a GPU/compositor that can't composite alpha (many VMs, software
     /// GLES) renders it black — set false there for an opaque themed overlay.
+    ///
+    /// Superseded by `overlay_backdrop`, which decides from this only when it's
+    /// empty (a config from before it); kept in step with it on every change,
+    /// so an older build reading the file still gets the right window.
     pub overlay_transparent: bool,
+    /// What's behind the overlay: an [`OverlayBackdrop`] by name — the live
+    /// desktop through a transparent board, the theme's colour, the desktop's
+    /// wallpaper, or a picture of your own.
+    pub overlay_backdrop: String,
+    /// The picture behind the overlay when [`OverlayBackdrop::Image`] is
+    /// chosen: a file path, set from Settings or from an image card's menu.
+    pub overlay_image: String,
     /// Run as an ordinary titled application window instead of the desktop
     /// overlay: no global summon hotkey, tray, or always-on-top click-through.
     /// The `--windowed` CLI flag forces this on regardless. Takes effect on the
@@ -225,6 +236,8 @@ impl Default for Config {
             double_click_adds_note: false,
             persist_across_spaces: false,
             overlay_transparent: true,
+            overlay_backdrop: String::new(),
+            overlay_image: String::new(),
             windowed: false,
             tray_icon_monochrome: false,
             summon_hotkey: "Pause".to_owned(),
@@ -343,6 +356,104 @@ impl LinkStyle {
     /// The style named in a config, ready to draw with.
     pub fn of(config: &Config) -> LinkStyle {
         LinkStyle::parse(&config.link_style)
+    }
+}
+
+/// What's behind the overlay.
+///
+/// A transparent board is composited over every window under it, every frame,
+/// and those windows count as visible, so their apps keep drawing: over a busy
+/// desktop, on a ProMotion display, it drops from 120 Hz to 60. The rest cover
+/// what's under it — the theme's colour in an opaque board, or a picture in a
+/// window of its own beneath a transparent one. The wallpaper is any app's to
+/// read, where the windows on the desktop would take Screen Recording.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverlayBackdrop {
+    /// The desktop itself, live, through a see-through board.
+    Transparent,
+    /// The theme's background colour, in an opaque board.
+    Theme,
+    /// The desktop's wallpaper, blurred, under the board.
+    Wallpaper,
+    /// A picture of your own (`Config::overlay_image`), under the board.
+    Image,
+}
+
+impl OverlayBackdrop {
+    /// What this platform offers, in the order the form does. A picture needs
+    /// a window of its own placed under the overlay, which only macOS does for
+    /// now.
+    pub fn offered() -> Vec<OverlayBackdrop> {
+        let pictures = crate::platform::SUPPORTS_BACKDROP_PICTURE;
+        [OverlayBackdrop::Transparent, OverlayBackdrop::Theme, OverlayBackdrop::Wallpaper, OverlayBackdrop::Image]
+            .into_iter()
+            .filter(|backdrop| pictures || !backdrop.is_picture())
+            .collect()
+    }
+
+    /// What the config file holds.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            OverlayBackdrop::Transparent => "transparent",
+            OverlayBackdrop::Theme => "theme",
+            OverlayBackdrop::Wallpaper => "wallpaper",
+            OverlayBackdrop::Image => "image",
+        }
+    }
+
+    /// What the settings form shows.
+    pub fn label(self) -> &'static str {
+        match self {
+            OverlayBackdrop::Transparent => "Transparent",
+            OverlayBackdrop::Theme => "Theme colour",
+            OverlayBackdrop::Wallpaper => "Desktop wallpaper",
+            OverlayBackdrop::Image => "Custom image",
+        }
+    }
+
+    /// Whether it's a picture, in a window of its own under the board.
+    pub fn is_picture(self) -> bool {
+        matches!(self, OverlayBackdrop::Wallpaper | OverlayBackdrop::Image)
+    }
+
+    /// Whether the board's own window is see-through: it is over the desktop,
+    /// and over a picture's window, which sits under it.
+    pub fn see_through(self) -> bool {
+        self != OverlayBackdrop::Theme
+    }
+
+    /// The backdrop a config names, as the form shows it. Empty — a config
+    /// from before there was a choice — is what its transparency toggle said;
+    /// a picture where there's no window for one is the live desktop.
+    pub fn of(config: &Config) -> OverlayBackdrop {
+        let named = OverlayBackdrop::offered()
+            .into_iter()
+            .find(|backdrop| backdrop.as_str().eq_ignore_ascii_case(config.overlay_backdrop.trim()));
+        named.unwrap_or(if config.overlay_transparent { OverlayBackdrop::Transparent } else { OverlayBackdrop::Theme })
+    }
+
+    /// What's actually drawn: as [`OverlayBackdrop::of`], except that a custom
+    /// image with no picture chosen yet is the theme's colour rather than a
+    /// black window.
+    pub fn shown(config: &Config) -> OverlayBackdrop {
+        match OverlayBackdrop::of(config) {
+            OverlayBackdrop::Image if config.overlay_image.trim().is_empty() => OverlayBackdrop::Theme,
+            backdrop => backdrop,
+        }
+    }
+
+    /// The one after this among those offered, coming round again — what the
+    /// palette's "Change overlay background" steps to.
+    pub fn next(self) -> OverlayBackdrop {
+        let offered = OverlayBackdrop::offered();
+        let at = offered.iter().position(|backdrop| *backdrop == self).unwrap_or(0);
+        offered[(at + 1) % offered.len()]
+    }
+
+    /// Writes this into `config`, the transparency toggle with it.
+    pub fn set(self, config: &mut Config) {
+        config.overlay_backdrop = self.as_str().to_owned();
+        config.overlay_transparent = self.see_through();
     }
 }
 
@@ -905,6 +1016,41 @@ mod tests {
         for style in LinkStyle::ALL {
             assert_eq!(LinkStyle::parse(style.as_str()), style);
         }
+    }
+
+    #[test]
+    fn a_config_from_before_the_backdrop_choice_keeps_its_transparency() {
+        let mut c = Config { overlay_transparent: false, ..Config::default() };
+        assert_eq!(OverlayBackdrop::of(&c), OverlayBackdrop::Theme);
+        c.overlay_transparent = true;
+        assert_eq!(OverlayBackdrop::of(&c), OverlayBackdrop::Transparent);
+        // Stepped through from the palette, each comes once and then round.
+        let offered = OverlayBackdrop::offered();
+        let mut at = OverlayBackdrop::Transparent;
+        let stepped: Vec<_> = (0..offered.len()).map(|_| { at = at.next(); at }).collect();
+        assert_eq!(stepped.last(), Some(&OverlayBackdrop::Transparent));
+        assert!(offered.iter().all(|backdrop| stepped.contains(backdrop)), "{stepped:?}");
+        // Chosen, the name wins, and the toggle follows it for older builds.
+        for backdrop in OverlayBackdrop::offered() {
+            backdrop.set(&mut c);
+            assert_eq!(OverlayBackdrop::of(&c), backdrop);
+            assert_eq!(c.overlay_transparent, backdrop != OverlayBackdrop::Theme);
+        }
+    }
+
+    #[test]
+    fn a_custom_image_not_yet_chosen_is_the_theme_colour() {
+        // Picking "Custom image" before there's a picture shouldn't leave a
+        // black window behind the board.
+        if !crate::platform::SUPPORTS_BACKDROP_PICTURE {
+            return;
+        }
+        let mut c = Config::default();
+        OverlayBackdrop::Image.set(&mut c);
+        assert_eq!(OverlayBackdrop::of(&c), OverlayBackdrop::Image, "the form still says what was picked");
+        assert_eq!(OverlayBackdrop::shown(&c), OverlayBackdrop::Theme);
+        c.overlay_image = "/pictures/lisbon.jpg".to_owned();
+        assert_eq!(OverlayBackdrop::shown(&c), OverlayBackdrop::Image);
     }
 
     #[test]

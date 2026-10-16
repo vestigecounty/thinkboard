@@ -254,6 +254,8 @@ pub(crate) enum Message {
     /// Sets the selected nodes' color (a canvas value like "1" or "#4a90e2");
     /// `None` clears it back to default.
     SetNodeColor(Option<String>),
+    /// Makes the selected image card the overlay's background.
+    UseAsOverlayBackground,
     /// Asks the AI about the selected node(s) (tinting them the trigger color).
     AskAi,
     /// A streamed AI event for the response node with the given id.
@@ -975,6 +977,7 @@ impl App {
                 return self.paste_at(world);
             }
             Message::SetNodeColor(color) => self.set_node_color(color),
+            Message::UseAsOverlayBackground => self.use_as_overlay_background(),
             Message::GroupSelection => {
                 self.close_context_menu();
                 return self.group_selection();
@@ -1304,7 +1307,7 @@ impl App {
                 return open.discard();
             }
             Message::Settings(msg) => return self.apply_setting(msg),
-            Message::SettingsBrowsed(field, path) => self.settings_browsed(field, path),
+            Message::SettingsBrowsed(field, path) => return self.settings_browsed(field, path),
             Message::RecordHotkey => self.hotkey_recording = true,
             Message::HotkeyCaptured(key, physical, modifiers) => {
                 self.capture_hotkey(key, physical, modifiers);
@@ -1361,7 +1364,59 @@ impl App {
     /// a window that already exists.
     fn configure_overlay_window(&self) {
         platform::configure_overlay_window();
-        platform::set_overlay_opaque(!self.config.overlay_transparent);
+        self.apply_backdrop();
+    }
+
+    /// Puts the overlay's background (`config::OverlayBackdrop`) in place:
+    /// whether the board's window is see-through, and the picture under it —
+    /// prepared ahead of the summon that shows it.
+    pub(super) fn apply_backdrop(&self) {
+        let backdrop = config::OverlayBackdrop::shown(&self.config);
+        platform::set_overlay_opaque(!backdrop.see_through());
+        match backdrop {
+            config::OverlayBackdrop::Wallpaper => platform::set_backdrop_picture(platform::BackdropPicture::Wallpaper),
+            // Only a file that's there: the path is typed a key at a time,
+            // and each half-typed one would start a picture of its own. Until
+            // it names one, the last picture stays.
+            config::OverlayBackdrop::Image => {
+                let path = PathBuf::from(self.config.overlay_image.trim());
+                if path.is_file() {
+                    platform::set_backdrop_picture(platform::BackdropPicture::File(path));
+                }
+            }
+            config::OverlayBackdrop::Transparent | config::OverlayBackdrop::Theme => {}
+        }
+        self.sync_backdrop();
+    }
+
+    /// The image file behind the selected card, when "Use as overlay
+    /// background" can be offered for it: one image card, in the overlay, on a
+    /// platform with a window to put it in — and a file on disk, which an image
+    /// pasted onto the welcome board isn't.
+    pub(super) fn selected_image_file(&self) -> Option<PathBuf> {
+        if !self.overlay || !platform::SUPPORTS_BACKDROP_PICTURE {
+            return None;
+        }
+        let [index] = self.selected[..] else {
+            return None;
+        };
+        let node = self.nodes.get(index).filter(|node| node.node_kind() == NodeKind::Image)?;
+        let file = node.file.as_deref().filter(|file| !self.held_images.contains_key(*file))?;
+        let path = self.base_path.join(file);
+        path.is_file().then(|| std::fs::canonicalize(&path).unwrap_or(path))
+    }
+
+    /// Makes the selected image card the overlay's background.
+    fn use_as_overlay_background(&mut self) {
+        if let Some(path) = self.selected_image_file() {
+            self.config.overlay_image = path.to_string_lossy().into_owned();
+            config::OverlayBackdrop::Image.set(&mut self.config);
+            self.persist_config();
+            self.settings_drafts.insert(settings::Field::OverlayImage, self.config.overlay_image.clone());
+            self.apply_backdrop();
+        }
+        self.close_context_menu();
+        self.selected.clear();
     }
 
     // --- Camera and viewport ---
@@ -2005,6 +2060,10 @@ impl App {
             CommandId::ToggleSetting(field) => {
                 Message::Settings(settings::Msg::Toggle(field, !self.setting_bool(field)))
             }
+            CommandId::NextOverlayBackdrop => {
+                let next = config::OverlayBackdrop::of(&self.config).next();
+                Message::Settings(settings::Msg::Pick(settings::Field::OverlayBackdrop, next.label().to_owned()))
+            }
         };
         Task::done(message)
     }
@@ -2092,6 +2151,7 @@ impl App {
     fn hide_window(&mut self) -> Task<Message> {
         self.phase = Phase::Hidden;
         self.reveal = 0.0;
+        self.sync_backdrop();
         self.cache.clear();
         let Some(id) = self.main_window else {
             return Task::none();
@@ -2110,6 +2170,22 @@ impl App {
         {
             window::set_mode(id, window::Mode::Hidden)
         }
+    }
+
+    /// Fades the picture under the overlay with the board — in as it's
+    /// summoned, out as it goes, as the dim does — where the background is a
+    /// picture, and puts it away where it isn't.
+    fn sync_backdrop(&self) {
+        if !self.overlay {
+            return;
+        }
+        let shown = config::OverlayBackdrop::shown(&self.config).is_picture();
+        let alpha = match self.phase {
+            Phase::Hidden => 0.0,
+            _ if shown => camera::ease_out_cubic(self.reveal).clamp(0.0, 1.0),
+            _ => 0.0,
+        };
+        platform::show_backdrop_picture(alpha);
     }
 
     fn mark_dirty(&mut self) {
@@ -2147,6 +2223,7 @@ impl App {
                 } else {
                     self.reveal = t;
                 }
+                self.sync_backdrop();
                 self.cache.clear();
             }
             Phase::Exiting { started } => {
@@ -2160,6 +2237,7 @@ impl App {
                     };
                 }
                 self.reveal = 1.0 - t;
+                self.sync_backdrop();
                 self.cache.clear();
             }
             Phase::Running | Phase::Hidden => {}
