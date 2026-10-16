@@ -281,7 +281,7 @@ pub(super) fn view(app: &App) -> Element<'_, Message> {
         items.push(setting(
             "Transparent overlay",
             toggle(Field::OverlayTransparent, c.overlay_transparent),
-            "Desktop shows through the board. Turn off if it renders black. Restart to apply.",
+            TRANSPARENT_OVERLAY,
         ));
         items.push(setting(
             "Rasterize text",
@@ -465,6 +465,15 @@ fn advanced_header(open: bool, font: Font) -> Element<'static, Message> {
     .spacing(6)
     .into()
 }
+
+/// What the transparent-overlay row says. See-through is the Dashboard look,
+/// and it costs: the board is blended over every window under it, every frame,
+/// which on a ProMotion display over a busy desktop drops it to 60 Hz.
+const TRANSPARENT_OVERLAY: &str = if crate::platform::LIVE_TRANSPARENCY {
+    "Desktop shows through the board. Turn off if moving the board stutters over other windows."
+} else {
+    "Desktop shows through the board. Turn off if it renders black, or stutters over other windows. Restart to apply."
+};
 
 /// A settings row: `label ........ editor`, with a secondary description below
 /// in the theme's muted color.
@@ -932,6 +941,11 @@ impl App {
 
     /// Live side effects of a settings change (over and above the config write).
     fn after_setting_change(&mut self, field: Field) -> Task<Message> {
+        // Where the overlay can change in place, it does; elsewhere the row
+        // says it waits for a restart.
+        if field == Field::OverlayTransparent && self.overlay {
+            crate::platform::set_overlay_opaque(!self.config.overlay_transparent);
+        }
         self.cache.clear();
         // Keys are per endpoint, so changing the endpoint changes which one the
         // field is showing.

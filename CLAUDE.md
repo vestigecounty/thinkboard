@@ -841,6 +841,14 @@ shot that lied:
   that leaves winit's KVO teardown inconsistent, so `save_and_exit` flushes the
   autosave and calls `std::process::exit(0)` rather than crashing in teardown.
   Pinch-zoom and the four-finger summon gesture are native shims.
+  **A see-through overlay is composited over every window under it, every
+  frame**, and those windows count as visible, so their apps keep drawing: on a
+  ProMotion display over a busy desktop it alternates 60 and 120 Hz, while the
+  same board over an empty Space, opaque, or in a window holds 120. A frame
+  costs ~5 ms either way, and a `CADisplayLink` frame clock changed nothing —
+  it isn't ours to optimize. Transparency is the window's opaque flag, which
+  `platform::set_overlay_opaque` switches live, so the setting takes effect
+  without a restart there (the window is always made see-through-capable).
 - **Linux** — Wayland can't hide a window in place, so hiding *closes* the
   window and summoning opens a fresh one. Tray uses `ksni` (pure-Rust D-Bus, no
   GTK) so the zig cross-build works; the dialogs use the xdg-portal backend for

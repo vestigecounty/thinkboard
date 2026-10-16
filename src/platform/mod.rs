@@ -42,6 +42,19 @@ pub const OVERLAY_TRANSPARENT: bool = true;
 #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
 pub const OVERLAY_TRANSPARENT: bool = false;
 
+/// Whether the overlay's see-through can be switched while it's up. On macOS
+/// it's the window's opaque flag, which AppKit lets us flip at any time. Where
+/// it's decided by how the window and its swapchain were made — Windows'
+/// DirectComposition swapchain, Linux's compositor surface — a switch waits
+/// for a restart.
+pub const LIVE_TRANSPARENCY: bool = backend::LIVE_TRANSPARENCY;
+
+/// Makes the overlay opaque, or see-through again. A no-op where
+/// [`LIVE_TRANSPARENCY`] is false. Main thread only.
+pub fn set_overlay_opaque(opaque: bool) {
+    backend::set_overlay_opaque(opaque);
+}
+
 /// The system UI font family for live and rasterized text — the fallback
 /// family when a theme names none. Its faces come from [`UI_FONT_FILES`].
 #[cfg(target_os = "macos")]

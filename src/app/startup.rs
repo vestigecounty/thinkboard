@@ -282,8 +282,11 @@ pub(super) fn window_settings(config: &crate::config::Config, windowed: bool) ->
         ..window::Settings::default()
     };
     if !windowed {
-        settings.transparent =
-            crate::platform::OVERLAY_TRANSPARENT && config.overlay_transparent;
+        // Made see-through wherever the opacity can be switched later, which
+        // the setting then does as the overlay comes up — so turning it back
+        // on doesn't need a window that was never made able to be.
+        settings.transparent = crate::platform::OVERLAY_TRANSPARENT
+            && (crate::platform::LIVE_TRANSPARENCY || config.overlay_transparent);
         settings.decorations = false;
         settings.resizable = false;
         settings.level = window::Level::AlwaysOnTop;

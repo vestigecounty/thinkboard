@@ -1334,7 +1334,7 @@ impl App {
             Message::WindowShown => {
                 // Re-raise and re-frame the overlay window (also re-adapts
                 // to display changes while hidden).
-                platform::configure_overlay_window();
+                self.configure_overlay_window();
                 self.overlay_shown_at = Some(Instant::now());
             }
             Message::SpaceChanged => return self.space_changed(),
@@ -1356,6 +1356,14 @@ impl App {
         Task::none()
     }
 
+    /// The overlay treatment — raised, framed to the screen, over every Space
+    /// — and as see-through as the setting says, which AppKit lets us set on
+    /// a window that already exists.
+    fn configure_overlay_window(&self) {
+        platform::configure_overlay_window();
+        platform::set_overlay_opaque(!self.config.overlay_transparent);
+    }
+
     // --- Camera and viewport ---
 
     fn viewport_resized(&mut self, size: Size) -> Task<Message> {
@@ -1363,7 +1371,7 @@ impl App {
         self.top_safe_inset = platform::top_safe_inset();
         if self.overlay && !self.overlay_configured {
             self.overlay_configured = true;
-            platform::configure_overlay_window();
+            self.configure_overlay_window();
             // Create the tray icon now that the app is running (macOS needs the
             // run loop live). It's parked in a main-thread slot for the process,
             // so later toggles (e.g. the monochrome icon) can retint it.

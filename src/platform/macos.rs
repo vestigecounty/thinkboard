@@ -17,7 +17,7 @@ use std::sync::{Mutex, Once, OnceLock};
 use block2::RcBlock;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
-use objc2::{ClassType, MainThreadOnly, define_class};
+use objc2::{ClassType, MainThreadOnly, class, define_class, msg_send};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy,
     NSRunningApplication, NSEvent, NSEventMask, NSPanel, NSScreen,
@@ -38,6 +38,40 @@ pub const SUPPORTS_PINCH: bool = true;
 /// macOS can recognize a raw multi-finger trackpad swipe (via a private
 /// framework) to summon the overlay. Experimental, opt-in.
 pub const SUPPORTS_GESTURES: bool = true;
+
+/// The overlay's see-through switches while it's up (see
+/// [`set_overlay_opaque`]).
+pub const LIVE_TRANSPARENCY: bool = true;
+
+/// Makes the overlay opaque, or see-through again, by the window's own opaque
+/// flag — which is what the window server composites by.
+///
+/// See-through, the board is blended over everything under it on every frame,
+/// and the windows under it count as visible, so their apps keep drawing too:
+/// over a busy desktop that's a ProMotion panel dropping to 60 Hz, while the
+/// same board over an empty Space, or in a plain window, holds 120. Opaque, it
+/// covers what's under it and none of that happens. The Metal layer is
+/// see-through-capable either way (iced_wgpu configures it so); the board's
+/// clear colour (`startup::style`) is what paints the difference.
+pub fn set_overlay_opaque(opaque: bool) {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    for window in NSApplication::sharedApplication(mtm).windows() {
+        if !is_our_window(&window) {
+            continue;
+        }
+        let background: Retained<AnyObject> = if opaque {
+            unsafe { msg_send![class!(NSColor), blackColor] }
+        } else {
+            unsafe { msg_send![class!(NSColor), clearColor] }
+        };
+        unsafe {
+            let _: () = msg_send![&*window, setOpaque: opaque];
+            let _: () = msg_send![&*window, setBackgroundColor: &*background];
+        }
+    }
+}
 
 /// The main screen's top safe-area inset (px) — the MacBook notch / menu-bar
 /// height. `safeAreaInsets` is macOS 12+, so guard with `respondsToSelector` to

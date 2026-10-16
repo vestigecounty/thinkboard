@@ -113,3 +113,10 @@ pub fn release_focus() {}
 pub fn top_safe_inset() -> f32 {
     0.0
 }
+
+/// The overlay's transparency is fixed when its window is made, so switching
+/// it waits for a restart.
+pub const LIVE_TRANSPARENCY: bool = false;
+
+/// Nothing to switch (see [`LIVE_TRANSPARENCY`]).
+pub fn set_overlay_opaque(_opaque: bool) {}
