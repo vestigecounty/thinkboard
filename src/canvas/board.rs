@@ -312,6 +312,19 @@ pub struct SearchView<'a> {
     /// highlight scans the laid-out runs, which have the markers stripped. The
     /// *positions* don't correspond; the reading order does.
     pub current_hit: Option<(usize, usize)>,
+    /// The cards holding a match, sorted. While there are any, every other
+    /// card dims — see [`search_dim`].
+    pub cards: &'a [usize],
+}
+
+/// How strongly a card is drawn while the find bar has matches: in full if it
+/// holds one, faint if it doesn't, so the matches are what the eye lands on
+/// and the board around them still reads. With no matches nothing dims —
+/// there'd be nothing for it to point at.
+pub fn search_dim(cards: &[usize], index: usize) -> f32 {
+    /// Far enough back that a match stands out from across the board.
+    const DIMMED: f32 = 0.32;
+    if cards.is_empty() || cards.binary_search(&index).is_ok() { 1.0 } else { DIMMED }
 }
 
 pub struct Board<'a> {
@@ -1100,6 +1113,8 @@ impl Stacked<Message> for Board<'_> {
             // being moved layers over any node it overlaps (its card included).
             self.draw_nodes(&mut overlay, NodePass::SelectedOnly);
 
+            self.draw_search_focus(&mut overlay);
+
             if let Some(edge) = self.selected_edge {
                 // A thicker ring than hover makes selection unmistakable.
                 self.draw_edge_outline(&mut overlay, edge, EDGE_HIGHLIGHT_RING, 1.5);
@@ -1496,6 +1511,10 @@ impl Board<'_> {
                     if start.distance(position) >= 4.0 {
                         // A drag, not a click.
                         None
+                    } else if self.search.is_some() {
+                        // A click on the board puts the find bar away first,
+                        // as Esc does — the board itself only on the next.
+                        Some(canvas::Action::publish(Message::CloseSearch).and_capture())
                     } else if !self.selected.is_empty() || self.selected_edge.is_some() {
                         // A click on empty space first clears the selection;
                         // it does not dismiss the board.
@@ -2230,6 +2249,48 @@ impl Board<'_> {
         None
     }
 
+    /// [`search_dim`] for this board's search, if there is one.
+    fn search_dim(&self, index: usize) -> f32 {
+        self.search.as_ref().map_or(1.0, |search| search_dim(search.cards, index))
+    }
+
+    /// Rings the card holding the hit being stepped through: two pixels of
+    /// accent just outside its edge and a soft halo past that, in screen
+    /// pixels whatever the zoom — it points at a card, so it shouldn't grow
+    /// thin and vanish as the board zooms out, nor heavy as it zooms in.
+    fn draw_search_focus(&self, frame: &mut Frame) {
+        /// The halo's reach past the card, and its strength.
+        const HALO: f32 = 7.0;
+        const HALO_ALPHA: f32 = 0.18;
+        let Some(index) = self.search.as_ref().and_then(|search| search.current_hit).map(|(node, _)| node) else {
+            return;
+        };
+        let Some(node) = self.nodes.get(index) else {
+            return;
+        };
+        let alpha = self.node_layer_alpha() * self.spawn_factors(index).1;
+        if alpha <= 0.0 {
+            return;
+        }
+        let rect = self.node_screen_rect(index, node);
+        let radius = if node.is_group() { self.frame_radius() } else { self.card_radius() };
+        let around = |by: f32| {
+            let outer = Rectangle::new(
+                Point::new(rect.x - by, rect.y - by),
+                Size::new(rect.width + 2.0 * by, rect.height + 2.0 * by),
+            );
+            rounded_path(outer, radius + by)
+        };
+        let accent = self.theme.accent;
+        // The halo as one stroke centred between the ring and its reach.
+        let halo = (HALO - 2.0) / 2.0;
+        frame.stroke(
+            &around(2.0 + halo),
+            Stroke::default().with_color(Color { a: HALO_ALPHA * alpha, ..accent }).with_width(HALO - 2.0),
+        );
+        frame.stroke(&around(1.0), Stroke::default().with_color(Color { a: alpha, ..accent }).with_width(2.0));
+    }
+
     /// Spawn animation factors for a node: (scale, alpha).
     fn spawn_factors(&self, index: usize) -> (f32, f32) {
         match self.spawning.get(&index) {
@@ -2452,7 +2513,7 @@ impl Board<'_> {
                 continue;
             }
             let rect = self.node_screen_rect(index, node);
-            let alpha = scene_alpha * self.spawn_factors(index).1;
+            let alpha = scene_alpha * self.spawn_factors(index).1 * self.search_dim(index);
 
             if node.node_kind() == NodeKind::Image {
                 let radius = self.card_radius();
@@ -2612,6 +2673,7 @@ impl Board<'_> {
         }
 
         for (index, node) in self.nodes.iter().enumerate().filter(|(_, n)| n.is_group()) {
+            let alpha = alpha * self.search_dim(index);
             let rect = self.node_screen_rect(index, node);
             let selected = self.selected.contains(&index);
             let accent = node
@@ -3144,8 +3206,12 @@ impl Board<'_> {
         let from_index = *self.node_index.get(edge.from_node.as_str())?;
         let to_index = *self.node_index.get(edge.to_node.as_str())?;
 
+        // A link to a match stays in full, so a match is seen with what it
+        // hangs from and what hangs from it; a link between two dimmed cards
+        // dims with them.
         let alpha = self.node_layer_alpha()
-            * self.spawn_factors(from_index).1.min(self.spawn_factors(to_index).1);
+            * self.spawn_factors(from_index).1.min(self.spawn_factors(to_index).1)
+            * self.search_dim(from_index).max(self.search_dim(to_index));
         let start = side_anchor(
             self.node_screen_rect(from_index, &self.nodes[from_index]),
             &edge.from_side,
@@ -4852,5 +4918,17 @@ mod trunk_tests {
     fn a_close_target_still_pulls_the_trunk_in() {
         // It is a cap, not a fixed distance: a near target has to leave room.
         assert!(trunk_gutter(60.0, 1.0) < trunk_gutter(600.0, 1.0));
+    }
+}
+
+#[cfg(test)]
+mod search_dim_tests {
+    use super::search_dim;
+
+    #[test]
+    fn only_cards_without_a_match_dim_and_only_while_there_are_matches() {
+        assert_eq!(search_dim(&[], 3), 1.0, "nothing found, nothing to point at");
+        assert_eq!(search_dim(&[1, 4], 4), 1.0);
+        assert!(search_dim(&[1, 4], 3) < 1.0);
     }
 }

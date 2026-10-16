@@ -660,8 +660,7 @@ impl App {
             None => {}
         }
         if let Some(search) = &mut self.search {
-            search.matches = super::search::find_matches(&self.nodes, &search.query);
-            search.current = search.current.min(search.matches.len().saturating_sub(1));
+            search.set_matches(super::search::find_matches(&self.nodes, &search.query));
             // A hit is painted by the live text path, so a card with one holds
             // no bitmap.
             for hit in &search.matches {

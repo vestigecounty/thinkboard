@@ -1469,10 +1469,12 @@ fn pickers() {
 
 /// Find on board: a query, the next hit, and the way out.
 fn find() {
-    let mut tour = Tour::new("find", first_launch(canvas_file::scratch_document));
+    let mut tour = Tour::new("find", first_launch(sample_board));
     tour.chord(Modifiers::COMMAND, "f");
     tour.shot("find-bar");
-    tour.type_text("board");
+    // A word on a few cards of many: those stay, the rest dim, and the one
+    // being stepped through is ringed.
+    tour.type_text("trip");
     tour.shot("hits");
     tour.named(key::Named::Enter);
     tour.shot("next-hit");
@@ -1480,6 +1482,13 @@ fn find() {
     tour.shot("no-hits");
     tour.named(key::Named::Escape);
     tour.shot("closed");
+    // A click on the board puts it away too — the first click, before any
+    // other the board might act on.
+    tour.chord(Modifiers::COMMAND, "f");
+    tour.type_text("trip");
+    tour.click(Point::new(200.0, 820.0));
+    assert!(tour.app.search.is_none(), "a click on empty space closes the find bar");
+    tour.shot("closed-by-click");
 }
 
 /// Links: hovered, selected, its menu — and the board in each link style.

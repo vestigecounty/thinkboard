@@ -2605,6 +2605,29 @@ fn a_run_of_nudges_is_one_undo_step() {
 }
 
 #[test]
+fn a_click_on_the_board_puts_find_away() {
+    // On a card: the bar goes, and the card clicked stays the selection —
+    // not the hit, as Esc would select.
+    let mut app = app_with(plan(), Vec::new());
+    send(&mut app, Message::OpenSearch);
+    send(&mut app, Message::SearchInput("sintra".to_owned()));
+    let eat = app.nodes.iter().position(|node| node.id == "eat").expect("eat");
+    send(&mut app, Message::SelectNode(Some(eat)));
+    send(&mut app, Message::NodeDragEnd { index: eat, moved: true });
+    assert!(app.search.is_some(), "a drag is looking around, not a click");
+    send(&mut app, Message::NodeDragEnd { index: eat, moved: false });
+    assert!(app.search.is_none());
+    assert_eq!(selected_ids(&app), ["eat"]);
+
+    // On a link, the same.
+    send(&mut app, Message::OpenSearch);
+    send(&mut app, Message::SearchInput("sintra".to_owned()));
+    send(&mut app, Message::SelectEdge(Some(0)));
+    assert!(app.search.is_none());
+    assert_eq!(app.selected_edge, Some(0));
+}
+
+#[test]
 fn closing_find_selects_what_it_found() {
     let mut app = app_with(plan(), Vec::new());
     send(&mut app, Message::OpenSearch);

@@ -239,6 +239,7 @@ impl App {
                         .unwrap_or(0);
                     (current.node, ordinal)
                 }),
+                cards: &s.cards,
             }),
             ai_flows: &self.ai.flows,
             ghosts: &self.ghosts.cards,
@@ -302,9 +303,12 @@ impl App {
             // Frames get no shadow: they sit behind the cards they enclose, so
             // one would fall *across* their own contents.
             let cards = self.nodes.iter().enumerate().filter(|(_, node)| !node.is_group());
+            // A card dimmed by the find bar casts a dimmed shadow, or the
+            // shadow outlined it at full strength on the board around it.
+            let matched: &[usize] = self.search.as_ref().map_or(&[], |search| &search.cards);
             instances.extend(cards.map(|(index, node)| {
                 let mut rect = camera.rect_to_screen(node_world_rect(node));
-                let mut alpha = node_alpha;
+                let mut alpha = node_alpha * board::search_dim(matched, index);
                 // Track the spawn zoom-in of freshly created nodes.
                 if let Some(started) = self.spawning.get(&index) {
                     let t = (started.elapsed().as_secs_f32()
@@ -793,81 +797,95 @@ impl App {
         backdrop.into()
     }
 
-    /// The floating find bar (top-right): query field, `n/m` count, ‹ ›, ×.
+    /// The floating find bar: one compact field, top centre — a magnifier, the
+    /// query typed straight into the bar, the count inside it, then ‹ › ×.
+    /// It used to be a panel holding a boxed input, a count beside it and the
+    /// buttons spread out after that; the bar now *is* the field, its accent
+    /// edge saying it has the keyboard.
     fn search_bar(&self, search: &Search) -> Element<'_, Message> {
         // Styled from the Obsidian ColorTheme so the bar recolors with the theme
         // (the overlay window itself stays on Theme::Dark).
         let theme = &self.theme;
-        let ct = self.theme;
         let font = theme.ui_font();
-        let (text_c, muted, accent, input_bg, border_c) =
-            (theme.text, theme.text_muted, theme.accent, theme.background, theme.border);
+        let (text_c, muted, accent, surface) = (theme.text, theme.text_muted, theme.accent, theme.elevated());
 
         let count = if search.matches.is_empty() {
-            if search.query.is_empty() {
-                String::new()
-            } else {
-                "No results".to_owned()
-            }
+            if search.query.is_empty() { String::new() } else { "No results".to_owned() }
         } else {
-            format!("{} / {}", search.current + 1, search.matches.len())
+            format!("{} of {}", search.current + 1, search.matches.len())
         };
 
-        let step = move |label: &'static str, message: Message| {
-            button(text(label).size(18).font(font))
-                .padding([2, 10])
-                .on_press_maybe((!search.matches.is_empty()).then_some(message))
-                .style(move |_theme, status| chrome_button_style(status, muted, accent))
+        // Square, and quiet until hovered: three of them would otherwise
+        // outweigh the query they act on.
+        let step = move |label: &'static str, size: f32, message: Option<Message>| {
+            button(
+                container(text(label).size(size).font(font))
+                    .width(Length::Fixed(26.0))
+                    .height(Length::Fixed(26.0))
+                    .center_x(Length::Fixed(26.0))
+                    .center_y(Length::Fixed(26.0)),
+            )
+            .padding(0)
+            .on_press_maybe(message)
+            .style(move |_theme, status| chrome_button_style(status, muted, accent))
         };
+        let can_step = !search.matches.is_empty();
 
-        // Narrower in a narrow window, so the ‹ › × after it stay on screen —
-        // at a fixed 220 they went off its right edge below about 500 px.
-        let input_width = (self.camera.viewport.width - 300.0).clamp(60.0, 220.0);
         let input = text_input("Find on board…", &search.query)
             .id(super::SEARCH_INPUT.clone())
             .on_input(Message::SearchInput)
-            .size(15)
+            .size(14)
             .font(font)
-            .width(input_width)
-            .style(move |_theme, status| iced::widget::text_input::Style {
-                background: iced::Background::Color(input_bg),
-                border: iced::Border {
-                    radius: chrome::CONTROL_RADIUS.into(),
-                    width: 1.0,
-                    color: if matches!(status, iced::widget::text_input::Status::Focused { .. }) {
-                        accent
-                    } else {
-                        border_c
-                    },
-                },
+            .padding([0, 4])
+            .width(Fill)
+            .style(move |_theme, _status| iced::widget::text_input::Style {
+                // No box of its own: the bar is the field.
+                background: iced::Background::Color(iced::Color::TRANSPARENT),
+                border: iced::Border::default(),
                 icon: muted,
                 placeholder: muted,
                 value: text_c,
                 selection: iced::Color { a: 0.30, ..accent },
             });
 
+        let divider = container(Space::new().width(1).height(18))
+            .style(move |_theme| container::Style {
+                background: Some(iced::Color { a: 0.12, ..text_c }.into()),
+                ..container::Style::default()
+            });
+
         let bar = row![
+            iced::widget::canvas(Magnifier { color: muted }).width(14).height(14),
             input,
-            // Fixed width + centered, so "No results" vs "3 / 12" vs "" never
-            // resizes the bar.
-            text(count)
-                .size(13)
-                .font(font)
-                .width(Length::Fixed(90.0))
-                .align_x(iced::widget::text::Alignment::Center)
-                .color(muted),
-            step("‹", Message::SearchPrev),
-            step("›", Message::SearchNext),
-            button(text("×").size(16).font(font))
-                .padding([2, 10])
-                .on_press(Message::CloseSearch)
-                .style(move |_theme, status| chrome_button_style(status, muted, accent)),
+            text(count).size(12).font(font).color(muted).wrapping(iced::widget::text::Wrapping::None),
+            divider,
+            row![
+                step("‹", 16.0, can_step.then_some(Message::SearchPrev)),
+                step("›", 16.0, can_step.then_some(Message::SearchNext)),
+                step("✕", 12.0, Some(Message::CloseSearch)),
+            ]
+            .spacing(2),
         ]
-        .spacing(8)
+        .spacing(6)
         .align_y(iced::Alignment::Center);
 
-        let panel =
-            container(bar).padding([8, 10]).style(move |_theme| chrome::panel(&ct, ct.elevated()));
+        // As wide as the design asks, or the window less a margin each side.
+        let width = (self.camera.viewport.width - 32.0).clamp(160.0, 360.0);
+        let panel = container(bar)
+            .width(Length::Fixed(width))
+            .height(Length::Fixed(38.0))
+            .padding(Padding { top: 0.0, right: 6.0, bottom: 0.0, left: 12.0 })
+            .center_y(Length::Fixed(38.0))
+            .style(move |_theme| container::Style {
+                background: Some(surface.into()),
+                border: iced::Border { color: iced::Color { a: 0.45, ..accent }, width: 1.0, radius: 10.0.into() },
+                shadow: iced::Shadow {
+                    color: iced::Color { a: 0.45, ..iced::Color::BLACK },
+                    offset: iced::Vector::new(0.0, 10.0),
+                    blur_radius: 28.0,
+                },
+                ..container::Style::default()
+            });
 
         container(panel)
             .width(Fill)
@@ -1098,4 +1116,29 @@ fn editor_key_binding(
         return Some(text_editor::Binding::Custom(Message::EditorReturn));
     }
     text_editor::Binding::from_key_press(key_press)
+}
+
+/// The find bar's magnifier: a lens and its handle.
+struct Magnifier {
+    color: iced::Color,
+}
+
+impl<Message> iced::widget::canvas::Program<Message> for Magnifier {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        _theme: &Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<iced::widget::canvas::Geometry> {
+        use iced::widget::canvas::{Frame, Path, Stroke};
+        let mut frame = Frame::new(renderer, bounds.size());
+        let stroke = Stroke::default().with_color(self.color).with_width(1.5);
+        frame.stroke(&Path::circle(Point::new(6.0, 6.0), 4.5), stroke);
+        frame.stroke(&Path::line(Point::new(9.5, 9.5), Point::new(13.0, 13.0)), stroke);
+        vec![frame.into_geometry()]
+    }
 }

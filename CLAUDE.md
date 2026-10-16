@@ -358,6 +358,21 @@ for the current hit, black text — the convention a browser, an editor and a PD
 reader all share, which is why it reads at a glance. Deriving it from a palette
 was tried and every theme got its own slightly weaker compromise.
 
+**While the find bar has matches, the rest of the board dims.** Every card
+without a match fades (`board::search_dim`), with its shadow and with any link
+that doesn't touch a match, and the card holding the current hit is ringed in
+the accent, at a fixed screen width so zooming neither loses nor thickens it.
+That finds the *card*; the yellow finds the *word* in it, and stayed yellow
+when the redesign proposed an accent wash: a wash faint enough to leave the
+card's text legible (32% accent, text 5.5:1) stands 1.9:1 off the card, and
+one strong enough to read as a mark (55%, 3.1:1) takes the text down to 3.5:1.
+Nothing dims when nothing matches — there'd be nothing to point at. A click
+on the board closes the bar, as Esc does, before it does anything else — on
+empty space the hit's card is selected, as with Esc; on a card or a link, what
+was clicked is — and a drag or a pan leaves it up. The
+matched cards are kept with the matches (`Search::cards`), not found from them
+each frame: a short query can match thousands of times.
+
 **A hit is only ever painted by the live text path**, so a matched node must
 not hold a bitmap: `refresh_snapshots` won't start one, and `snapshots_ready`
 drops one that was already in flight when the search began — without that second

@@ -15,7 +15,32 @@ pub(super) use thinkboard_core::search::{Match, find_matches};
 pub(super) struct Search {
     pub(super) query: String,
     pub(super) matches: Vec<Match>,
+    /// The cards holding a match, sorted: what the board keeps at full
+    /// strength while the rest dim. Kept with `matches` rather than derived
+    /// from them each frame — a short query can match thousands of times.
+    pub(super) cards: Vec<usize>,
     pub(super) current: usize,
+}
+
+impl Search {
+    pub(super) fn new(query: String, matches: Vec<Match>) -> Search {
+        let cards = cards_of(&matches);
+        Search { query, matches, cards, current: 0 }
+    }
+
+    /// Takes a fresh set of matches, keeping the current one where it can.
+    pub(super) fn set_matches(&mut self, matches: Vec<Match>) {
+        self.cards = cards_of(&matches);
+        self.current = self.current.min(matches.len().saturating_sub(1));
+        self.matches = matches;
+    }
+}
+
+fn cards_of(matches: &[Match]) -> Vec<usize> {
+    let mut cards: Vec<usize> = matches.iter().map(|m| m.node).collect();
+    cards.sort_unstable();
+    cards.dedup();
+    cards
 }
 
 /// Find-bar navigation keys, subscribed while the search is open: Enter →
@@ -45,9 +70,7 @@ impl App {
     /// Whether a node currently holds a search match (drawn live + highlighted
     /// while the find bar is open, so it isn't rasterized over the highlight).
     pub(super) fn is_search_match(&self, index: usize) -> bool {
-        self.search
-            .as_ref()
-            .is_some_and(|search| search.matches.iter().any(|m| m.node == index))
+        self.search.as_ref().is_some_and(|search| search.cards.binary_search(&index).is_ok())
     }
 
     /// Flies the camera to the current search match: its card, centred on the
@@ -120,5 +143,25 @@ impl App {
             y -= scroll;
         }
         Some(y + height / 2.0)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Match, Search};
+
+    fn hit(node: usize) -> Match {
+        Match { node, start: 0, len: 1 }
+    }
+
+    #[test]
+    fn the_matched_cards_are_kept_once_each_in_order() {
+        let mut search = Search::new("a".to_owned(), vec![hit(3), hit(1), hit(3)]);
+        assert_eq!(search.cards, vec![1, 3]);
+        search.current = 2;
+        // Fewer matches than the current one: it stays on the last.
+        search.set_matches(vec![hit(5)]);
+        assert_eq!(search.cards, vec![5]);
+        assert_eq!(search.current, 0);
     }
 }

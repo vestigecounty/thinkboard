@@ -980,7 +980,11 @@ impl App {
                     self.raise_dropped(index);
                 }
                 self.end_gesture();
-                return self.schedule_recluster();
+                // A click on a card is a click on the board: the find bar
+                // goes, and the card clicked stays the one selected. A drag
+                // leaves it up, as a pan does — moving things about to look.
+                let closed = if moved { Task::none() } else { self.close_search(false) };
+                return Task::batch([closed, self.schedule_recluster()]);
             }
             Message::ResizeNode { index, anchor, cursor } => {
                 self.begin_gesture();
@@ -1078,6 +1082,10 @@ impl App {
                     self.selected_edge = index;
                     self.selected.clear(); // node and edge selection are exclusive
                     self.cache.clear();
+                }
+                // A click on a link is a click on the board, as on a card.
+                if index.is_some() {
+                    return self.close_search(false);
                 }
             }
             Message::HoverEdge(index) => {
@@ -1235,11 +1243,7 @@ impl App {
             Message::OpenSearch => {
                 let dismissed = self.dismiss_panels(); // mutually exclusive
                 if self.search.is_none() {
-                    self.search = Some(Search {
-                        query: String::new(),
-                        matches: Vec::new(),
-                        current: 0,
-                    });
+                    self.search = Some(Search::new(String::new(), Vec::new()));
                 }
                 return Task::batch([
                     dismissed,
@@ -1264,7 +1268,7 @@ impl App {
                 self.cache.clear();
                 return self.focus_current_match();
             }
-            Message::CloseSearch => return self.close_search(),
+            Message::CloseSearch => return self.close_search(true),
 
             // --- Command palette ---
             Message::OpenCommandPalette => {
@@ -2042,16 +2046,23 @@ impl App {
         for index in affected {
             self.invalidate_snapshot(index);
         }
-        self.search = Some(Search { query, matches, current: 0 });
+        self.search = Some(Search::new(query, matches));
         self.cache.clear();
         let focus = self.focus_current_match();
         Task::batch([self.refresh_snapshots(), focus])
     }
 
-    fn close_search(&mut self) -> Task<Message> {
-        // What was found is where you are: the card it's on becomes the
-        // selection, so the next key — Enter, an arrow, Delete — acts on it.
-        if let Some(index) = self.search.as_ref().and_then(|s| s.matches.get(s.current)).map(|m| m.node) {
+    /// Puts the find bar away. With `select_hit` — Esc, ✕, a click on empty
+    /// space — what was found is where you are: the card it's on becomes the
+    /// selection, so the next key (Enter, an arrow, Delete) acts on it. A click
+    /// on a card or a link closes it without: what was clicked is selected.
+    fn close_search(&mut self, select_hit: bool) -> Task<Message> {
+        if self.search.is_none() {
+            return Task::none();
+        }
+        if let Some(index) =
+            self.search.as_ref().and_then(|s| s.matches.get(s.current)).map(|m| m.node).filter(|_| select_hit)
+        {
             self.selected = vec![index];
             self.selected_edge = None;
         }
