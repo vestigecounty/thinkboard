@@ -2444,6 +2444,96 @@ fn long_notes() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Keyboard only: after launch, not one click — the palette, the find bar,
+/// the editor and the board's own keys, and what each leaves selected. What a
+/// shot can't show (the selection, the camera, whether a key did anything) is
+/// in `notes.txt`, a line per key.
+fn keyboard_only() {
+    let mut tour = Tour::new("keyboard_only", first_launch(trip_board));
+    frame_trip(&mut tour);
+    // What a key did: the selection, the editor, the camera.
+    let state = |tour: &Tour| {
+        let selected: Vec<String> = tour
+            .app
+            .selected
+            .iter()
+            .filter_map(|&i| tour.app.nodes.get(i))
+            .map(|n| n.text.as_deref().unwrap_or_default().lines().next().unwrap_or_default().to_owned())
+            .collect();
+        let editing = tour
+            .app
+            .editing
+            .as_ref()
+            .and_then(|e| tour.app.nodes.get(e.index))
+            .map(|n| n.text.as_deref().unwrap_or_default().lines().next().unwrap_or_default().to_owned());
+        let camera = tour.app.camera;
+        format!(
+            "selected {selected:?}, editing {editing:?}, camera at ({:.0}, {:.0}) zoom {:.2}, {} cards",
+            camera.offset.x, camera.offset.y, camera.zoom, tour.app.nodes.len()
+        )
+    };
+    let try_key = |tour: &mut Tour, what: &str, press: &dyn Fn(&mut Tour)| {
+        let before = state(tour);
+        press(tour);
+        let after = state(tour);
+        tour.note(&format!("{what}: {}", if before == after { format!("nothing ({after})") } else { after }));
+    };
+    tour.note(&format!("start: {}", state(&tour)));
+    tour.shot("start");
+
+    // Getting around the board.
+    try_key(&mut tour, "→ arrow", &|t| t.named(key::Named::ArrowRight));
+    try_key(&mut tour, "↓ arrow", &|t| t.named(key::Named::ArrowDown));
+    try_key(&mut tour, "⌘= (zoom in)", &|t| t.chord(Modifiers::COMMAND, "="));
+    try_key(&mut tour, "⌘- (zoom out)", &|t| t.chord(Modifiers::COMMAND, "-"));
+    try_key(&mut tour, "⌘0 (fit)", &|t| t.chord(Modifiers::COMMAND, "0"));
+
+    // Picking a card.
+    try_key(&mut tour, "Tab", &|t| t.named(key::Named::Tab));
+    try_key(&mut tour, "Tab again", &|t| t.named(key::Named::Tab));
+    try_key(&mut tour, "Enter", &|t| t.named(key::Named::Enter));
+    try_key(&mut tour, "Space", &|t| t.key(Key::Named(key::Named::Space), Some(" ")));
+
+    // Adding a note the only way there is: the palette.
+    try_key(&mut tour, "⌘⇧P, \"add node\", Enter", &|t| t.palette("add node"));
+    try_key(&mut tour, "typed \"Pack an umbrella\"", &|t| t.type_text("Pack an umbrella"));
+    tour.shot("added-from-the-palette");
+    try_key(&mut tour, "Esc", &|t| t.named(key::Named::Escape));
+    tour.shot("after-adding");
+    try_key(&mut tour, "Delete (whatever's selected)", &|t| t.named(key::Named::Backspace));
+
+    // Finding a card, then doing something with it.
+    try_key(&mut tour, "⌘F, \"sintra\"", &|t| {
+        t.chord(Modifiers::COMMAND, "f");
+        t.type_text("sintra");
+    });
+    tour.shot("found");
+    try_key(&mut tour, "Enter (next hit)", &|t| t.named(key::Named::Enter));
+    try_key(&mut tour, "Esc (close the find bar)", &|t| t.named(key::Named::Escape));
+    try_key(&mut tour, "Enter (edit what was found?)", &|t| t.named(key::Named::Enter));
+    tour.shot("after-find");
+
+    // What the palette offers with nothing selected.
+    tour.chord(Modifiers::COMMAND | Modifiers::SHIFT, "p");
+    tour.type_text("selection");
+    tour.shot("palette-needs-a-selection");
+    tour.named(key::Named::Escape);
+    tour.chord(Modifiers::COMMAND | Modifiers::SHIFT, "p");
+    tour.type_text("colour");
+    tour.shot("palette-colour");
+    tour.named(key::Named::Escape);
+
+    // Settings, by keyboard: Tab through the form, type into a field.
+    tour.palette("settings");
+    tour.shot("settings");
+    try_key(&mut tour, "Tab in settings", &|t| t.named(key::Named::Tab));
+    try_key(&mut tour, "typed \"x\" in settings", &|t| t.type_text("x"));
+    tour.shot("settings-after-tab");
+    tour.note(&format!("theme field now reads {:?}, font field {:?}", tour.app.config.theme, tour.app.config.font));
+    tour.named(key::Named::Escape);
+    tour.shot("end");
+}
+
 const SCENES: &[(&str, fn())] = &[
     ("first_run", first_run),
     ("build_a_board", build_a_board),
@@ -2467,6 +2557,7 @@ const SCENES: &[(&str, fn())] = &[
     ("outside_changes", outside_changes),
     ("undo_and_clipboard", undo_and_clipboard),
     ("long_notes", long_notes),
+    ("keyboard_only", keyboard_only),
 ];
 
 #[test]
