@@ -77,6 +77,16 @@ pub fn set_backdrop_picture(picture: BackdropPicture) {
     backend::set_backdrop_picture(picture);
 }
 
+/// Readies `picture` as the overlay would show it — the same blur — and hands
+/// it to `ready` as PNG once it's done, from a background thread, or `None` if
+/// it couldn't be read. The settings form previews with it, so a tile shows
+/// what choosing it gives, and choosing it afterwards costs nothing more.
+/// Main thread only; `ready(None)` at once where [`SUPPORTS_BACKDROP_PICTURE`]
+/// is false.
+pub fn preview_backdrop_picture(picture: BackdropPicture, ready: impl FnOnce(Option<Vec<u8>>) + Send + 'static) {
+    backend::preview_backdrop_picture(picture, ready);
+}
+
 /// Shows the chosen picture under the overlay at `alpha` — faded with the
 /// board as it comes and goes — or puts it away at 0. Main thread only.
 pub fn show_backdrop_picture(alpha: f32) {

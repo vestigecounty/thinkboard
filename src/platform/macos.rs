@@ -129,6 +129,11 @@ pub fn set_backdrop_picture(picture: BackdropPicture) {
     PICTURES.with(|pictures| pictures.borrow_mut().0 = Some(picture));
 }
 
+pub fn preview_backdrop_picture(picture: BackdropPicture, ready: impl FnOnce(Option<Vec<u8>>) + Send + 'static) {
+    let prepared = prepared(&picture);
+    std::thread::spawn(move || ready(prepared.wait().clone()));
+}
+
 pub fn show_backdrop_picture(alpha: f32) {
     let Some(mtm) = MainThreadMarker::new() else {
         return;

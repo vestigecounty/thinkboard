@@ -220,14 +220,18 @@ pub(super) fn load_ui_fonts() {
 /// infers one fixed lifetime and iced rejects it as "not general enough".
 fn daemon_view(state: &App, window: window::Id) -> iced::Element<'_, Message> {
     if Some(window) == state.settings_window {
-        let form = super::settings::view(state);
-        // The model picker, when it was opened from this form, over it.
-        match state.model_picker.as_ref().filter(|picker| picker.over_settings) {
-            Some(picker) => iced::widget::stack![form, state.model_picker_view(picker)].into(),
-            None => form,
-        }
+        settings_window_view(state)
     } else {
         state.view()
+    }
+}
+
+/// What the settings window shows: the form, and a picker it opened over it.
+pub(super) fn settings_window_view(state: &App) -> iced::Element<'_, Message> {
+    let form = super::settings::window(state);
+    match state.settings_picker() {
+        Some(picker) => iced::widget::stack![form, picker].into(),
+        None => form,
     }
 }
 
@@ -489,7 +493,7 @@ impl App {
 
     /// Re-registers the summon hotkey with the OS after it changes in settings,
     /// so it takes effect without a restart.
-    fn reregister_hotkey(&mut self) {
+    pub(super) fn reregister_hotkey(&mut self) {
         let Some(manager) = &self.hotkey_manager else {
             return;
         };

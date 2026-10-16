@@ -443,6 +443,9 @@ pub(crate) enum Message {
     Settings(settings::Msg),
     /// A "Browse…" file dialog resolved (a path, or `None` if cancelled).
     SettingsBrowsed(settings::Field, Option<PathBuf>),
+    /// An overlay background tile's picture, prepared (PNG), or `None` if it
+    /// couldn't be read.
+    BackdropPreview(platform::BackdropPicture, Option<Vec<u8>>),
     /// A create/open-board action was invoked — from a scratch-board button
     /// node (its `tb_action`) or the tray menu. Values: "new_board",
     /// "open_board", "open_vault", or "use_vault:<path>".
@@ -584,9 +587,13 @@ struct App {
     /// Raw text of the settings window's text/number fields, so typing shows
     /// exactly what was typed. Seeded from the config when the window opens.
     settings_drafts: HashMap<settings::Field, String>,
-    /// Whether the settings window's collapsible "Advanced" section is expanded.
-    /// Collapsed by default so the essentials (theme, canvas, hotkey) stay short.
-    settings_advanced_open: bool,
+    /// The settings form's tab. Kept while the app runs, so the form opens
+    /// where it was left.
+    settings_tab: settings::Tab,
+    /// The row showing what it does: the last one pressed or used.
+    settings_focus: Option<settings::Field>,
+    /// The overlay background tiles' pictures, asked for once per launch.
+    backdrop_previews: Vec<(platform::BackdropPicture, settings::Preview)>,
     /// "Custom" was picked as the AI provider and no URL typed yet — which the
     /// config alone can't say, an empty URL being "Off".
     settings_custom_ai: bool,
@@ -868,7 +875,9 @@ impl App {
             main_window: None,
             settings_window: None,
             settings_drafts: HashMap::new(),
-            settings_advanced_open: false,
+            settings_tab: settings::Tab::default(),
+            settings_focus: None,
+            backdrop_previews: Vec::new(),
             settings_custom_ai: false,
             search: None,
             command_palette: None,
@@ -949,7 +958,7 @@ impl App {
                 // The gesture reports a bottom-left-origin window point; flip it
                 // into iced's top-left canvas space to zoom around the pinch.
                 let cursor = Point::new(x, (self.camera.viewport.height - y).max(0.0));
-                self.zoom_by((1.0 + magnification * PINCH_SPEED).max(0.1), cursor);
+                self.zoom_by((1.0 + magnification * PINCH_SPEED * self.config.zoom_speed).max(0.1), cursor);
                 return self.exit_edit_if_offscreen();
             }
 
@@ -1333,25 +1342,30 @@ impl App {
             Message::OpenSettingsOverlay => {
                 self.search = None;
                 self.command_palette = None;
-                self.populate_settings_drafts();
                 self.settings_overlay = true;
                 self.cache.clear();
+                return self.open_settings_form();
             }
             Message::CloseSettingsOverlay => {
+                // Whatever was typed and not yet submitted, as closing the
+                // window keeps it.
+                self.persist_config();
                 self.settings_overlay = false;
-                self.close_settings_model_picker();
+                self.settings_focus = None;
                 self.cache.clear();
+                return self.close_settings_pickers();
             }
             Message::OpenSettings => {
                 if let Some(id) = self.settings_window {
                     return window::gain_focus(id);
                 }
-                self.populate_settings_drafts();
+                let previews = self.open_settings_form();
                 let (id, open) = window::open(startup::settings_window_settings());
                 self.settings_window = Some(id);
-                return open.discard();
+                return Task::batch([previews, open.discard()]);
             }
             Message::Settings(msg) => return self.apply_setting(msg),
+            Message::BackdropPreview(picture, png) => self.backdrop_previewed(picture, png),
             Message::SettingsBrowsed(field, path) => return self.settings_browsed(field, path),
             Message::RecordHotkey => self.hotkey_recording = true,
             Message::HotkeyCaptured(key, physical, modifiers) => {
@@ -1396,15 +1410,15 @@ impl App {
             Message::SpaceChanged => return self.space_changed(),
             Message::WindowCloseRequested(id) => {
                 if self.settings_window == Some(id) {
-                    self.close_settings_window(true);
-                    return window::close(id);
+                    let closed = self.close_settings_window(true);
+                    return Task::batch([closed, window::close(id)]);
                 }
                 // The main window's close button: quit (flushing the autosave).
                 return self.save_and_exit();
             }
             Message::WindowClosed(id) => {
                 if self.settings_window == Some(id) {
-                    self.close_settings_window(false);
+                    return self.close_settings_window(false);
                 }
             }
         }
@@ -2472,12 +2486,12 @@ impl App {
         if self.theme_picker.is_some() {
             listeners.push(theme_picker::key_event);
         }
-        // Esc closes the in-board settings modal — unless the model picker
-        // is open over it, whose own Esc would otherwise close both.
-        if self.settings_overlay && self.model_picker.is_none() {
+        // Esc closes the in-board settings modal — unless a picker is open
+        // over it, whose own Esc would otherwise close both.
+        if self.settings_overlay && !self.picker_open() {
             listeners.push(settings_key_event);
         }
-        if (self.settings_overlay || self.settings_window.is_some()) && self.model_picker.is_none() {
+        if (self.settings_overlay || self.settings_window.is_some()) && !self.picker_open() {
             listeners.push(settings_tab_event);
         }
         // Drag a `.canvas` onto the window to open it.

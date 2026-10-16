@@ -127,5 +127,13 @@ pub const SUPPORTS_BACKDROP_PICTURE: bool = false;
 /// Nothing to choose (see [`SUPPORTS_BACKDROP_PICTURE`]).
 pub fn set_backdrop_picture(_picture: super::BackdropPicture) {}
 
+/// Nothing to preview (see [`SUPPORTS_BACKDROP_PICTURE`]).
+pub fn preview_backdrop_picture(
+    _picture: super::BackdropPicture,
+    ready: impl FnOnce(Option<Vec<u8>>) + Send + 'static,
+) {
+    ready(None);
+}
+
 /// Nothing to show (see [`SUPPORTS_BACKDROP_PICTURE`]).
 pub fn show_backdrop_picture(_alpha: f32) {}

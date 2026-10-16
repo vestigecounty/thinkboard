@@ -105,14 +105,6 @@ impl App {
         opened
     }
 
-    /// Closes a picker opened over the settings form, with the form: left
-    /// open, it would hold the board modal behind a panel nobody can see.
-    pub(super) fn close_settings_model_picker(&mut self) {
-        if self.model_picker.as_ref().is_some_and(|picker| picker.over_settings) {
-            self.model_picker = None;
-        }
-    }
-
     /// A finished fetch. Kept against the endpoint it was for, so switching
     /// providers mid-flight can't leave one list labelled as another's.
     pub(super) fn models_fetched(&mut self, url: String, models: Result<Vec<Model>, String>) {

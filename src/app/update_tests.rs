@@ -1920,6 +1920,85 @@ fn esc_over_the_settings_closes_only_the_picker() {
 }
 
 #[test]
+fn using_a_control_focuses_its_row_and_a_tab_starts_unfocused() {
+    // A row's description shows while it's focused, and a press on a control
+    // never reaches the row around it — so using one has to focus it.
+    let mut app = app_with(two_nodes(), Vec::new());
+    send(&mut app, Message::OpenSettingsOverlay);
+    assert_eq!(app.settings_focus, None);
+    send(&mut app, Message::Settings(settings::Msg::Slide(settings::Field::OverlayDim, 0.3)));
+    assert_eq!(app.settings_focus, Some(settings::Field::OverlayDim));
+    send(&mut app, Message::Settings(settings::Msg::Tab(settings::Tab::Canvas)));
+    assert_eq!(app.settings_tab, settings::Tab::Canvas);
+    assert_eq!(app.settings_focus, None, "the focused row isn't on this tab");
+
+    // Closed and opened again, the form is where it was left.
+    send(&mut app, Message::CloseSettingsOverlay);
+    send(&mut app, Message::OpenSettingsOverlay);
+    assert_eq!(app.settings_tab, settings::Tab::Canvas);
+}
+
+#[test]
+fn reset_puts_a_setting_back_and_clears_its_mark() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    send(&mut app, Message::OpenSettingsOverlay);
+    send(&mut app, Message::Settings(settings::Msg::Slide(settings::Field::ZoomSpeed, 1.6)));
+    assert!(settings::Field::ZoomSpeed.modified(&app.config));
+    send(&mut app, Message::Settings(settings::Msg::Reset(settings::Field::ZoomSpeed)));
+    assert_eq!(app.config.zoom_speed, 1.0);
+    assert!(!settings::Field::ZoomSpeed.modified(&app.config));
+
+    // A typed number goes back in its field too, not just in the config.
+    send(&mut app, Message::Settings(settings::Msg::Edit(settings::Field::MaxNodeWidth, "600".to_owned())));
+    send(&mut app, Message::Settings(settings::Msg::Reset(settings::Field::MaxNodeWidth)));
+    assert_eq!(app.draft(settings::Field::MaxNodeWidth), "420");
+
+    // The provider's way back is Off.
+    app.config.ai_url = "http://localhost:1234/v1".to_owned();
+    send(&mut app, Message::Settings(settings::Msg::Reset(settings::Field::AiProvider)));
+    assert!(!app.config.ai_enabled());
+}
+
+#[test]
+fn reload_takes_what_the_file_says_and_keeps_the_board_open() {
+    // Under test the file is a fresh config (`Config::load` won't read the
+    // developer's own), so a reload is a return to the defaults — except the
+    // open board, which a reload of settings mustn't switch.
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.canvas = "/boards/open.canvas".to_owned();
+    app.config.overlay_dim = 0.2;
+    app.config.layout_rank_gap = 300.0;
+    send(&mut app, Message::OpenSettingsOverlay);
+    send(&mut app, Message::Settings(settings::Msg::ReloadConfig));
+    assert_eq!(app.config.overlay_dim, crate::config::Config::default().overlay_dim);
+    assert_eq!(app.config.layout_rank_gap, crate::config::Config::default().layout_rank_gap);
+    assert_eq!(app.config.canvas, "/boards/open.canvas");
+}
+
+#[test]
+fn a_theme_picked_from_the_form_is_drawn_over_it_and_closes_with_it() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    send(&mut app, Message::OpenSettingsOverlay);
+    let before = app.theme;
+    send(&mut app, Message::Settings(settings::Msg::ChooseTheme));
+    assert!(app.theme_picker.as_ref().is_some_and(|picker| picker.over_settings));
+    send(&mut app, Message::PanelNav(picker::Panel::Theme, picker::Nav::Step(3)));
+    assert_ne!(app.theme.background, before.background, "the highlight previews");
+
+    // Closing the form cancels the preview, as any dismissal of it does.
+    send(&mut app, Message::CloseSettingsOverlay);
+    assert!(app.theme_picker.is_none());
+    assert_eq!(app.theme.background, before.background);
+
+    // The font picker the same way.
+    send(&mut app, Message::OpenSettingsOverlay);
+    send(&mut app, Message::Settings(settings::Msg::ChooseFont));
+    assert!(app.font_picker.as_ref().is_some_and(|picker| picker.over_settings));
+    send(&mut app, Message::CloseSettingsOverlay);
+    assert!(app.font_picker.is_none());
+}
+
+#[test]
 fn a_greyed_command_says_what_would_let_it_run() {
     use command::CommandId::AskAi;
     let mut app = app_with(two_nodes(), Vec::new());

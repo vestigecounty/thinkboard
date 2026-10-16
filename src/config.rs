@@ -99,6 +99,12 @@ pub struct Config {
     /// Pan coasting retention per 120 Hz tick: 0 disables inertia, higher
     /// (toward 1) coasts longer.
     pub pan_inertia: f32,
+    /// One multiplier over every way of zooming — the wheel, ⌘-scroll and a
+    /// trackpad pinch — which is what Settings offers. The two steps above stay
+    /// for tuning one input against the other, in this file only: which of
+    /// them feels slow depends on the hardware, but nobody wants to learn that
+    /// there are two before they can make zooming faster.
+    pub zoom_speed: f32,
 
     // --- Animation ---
     /// Multiplier on all animation durations: 1.0 is the tuned default, <1
@@ -214,7 +220,7 @@ pub struct Config {
     /// request; "0" leaves it uncolored.
     pub ai_trigger_color: String,
     /// Obsidian color code ("1"–"6") given to AI-generated response nodes; "0"
-    /// leaves them uncolored.
+    /// leaves them uncolored, which is the default.
     pub ai_node_color: String,
     /// Copilot-style suggestions: after adding a connected node, the AI offers
     /// a few "ghost" sibling nodes you can accept. Shelved, so nothing sets it
@@ -251,6 +257,7 @@ impl Default for Config {
             wheel_zoom_step: 0.15,
             pinch_zoom_step: 0.01,
             pan_inertia: 0.85,
+            zoom_speed: 1.0,
 
             animation_scale: 1.0,
 
@@ -288,7 +295,7 @@ impl Default for Config {
             ai_api_key: String::new(),
             max_ai_nodes: 6,
             ai_trigger_color: "0".to_owned(), // uncolored
-            ai_node_color: "6".to_owned(),    // purple
+            ai_node_color: "0".to_owned(),    // uncolored
             ai_completions: false,
             ai_thinking: false,
         }
@@ -405,7 +412,7 @@ impl OverlayBackdrop {
     pub fn label(self) -> &'static str {
         match self {
             OverlayBackdrop::Transparent => "Transparent",
-            OverlayBackdrop::Theme => "Theme colour",
+            OverlayBackdrop::Theme => "Theme color",
             OverlayBackdrop::Wallpaper => "Desktop wallpaper",
             OverlayBackdrop::Image => "Custom image",
         }
@@ -541,6 +548,8 @@ impl Config {
         self.wheel_zoom_step = self.wheel_zoom_step.clamp(0.0, 2.0);
         self.pinch_zoom_step = self.pinch_zoom_step.clamp(0.0, 1.0);
         self.pan_inertia = self.pan_inertia.clamp(0.0, 0.999);
+        // A floor, so the slider can't switch zooming off altogether.
+        self.zoom_speed = self.zoom_speed.clamp(0.1, 4.0);
         self.animation_scale = self.animation_scale.clamp(0.0, 20.0);
         self.cluster_zoom = self.cluster_zoom.clamp(0.0, self.max_zoom);
         self.auto_zoom_trigger = self.auto_zoom_trigger.clamp(0.0, self.max_zoom);
@@ -561,7 +570,7 @@ impl Config {
         // AI tint colors: an Obsidian preset "0"–"6" ("0" = none), else default.
         for (code, default) in [
             (&mut self.ai_trigger_color, "0"),
-            (&mut self.ai_node_color, "6"),
+            (&mut self.ai_node_color, "0"),
         ] {
             if !matches!(code.as_str(), "0" | "1" | "2" | "3" | "4" | "5" | "6") {
                 *code = default.to_owned();
@@ -623,6 +632,9 @@ impl Config {
                 Ok(text) => parse_or_default(&text, &path),
                 Err(_) => Self::default(),
             },
+            // Not from a test, which would read the developer's own settings
+            // and, topping up a key, write them — see [`writable`].
+            Location::Default(_) if cfg!(test) => Self::default(),
             Location::Default(path) => Self::read_or_create(&path),
             Location::None => Self::default(),
         }
@@ -723,6 +735,17 @@ fn missing_keys(text: &str, config: &Config) -> bool {
 /// A test that means to exercise saving passes an explicit path and still can.
 fn writable(location: &Location) -> bool {
     !(cfg!(test) && matches!(location, Location::Default(_)))
+}
+
+/// Where the config is read from and written to: `explicit` (a `--config`
+/// argument), `THINKBOARD_CONFIG`, or the per-OS default. `None` where there's
+/// no home to put one in. What Settings offers to copy, for the settings it
+/// leaves to the file.
+pub fn path(explicit: Option<&str>) -> Option<PathBuf> {
+    match resolve_location(explicit) {
+        Location::Explicit(path) | Location::Default(path) => Some(path),
+        Location::None => None,
+    }
 }
 
 /// The directory the config lives in, which is also where a user's own themes

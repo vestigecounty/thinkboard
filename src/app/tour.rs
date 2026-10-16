@@ -85,6 +85,14 @@ struct Tour {
     shots: usize,
     /// The window's size: [`VIEWPORT`], unless a scene [`Tour::resize`]s it.
     viewport: Size,
+    /// Touring the settings window rather than the board's — see
+    /// [`Tour::settings_window`].
+    settings: bool,
+}
+
+/// What the toured window shows, as `startup::daemon_view` picks it.
+fn root(app: &App, settings: bool) -> iced::Element<'_, Message> {
+    if settings { startup::settings_window_view(app) } else { app.view() }
 }
 
 impl Tour {
@@ -130,6 +138,7 @@ impl Tour {
             out,
             shots: 0,
             viewport: VIEWPORT,
+            settings: false,
         };
         // The board learns its size from the first event it sees.
         tour.redraw();
@@ -159,8 +168,8 @@ impl Tour {
         let cursor = mouse::Cursor::Available(self.cursor);
         let mut messages = Vec::new();
         let statuses = {
-            let Self { app, renderer, cache, viewport, .. } = self;
-            let mut ui = UserInterface::build(app.view(), *viewport, cache.take().unwrap_or_default(), renderer);
+            let Self { app, renderer, cache, viewport, settings, .. } = self;
+            let mut ui = UserInterface::build(root(app, *settings), *viewport, cache.take().unwrap_or_default(), renderer);
             let (_, statuses) = ui.update(&events, cursor, renderer, &mut clipboard::Null, &mut messages);
             *cache = Some(ui.into_cache());
             statuses
@@ -270,8 +279,8 @@ impl Tour {
     }
 
     fn operate(&mut self, operation: Box<dyn iced_runtime::core::widget::Operation>) {
-        let Self { app, renderer, cache, viewport, .. } = self;
-        let mut ui = UserInterface::build(app.view(), *viewport, cache.take().unwrap_or_default(), renderer);
+        let Self { app, renderer, cache, viewport, settings, .. } = self;
+        let mut ui = UserInterface::build(root(app, *settings), *viewport, cache.take().unwrap_or_default(), renderer);
         let mut current = Some(operation);
         while let Some(mut operation) = current.take() {
             ui.operate(renderer, operation.as_mut());
@@ -397,22 +406,37 @@ impl Tour {
     /// it on the widget rather than in the tree, so a freshly built one that
     /// hasn't seen it draws as `Disabled`: every menu item, dimmed.
     fn draw(&mut self) {
-        let theme = startup::theme(&self.app);
+        let theme = self.theme();
         let style = startup::style(&self.app, &theme);
         let cursor = mouse::Cursor::Available(self.cursor);
-        let Self { app, renderer, cache, viewport, .. } = self;
-        let mut ui = UserInterface::build(app.view(), *viewport, cache.take().unwrap_or_default(), renderer);
+        let Self { app, renderer, cache, viewport, settings, .. } = self;
+        let mut ui = UserInterface::build(root(app, *settings), *viewport, cache.take().unwrap_or_default(), renderer);
         let redraw = Event::Window(window::Event::RedrawRequested(Instant::now()));
         let _ = ui.update(&[redraw], cursor, renderer, &mut clipboard::Null, &mut Vec::new());
         ui.draw(renderer, &theme, &renderer::Style { text_color: style.text_color }, cursor);
         *cache = Some(ui.into_cache());
     }
 
+    /// The theme the toured window is drawn in, as the daemon's `theme` picks it.
+    fn theme(&self) -> iced::Theme {
+        if self.settings { startup::settings_theme(&self.app) } else { startup::theme(&self.app) }
+    }
+
+    /// Tours the settings window — the form as the tray opens it — rather
+    /// than the board's, until the scene ends.
+    fn settings_window(&mut self) {
+        let _ = self.app.open_settings_form();
+        self.app.settings_window = Some(window::Id::unique());
+        self.settings = true;
+        self.cache = None;
+        self.draw();
+    }
+
     /// Draws the tree offscreen and reads the frame back as RGBA.
     fn render(&mut self) -> (iced::Size<u32>, Vec<u8>) {
         // Whatever a redraw publishes, `shot`'s own `redraw` already delivered.
         self.draw();
-        let style = startup::style(&self.app, &startup::theme(&self.app));
+        let style = startup::style(&self.app, &self.theme());
         let size = iced::Size::new(
             (self.viewport.width * self.scale).round() as u32,
             (self.viewport.height * self.scale).round() as u32,
@@ -720,8 +744,8 @@ impl Tour {
             }
         }
         let mut find = Find { label, found: None, scrolled: Vector::ZERO, next: Vector::ZERO };
-        let Self { app, renderer, cache, viewport, .. } = self;
-        let mut ui = UserInterface::build(app.view(), *viewport, cache.take().unwrap_or_default(), renderer);
+        let Self { app, renderer, cache, viewport, settings, .. } = self;
+        let mut ui = UserInterface::build(root(app, *settings), *viewport, cache.take().unwrap_or_default(), renderer);
         ui.operate(renderer, &mut find);
         *cache = Some(ui.into_cache());
         find.found.unwrap_or_else(|| panic!("nothing on screen reads {label:?}")).center()
@@ -1157,7 +1181,7 @@ fn theme_sampler(_: &ColorTheme) -> CanvasDocument {
     frame.y = 260.0;
     frame.width = 880.0;
     frame.height = 130.0;
-    frame.set_label("Colours");
+    frame.set_label("Colors");
     nodes.insert(0, frame);
     let mut labelled = edge("intro", "lists");
     labelled.set_label("links");
@@ -1384,25 +1408,41 @@ fn overlapping() {
 fn settings() {
     let mut tour = Tour::new("settings", first_launch(canvas_file::scratch_document));
     tour.palette("settings");
-    tour.shot("top");
-    // The AI section, as a new user finds it — and with "Custom" picked
-    // before a URL is typed, which must still show the URL field.
-    for _ in 0..2 {
-        tour.swipe(Point::new(720.0, 500.0), 0.0, -520.0);
+    tour.shot("general");
+    // A changed setting is marked, and a row says what it does once it's
+    // focused — here by moving its slider, as a hand would.
+    tour.send(Message::Settings(settings::Msg::Slide(settings::Field::OverlayDim, 0.4)));
+    tour.shot("general-changed");
+    for tab in ["Appearance", "Canvas", "AI", "Advanced"] {
+        tour.click_label(tab);
+        tour.shot(&tab.to_lowercase());
     }
-    tour.shot("ai-off");
+    // With a provider, the rest of the AI tab — and with "Custom" picked
+    // before a URL is typed, which must still show the URL field.
+    tour.click_label("AI");
     tour.send(Message::Settings(settings::Msg::PickPreset("Custom".to_owned())));
     tour.shot("ai-custom");
     tour.send(Message::Settings(settings::Msg::PickPreset(settings::PROVIDER_OFF.to_owned())));
-    for _ in 0..2 {
-        tour.swipe(Point::new(720.0, 500.0), 0.0, 520.0);
-    }
-    let over = Point::new(720.0, 500.0);
-    for page in 1..=6 {
-        tour.swipe(over, 0.0, -520.0);
-        tour.shot(&format!("scrolled-{page}"));
-    }
+    // The theme picker, opened from its row, over the form.
+    tour.click_label("Appearance");
+    tour.click_label("ThinkBoard Dark");
+    tour.named(key::Named::ArrowDown);
+    tour.shot("theme-over-form");
     tour.named(key::Named::Escape);
+    tour.shot("theme-cancelled");
+    tour.named(key::Named::Escape);
+
+    // The same form in the window the tray opens, at the size it opens at
+    // and then narrowed until its rows stack.
+    tour.resize(Size::new(820.0, 760.0));
+    tour.settings_window();
+    tour.click_label("General");
+    tour.shot("window-general");
+    tour.click_label("Advanced");
+    tour.shot("window-advanced");
+    tour.resize(Size::new(420.0, 760.0));
+    tour.click_label("Appearance");
+    tour.shot("window-narrow-appearance");
 }
 
 /// Trying themes and fonts on: the pickers preview as you move, and Esc puts
@@ -1793,14 +1833,10 @@ fn ai_setup() {
     // Settings, AI, "Custom", and the URL typed in. The pick list is set by
     // its message, as in `settings`: its menu is an overlay of its own.
     tour.palette("settings");
-    for _ in 0..2 {
-        tour.swipe(Point::new(720.0, 500.0), 0.0, -520.0);
-    }
+    tour.click_label("AI");
     tour.send(Message::Settings(settings::Msg::PickPreset("Custom".to_owned())));
     tour.send(Message::Settings(settings::Msg::Edit(settings::Field::AiUrl, provider.url.clone())));
     tour.send(Message::Settings(settings::Msg::Commit));
-    // The fields the choice revealed, below where it was made.
-    tour.swipe(Point::new(720.0, 500.0), 0.0, -300.0);
     tour.shot("provider-chosen");
 
     tour.click_label("Choose…");
@@ -2510,7 +2546,7 @@ fn keyboard_only() {
     key(&mut tour, "⌘Z", &|t| t.chord(Modifiers::COMMAND, "z"));
 
     // Colouring from the palette.
-    key(&mut tour, "⌘⇧P \"colour green\"", &|t| t.palette("colour green"));
+    key(&mut tour, "⌘⇧P \"color green\"", &|t| t.palette("color green"));
     tour.shot("coloured");
 
     // Zooming.

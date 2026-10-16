@@ -387,8 +387,8 @@ Because a *named* theme wins, there has to be a way to un-name one: the theme
 picker's first row clears `config.theme`, handing the board back to the vault's
 Obsidian stylesheet — or to the built-in palette when there isn't one, which is
 what the row says it will do. Without it, trying one of ours on made a vault's
-own theme unreachable. The settings field writes the same value, so
-`Field::Theme` re-resolves live exactly as the picker does.
+own theme unreachable. The settings form's Theme row opens the same picker
+(over the form) and its Reset clears the name the same way.
 
 **The font is config, not theme.** `config.font` names a body family and
 `Theme::use_font` layers it over whatever the theme asked for, as the last step
@@ -493,11 +493,11 @@ asking failed on the very first question. The settings form's model row has a
 "Choose…" button, and picking a provider that can answer opens the picker by
 itself — one on this machine, or a hosted one whose key is already stored; for
 a hosted one without, pasting the key does. Opened from the form, the picker
-is drawn **over the form** (`ModelPicker::over_settings`), in whichever place
-the form is: the board's panel layer sits under the in-board modal, and the
-settings window doesn't have one. It closes with the form — left open behind
-it, it would hold the board modal with nothing visible — and while it's open,
-Esc is the picker's alone.
+is drawn **over the form** (`over_settings`, as the theme and font pickers are
+from their rows), in whichever place the form is: the board's panel layer sits
+under the in-board modal, and the settings window doesn't have one. It closes
+with the form — left open behind it, it would hold the board modal with
+nothing visible — and while it's open, Esc is the picker's alone.
 
 It's the one panel that **fetches**, so it has two states the others don't —
 in flight and failed — and both are shown in the list's own empty row, so the
@@ -520,6 +520,55 @@ runtime is running, by its preset's name where it has one.
 A failed answer stays on the board as a note, which is deliberate: it's where
 the question was asked, and deleting it is the editor's ordinary delete. A
 failure partway through is added under what had arrived, not written over it.
+
+## The settings form
+
+Five tabs by topic — General, Appearance, Canvas, AI, Advanced — in
+`app::settings` (the vocabulary and applying an edit) and `settings::form`
+(drawing it), hosted twice: `settings::modal` in the board, from the palette,
+and `settings::window` in the tray's window. One long column with an
+"Advanced" disclosure ran to nine screens and forgot it had been opened; the
+tab is now kept for the session.
+
+- **A row says what it does only while it's focused** — pressed, or its
+  control used (`Msg::field`), since a press on a control never reaches the
+  row around it. Anything that can't wait for focus is a *note*, always shown:
+  which source the theme comes from, why a switch is greyed (and a link that
+  ungreys it), what a provider needs, how much a performance setting matters.
+- **A changed setting is marked on its row** (`Field::modified` against a
+  fresh `Config`), with a Reset where picking the default isn't already one of
+  the row's choices. What the app fills in itself isn't a change: the open
+  board, the vault's own stylesheet, the model and key a provider brings.
+  **The tabs carry no count** — tried, and read as notifications.
+- **Dependent rows grey rather than vanish**, so the dependency can be read
+  off the form; the AI rows past Provider are the exception, as before.
+- **`FILE_ONLY` names the settings that only the file holds** — tuning
+  nobody changes twice. The foot of Advanced counts them, shows the path, and
+  offers **Reload**: the file is read at launch and written whole, so a hand
+  edit made while the app ran was lost to the next change made in the form.
+  Reload keeps the open board, and `Config::load` won't read the default
+  location under test, as `save` won't write it.
+- **Zoom speed is one multiplier** (`config.zoom_speed`) over the wheel,
+  ⌘-scroll and the native pinch — whose step was a constant no setting
+  reached. The two steps it multiplies stayed, file-only.
+- **Colours are roles from the theme** (`form::Look`): a field's well a step
+  below the panel, a button's face a step above, hairlines in the text colour
+  at low alpha. iced's palette has one colour where the form needs those.
+- The modal hangs from a fixed top rather than centring: each tab is its own
+  height, and centred, the tab bar moved under the pointer from tab to tab.
+- **One control height, one type scale.** Fields, buttons, lists and keycaps
+  are all `form::CONTROL` tall, a row is at least that, and every size sits on
+  a whole-pixel line (`form::Type`). Its weights are the theme's
+  `weight_normal`/`weight_bold`, never a named one: a family with no 600 drew a
+  semibold tab in another face altogether.
+- **The overlay background tiles are previews.** The wallpaper and your own
+  picture are prepared as the overlay would show them
+  (`platform::preview_backdrop_picture`, sharing the background's own
+  preparation), once per launch, from when the form opens; a sample picture
+  stands in until one's ready, or when none is chosen.
+
+The tour's `settings_window` renders the window host instead of the board's;
+the `settings` scene visits every tab in both.
 
 ## The board by keyboard
 

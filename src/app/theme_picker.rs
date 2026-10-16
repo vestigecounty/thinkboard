@@ -36,6 +36,9 @@ pub(crate) struct ThemePicker {
     before: Theme,
     /// Its name, for restoring the config and for marking the row.
     before_name: String,
+    /// Opened from the settings form's Theme row, and drawn over the form —
+    /// see [`App::open_theme_picker_over_settings`].
+    pub over_settings: bool,
 }
 
 /// Keyboard nav while the picker is open. Enter is the input's `on_submit`.
@@ -72,9 +75,21 @@ impl App {
             unnamed,
             before: self.theme,
             before_name,
+            over_settings: false,
         });
         // Scroll the list to wherever the current theme sits.
         Task::batch([opened, self.preview_highlighted()])
+    }
+
+    /// The picker over the settings form, from its Theme row's "Change…" —
+    /// drawn wherever the form is, as the model picker is. The form is drawn
+    /// in the theme too, so it previews along with the board.
+    pub(super) fn open_theme_picker_over_settings(&mut self) -> Task<Message> {
+        let opened = self.open_theme_picker();
+        if let Some(picker) = &mut self.theme_picker {
+            picker.over_settings = true;
+        }
+        opened
     }
 
     /// What a row says. The nameless first entry is named for what choosing it

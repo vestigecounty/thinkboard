@@ -1,80 +1,135 @@
-//! The settings window — a grouped, scrollable form over [`Config`], opened from
-//! the tray. This module owns the view, the message/field vocabulary, and the
-//! `App` side of applying an edit: each one is written to the config, clamped,
-//! persisted, and anything it affects live is refreshed (no Save button).
+//! The settings form — five tabs by topic over [`Config`], opened in the board
+//! (palette → Settings) or in a window of its own (the tray). This module owns
+//! the message/field vocabulary and the `App` side of applying an edit: each
+//! one is written to the config, clamped, persisted, and anything it affects
+//! live is refreshed (no Save button). What it looks like is [`form`].
+//!
+//! **Tabs by topic, not by importance.** The form used to be one long column,
+//! its tuning knobs behind an "Advanced" disclosure that forgot it was open.
+//! Now each tab leads with what's changed most, AI has a tab of its own, and
+//! the knobs that are only ever tuned live in the file alone ([`FILE_ONLY`]) —
+//! counted at the foot of Advanced, with its path and a Reload.
 //!
 //! Text fields are backed by `App::settings_drafts` (populated from the config
-//! when the window opens) so what you type is what's shown — parsing a number
+//! when the form opens) so what you type is what's shown — parsing a number
 //! back into the field on every keystroke would eat a trailing "." or "0".
 
-use iced::widget::{
-    Column, Space, button, column, container, pick_list, responsive, row, rule, scrollable, slider,
-    text, text_input, toggler,
-};
-use iced::{Alignment, Color, Element, Fill, Font, Padding, Task};
+mod form;
+
+use std::path::{Path, PathBuf};
+
+use iced::Task;
+use iced::widget::image;
 
 use crate::config::{Config, LinkStyle, OverlayBackdrop};
+use crate::platform::BackdropPicture;
 
 use super::{App, Message};
 
-/// Names the single [`Config`] field an edit targets.
+pub(super) use form::{modal, window};
+
+/// Names the single [`Config`] field an edit targets — and the row that shows
+/// it, which is how a row knows it's focused, changed, or resettable.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub(crate) enum Field {
-    Canvas,
-    Vault,
-    Theme,
-    Font,
+    // General
     SummonHotkey,
+    // macOS-only experimental trackpad summon gesture; plumbing stays
+    // cross-platform so a hand-set value is honored if copied between machines.
+    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
+    SummonGesture,
+    Vault,
     DismissOnBackgroundClick,
     DoubleClickAddsNote,
     // Only surfaced in the UI on macOS (its Spaces are the only workspaces we
     // watch), but the apply/config plumbing stays cross-platform.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     PersistAcrossSpaces,
-    // macOS-only experimental trackpad summon gesture; plumbing stays
-    // cross-platform so a hand-set value is honored if copied between machines.
-    #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
-    SummonGesture,
+    OverlayDim,
+    Windowed,
+    // Appearance
+    Theme,
+    Font,
     OverlayBackdrop,
     OverlayImage,
-    Windowed,
     // macOS-only menu-bar icon appearance; plumbing stays cross-platform so a
     // hand-set value is honored if a config is copied between machines.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     TrayIconMonochrome,
-    MinZoom,
-    MaxZoom,
-    ZoomSmoothing,
-    WheelZoomStep,
-    PinchZoomStep,
-    PanInertia,
-    AnimationScale,
-    AutosaveDebounceMs,
-    ClusterZoom,
-    AutoZoomTrigger,
-    AutoZoomLevel,
-    ThemeCss,
-    OverlayDim,
-    ColoredCardOpacity,
-    CenterNodeText,
-    RasterizeText,
-    NodeScrollbars,
     LinkStyle,
-    NewNodeMinWidth,
-    NewNodeMinHeight,
+    CenterNodeText,
+    NodeScrollbars,
+    ColoredCardOpacity,
     MaxNodeWidth,
-    LayoutRankGap,
-    LayoutNodeGap,
+    // Canvas
+    SnapToGrid,
+    SnapGridSize,
     AutoLayout,
     AutoLayoutDirection,
+    ZoomSpeed,
+    PanInertia,
+    // AI. The provider has no field of its own — it's read off `ai_url` — but
+    // it's a row, with its own focus and its own way back to Off.
+    AiProvider,
     AiUrl,
     AiModel,
     AiApiKey,
-    MaxAiNodes,
-    AiTriggerColor,
     AiNodeColor,
     AiThinking,
+    // Advanced
+    RasterizeText,
+    ClusterZoom,
+    AnimationScale,
+    ThemeCss,
+    Canvas,
 }
+
+/// The form's tabs, by topic.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum Tab {
+    #[default]
+    General,
+    Appearance,
+    Canvas,
+    Ai,
+    Advanced,
+}
+
+impl Tab {
+    /// In the order they're shown.
+    pub const ALL: [Tab; 5] = [Tab::General, Tab::Appearance, Tab::Canvas, Tab::Ai, Tab::Advanced];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Tab::General => "General",
+            Tab::Appearance => "Appearance",
+            Tab::Canvas => "Canvas",
+            Tab::Ai => "AI",
+            Tab::Advanced => "Advanced",
+        }
+    }
+}
+
+/// The settings only the file sets, by their keys in it. Each was a row once,
+/// and none is something anyone changes twice: their defaults are tuned, and
+/// any sane value works. Counted at the foot of Advanced, so the form says
+/// they exist rather than leaving them to be found.
+pub(crate) const FILE_ONLY: [&str; 14] = [
+    "min_zoom",
+    "max_zoom",
+    "zoom_smoothing",
+    "wheel_zoom_step",
+    "pinch_zoom_step",
+    "auto_zoom_trigger",
+    "auto_zoom_level",
+    "new_node_min_width",
+    "new_node_min_height",
+    "layout_rank_gap",
+    "layout_node_gap",
+    "autosave_debounce_ms",
+    "max_ai_nodes",
+    "ai_trigger_color",
+];
 
 /// A settings-form edit. `Slide`/`Edit` change the value live; `Commit` (slider
 /// release, text submit) is when it's persisted to disk.
@@ -92,9 +147,55 @@ pub(crate) enum Msg {
     PickPreset(String),
     /// Choose the model from the endpoint's own list (the model row's button).
     ChooseModel,
-    /// Expand/collapse the "Advanced" section (a UI-only toggle, not a config
-    /// edit).
-    ToggleAdvanced,
+    /// Choose the theme or the font in its own picker, over the form.
+    ChooseTheme,
+    ChooseFont,
+    /// One of the overlay background's tiles.
+    Backdrop(OverlayBackdrop),
+    /// Show another tab.
+    Tab(Tab),
+    /// Focus a row: it shows what it does.
+    Focus(Field),
+    /// Put a setting back the way a fresh config has it.
+    Reset(Field),
+    /// The config file's path, to the clipboard.
+    CopyConfigPath,
+    /// Read the config file again, for edits made to it by hand.
+    ReloadConfig,
+}
+
+impl Msg {
+    /// The row an edit is about. Using a control focuses its row, which is
+    /// what shows its description: a press on a control is the control's,
+    /// and never reaches the row around it.
+    fn field(&self) -> Option<Field> {
+        match self {
+            Msg::Toggle(field, _)
+            | Msg::Slide(field, _)
+            | Msg::Edit(field, _)
+            | Msg::Pick(field, _)
+            | Msg::Browse(field)
+            | Msg::Paste(field)
+            | Msg::Focus(field)
+            | Msg::Reset(field) => Some(*field),
+            Msg::PickPreset(_) => Some(Field::AiProvider),
+            Msg::ChooseModel => Some(Field::AiModel),
+            Msg::ChooseTheme => Some(Field::Theme),
+            Msg::ChooseFont => Some(Field::Font),
+            Msg::Backdrop(_) => Some(Field::OverlayBackdrop),
+            Msg::Commit | Msg::Tab(_) | Msg::CopyConfigPath | Msg::ReloadConfig => None,
+        }
+    }
+}
+
+/// A picture tile's picture, once the form has asked for it.
+#[derive(Clone, Debug)]
+pub(crate) enum Preview {
+    /// Being prepared.
+    Pending,
+    Ready(image::Handle),
+    /// Couldn't be read.
+    Missing,
 }
 
 /// A normalized value handed to [`apply`] — the form's editors are lowered to one
@@ -105,693 +206,93 @@ pub(crate) enum Value {
     Text(String),
 }
 
-// Type scale for the form (a step up from iced's 16px default).
-const HEADER_SIZE: f32 = 20.0;
-const LABEL_SIZE: f32 = 17.0;
-const EDITOR_SIZE: f32 = 16.0;
-const DESC_SIZE: f32 = 14.0;
-/// Width the content column caps at, then centers within a wider window.
-const CONTENT_WIDTH: f32 = 760.0;
-const INPUT_WIDTH: f32 = 240.0;
+impl Field {
+    /// Whether the config holds something a fresh one doesn't — the dot beside
+    /// a row. What the app fills in by itself isn't a change: the open board,
+    /// a vault's own theme, the model and key that come with a provider.
+    pub(crate) fn modified(self, c: &Config) -> bool {
+        let d = Config::default();
+        let moved = |a: f32, b: f32| (a - b).abs() > 0.001;
+        match self {
+            Field::SummonHotkey => c.summon_hotkey.trim() != d.summon_hotkey,
+            Field::SummonGesture => c.summon_gesture != d.summon_gesture,
+            Field::Vault => !c.vault.trim().is_empty(),
+            Field::DismissOnBackgroundClick => c.dismiss_on_background_click != d.dismiss_on_background_click,
+            Field::DoubleClickAddsNote => c.double_click_adds_note != d.double_click_adds_note,
+            Field::PersistAcrossSpaces => c.persist_across_spaces != d.persist_across_spaces,
+            Field::OverlayDim => moved(c.overlay_dim, d.overlay_dim),
+            Field::Windowed => c.windowed != d.windowed,
+            Field::Theme => !c.theme.trim().is_empty(),
+            Field::Font => !c.font.trim().is_empty(),
+            Field::OverlayBackdrop => OverlayBackdrop::of(c) != OverlayBackdrop::of(&d),
+            Field::TrayIconMonochrome => c.tray_icon_monochrome != d.tray_icon_monochrome,
+            Field::LinkStyle => LinkStyle::of(c) != LinkStyle::of(&d),
+            Field::CenterNodeText => c.center_node_text != d.center_node_text,
+            Field::NodeScrollbars => c.node_scrollbars != d.node_scrollbars,
+            Field::ColoredCardOpacity => moved(c.colored_card_opacity, d.colored_card_opacity),
+            Field::MaxNodeWidth => moved(c.max_node_width, d.max_node_width),
+            Field::SnapToGrid => c.snap_to_grid != d.snap_to_grid,
+            Field::SnapGridSize => moved(c.snap_grid_size, d.snap_grid_size),
+            Field::AutoLayout => c.auto_layout != d.auto_layout,
+            Field::AutoLayoutDirection => c.auto_layout_direction != d.auto_layout_direction,
+            Field::ZoomSpeed => moved(c.zoom_speed, d.zoom_speed),
+            Field::PanInertia => moved(c.pan_inertia, d.pan_inertia),
+            Field::AiProvider => c.ai_enabled(),
+            Field::AiNodeColor => c.ai_node_color != d.ai_node_color,
+            Field::AiThinking => c.ai_thinking != d.ai_thinking,
+            Field::RasterizeText => c.rasterize_text != d.rasterize_text,
+            Field::ClusterZoom => moved(c.cluster_zoom, d.cluster_zoom),
+            Field::AnimationScale => moved(c.animation_scale, d.animation_scale),
+            Field::ThemeCss => hand_picked_css(c),
+            Field::OverlayImage | Field::AiUrl | Field::AiModel | Field::AiApiKey | Field::Canvas => false,
+        }
+    }
 
-/// The settings form, laid out for the room it's given.
-///
-/// Its fields were a fixed 240 px, so in a narrow window the Browse… buttons
-/// beside them went off the panel's edge and couldn't be clicked. Now the
-/// fields take what's left beside their label, and where even that isn't
-/// enough each label goes above its control.
-pub(super) fn view(app: &App) -> Element<'_, Message> {
-    responsive(move |size| form(app, Fit::for_width(size.width))).into()
-}
-
-/// How the form's rows fit the width they have.
-#[derive(Clone, Copy)]
-struct Fit {
-    /// Label above the control rather than beside it.
-    stacked: bool,
-    /// How wide a text field is.
-    input: f32,
-}
-
-impl Fit {
-    /// For a form `width` wide. Beside its label, a field shares the row
-    /// with the label and a button; stacked, only with the button.
-    fn for_width(width: f32) -> Fit {
-        /// The content's padding a side, as `form` sets it.
-        const PAD: f32 = 26.0;
-        /// Room for the label, the gaps and a Browse… button.
-        const BESIDE: f32 = 250.0;
-        const BUTTON: f32 = 110.0;
-        let content = width.min(CONTENT_WIDTH) - 2.0 * PAD;
-        let stacked = content - BESIDE < 140.0;
-        let input = if stacked { content - BUTTON } else { content - BESIDE };
-        Fit { stacked, input: input.clamp(80.0, INPUT_WIDTH) }
+    /// What the link that puts a changed setting back says. `None` where the
+    /// row already shows every choice, so picking the default *is* the way back
+    /// — a switch, the tiles, the swatches.
+    pub(crate) fn reset_label(self) -> Option<&'static str> {
+        match self {
+            Field::Vault => Some("Clear"),
+            Field::AiProvider => Some("Turn off"),
+            Field::Theme
+            | Field::Font
+            | Field::ThemeCss
+            | Field::OverlayDim
+            | Field::ColoredCardOpacity
+            | Field::MaxNodeWidth
+            | Field::ZoomSpeed
+            | Field::PanInertia
+            | Field::ClusterZoom
+            | Field::AnimationScale => Some("Reset"),
+            _ => None,
+        }
     }
 }
 
-#[allow(clippy::vec_init_then_push)] // sequential rows + group headers read clearest this way
-fn form(app: &App, fit: Fit) -> Element<'_, Message> {
-    let c = &app.config;
-    // Theme font + muted color for the chrome; the widget colors come from the
-    // window's custom theme (startup::settings_theme). Thin forwarding closures
-    // so the rows below stay uncluttered.
-    let font = app.theme.ui_font();
-    let muted = app.theme.text_muted;
-    let header = |title| header_row(title, font);
-    let setting = |label, editor, desc| setting_row(label, editor, desc, font, muted, fit.stacked);
-
-    let mut items: Vec<Element<Message>> = Vec::new();
-
-    // --- Basics: the handful of things people actually change. Canvas first. ---
-
-    items.push(header("General"));
-    items.push(setting(
-        "Board",
-        path_line(Field::Canvas, app.draft(Field::Canvas), fit.input),
-        "The .canvas file opened on launch. Restart to load a different one.",
-    ));
-    items.push(setting(
-        "Vault",
-        path_line(Field::Vault, app.draft(Field::Vault), fit.input),
-        "Your Obsidian vault folder. Cmd/Ctrl+O then lists every board in it, and the board follows the vault's Obsidian theme. Leave blank to open boards by dialog only.",
-    ));
-    items.push(hotkey_row(app, font, muted, fit.stacked));
-    items.push(setting(
-        "Dismiss on background click",
-        // Greyed in a window, which a click never dismisses — on there, it
-        // read as a setting in force.
-        toggle_when(Field::DismissOnBackgroundClick, c.dismiss_on_background_click, app.overlay),
-        "Clicking empty space on the overlay dismisses the board. Overlay only.",
-    ));
-    // Greyed while a click dismisses, which is when it couldn't work: the
-    // board is gone before the second click lands.
-    items.push(setting(
-        "Double-click to add a note",
-        toggle_when(
-            Field::DoubleClickAddsNote,
-            c.double_click_adds_note,
-            !c.click_dismisses(app.overlay),
-        ),
-        "Double-clicking empty space adds a note there. Needs \"Dismiss on background click\" off, or windowed mode.",
-    ));
-    items.push(setting(
-        "Windowed mode",
-        toggle(Field::Windowed, c.windowed),
-        "Run in an ordinary window instead of the desktop overlay (no summon hotkey or tray). Restart to apply.",
-    ));
-    // Only macOS watches Space/workspace changes (platform::WATCHES_WORKSPACE);
-    // elsewhere the toggle is a no-op, so hide the row. The config field stays
-    // cross-platform so a hand-set value copied between machines is honored.
-    #[cfg(target_os = "macos")]
-    items.push(setting(
-        "Persist across Spaces",
-        toggle_when(Field::PersistAcrossSpaces, c.persist_across_spaces, app.overlay),
-        "Keep the board up when you switch macOS Spaces (else it auto-dismisses). Overlay only.",
-    ));
-    // Raw-trackpad gesture, macOS-only (uses a private framework).
-    #[cfg(target_os = "macos")]
-    items.push(setting(
-        "Four-finger swipe to summon",
-        toggle_when(Field::SummonGesture, c.summon_gesture, app.overlay),
-        "Swipe four fingers down on the trackpad to show or hide the board. On by default on a Mac, where the Pause hotkey below needs a keyboard most Macs haven't got. Overlay only.",
-    ));
-
-    items.push(header("Appearance"));
-    items.push(setting(
-        "Theme",
-        line(Field::Theme, app.draft(Field::Theme), "ThinkBoard Dark", fit.input),
-        "A built-in scheme, or one of your own in the themes folder beside this config. Cmd/Ctrl+Shift+P → \"Change theme\" shows them with a preview. Blank uses the default.",
-    ));
-    items.push(setting(
-        "Font",
-        line(Field::Font, app.draft(Field::Font), "Theme default", fit.input),
-        "The body typeface, by family name — any font installed on your system. Cmd/Ctrl+Shift+P → \"Change font\" lists them, each set in its own face. Blank uses the theme's.",
-    ));
-    items.push(setting(
-        "Theme CSS",
-        path_line(Field::ThemeCss, app.draft(Field::ThemeCss), fit.input),
-        "An Obsidian theme.css to read node colors and fonts from. Set a vault above and this follows whichever theme Obsidian is using; pick a file here to override that.",
-    ));
-    items.push(setting(
-        "Center node text",
-        toggle(Field::CenterNodeText, c.center_node_text),
-        "Center plain text; richer formatting (headings, code, lists) stays left-aligned.",
-    ));
-    items.push(setting(
-        "Link style",
-        choices(
-            Field::LinkStyle,
-            LinkStyle::ALL.iter().map(|s| s.label().to_owned()).collect(),
-            LinkStyle::of(c).label().to_owned(),
-        ),
-        "How links are drawn. Obsidian curves them, with the bulge growing over the distance spanned. Mermaid routes them — a fixed step out of the port, then a near-straight run. Square drops the curve entirely: straight runs meeting at right angles, links off one port sharing the trunk they branch from.",
-    ));
-    items.push(setting(
-        "Node scrollbars",
-        toggle(Field::NodeScrollbars, c.node_scrollbars),
-        "Let a node be resized smaller than its text; the overflow scrolls via a drag bar (editing re-grows it).",
-    ));
-    items.push(setting(
-        "Overlay background",
-        choices(
-            Field::OverlayBackdrop,
-            OverlayBackdrop::offered().iter().map(|b| b.label().to_owned()).collect(),
-            OverlayBackdrop::of(c).label().to_owned(),
-        ),
-        OVERLAY_BACKGROUND,
-    ));
-    // The picture, once there's a choice to be made about it.
-    if OverlayBackdrop::of(c) == OverlayBackdrop::Image {
-        items.push(setting(
-            "Overlay image",
-            path_line(Field::OverlayImage, app.draft(Field::OverlayImage), fit.input),
-            "The picture behind the board — any image file. Right-click an image card and choose \"Use as overlay background\" to use that one.",
-        ));
-    }
-    items.push(setting(
-        "Overlay dim",
-        feel_slider(Field::OverlayDim, c.overlay_dim, 1.0),
-        "How much the overlay dims the desktop (0 none, 1 solid black).",
-    ));
-    items.push(setting(
-        "Colored card opacity",
-        feel_slider(Field::ColoredCardOpacity, c.colored_card_opacity, 1.0),
-        "How solid a colored card is. Below 1, what's under it shows through — the board, or in the overlay the desktop.",
-    ));
-    // Template-image menu-bar icon, macOS-only (the template concept is AppKit's).
-    #[cfg(target_os = "macos")]
-    items.push(setting(
-        "Monochrome menu bar icon",
-        toggle(Field::TrayIconMonochrome, c.tray_icon_monochrome),
-        "Draw the menu bar icon as a monochrome template that matches the menu bar (light/dark).",
-    ));
-
-    items.push(header("AI"));
-    // The endpoint's fields describe a provider, so they wait for one. Shown
-    // under "Off" they were three boxes to fill in for nothing — one already
-    // holding a model name — with no sign that none of them did anything.
-    let custom = app.settings_custom_ai && !c.ai_enabled();
-    let provider = c.ai_enabled() || custom;
-    items.push(setting(
-        "Provider preset",
-        preset_choices(if custom { "Custom".to_owned() } else { current_preset(&c.ai_url) }),
-        if provider {
-            "Fills the endpoint URL for a known provider. Pick Custom to enter your own."
-        } else {
-            "Off: Ask AI stays hidden. Pick a provider to turn them on — a local one like LM Studio needs no key."
-        },
-    ));
-    if provider {
-        items.push(setting(
-            "API URL",
-            line(Field::AiUrl, app.draft(Field::AiUrl), "http://localhost:1234/v1", fit.input),
-            "OpenAI-compatible base URL (e.g. LM Studio); /chat/completions is appended.",
-        ));
-        items.push(setting(
-            "Model",
-            model_line(app.draft(Field::AiModel), fit.input),
-            "The model the endpoint answers with. Choose lists the ones it serves, so you needn't type a name exactly.",
-        ));
-        items.push(setting(
-            "API key",
-            key_line(Field::AiApiKey, app.draft(Field::AiApiKey), fit.input),
-            "Sent as a Bearer token. Required for hosted providers like OpenRouter; leave blank for local LM Studio.",
-        ));
-    }
-
-    items.push(header("Animation"));
-    items.push(setting(
-        "Animation speed",
-        feel_slider(Field::AnimationScale, c.animation_scale, 3.0),
-        "Scales all animation durations. 1.0 is the tuned default; lower is faster; 0 is instant.",
-    ));
-
-    // --- Advanced: tuning knobs, revealed by the disclosure header. ---
-
-    items.push(advanced_header(app.settings_advanced_open, font));
-    if app.settings_advanced_open {
-        items.push(header("Rendering"));
-        items.push(setting(
-            "Rasterize text",
-            toggle(Field::RasterizeText, c.rasterize_text),
-            "Pre-rasterize node text into bitmaps (crisp, more GPU) vs. live vector text.",
-        ));
-
-        items.push(header("Zoom & Pan"));
-        items.push(setting(
-            "Minimum zoom",
-            number(Field::MinZoom, app.draft(Field::MinZoom)),
-            "Smallest zoom the camera allows.",
-        ));
-        items.push(setting(
-            "Maximum zoom",
-            number(Field::MaxZoom, app.draft(Field::MaxZoom)),
-            "Largest zoom the camera allows.",
-        ));
-        items.push(setting(
-            "Zoom smoothing",
-            number(Field::ZoomSmoothing, app.draft(Field::ZoomSmoothing)),
-            "Zoom smoothing time in seconds; smaller is snappier.",
-        ));
-        items.push(setting(
-            "Wheel zoom step",
-            number(Field::WheelZoomStep, app.draft(Field::WheelZoomStep)),
-            "Mouse-wheel zoom sensitivity per wheel line.",
-        ));
-        items.push(setting(
-            "Pinch zoom step",
-            number(Field::PinchZoomStep, app.draft(Field::PinchZoomStep)),
-            "Trackpad pinch zoom sensitivity.",
-        ));
-        items.push(setting(
-            "Pan inertia",
-            feel_slider(Field::PanInertia, c.pan_inertia, 0.999),
-            "Pan coasting after a flick: higher coasts longer, 0 disables it.",
-        ));
-
-        items.push(header("Clustering & auto-zoom"));
-        items.push(setting(
-            "Cluster zoom",
-            number(Field::ClusterZoom, app.draft(Field::ClusterZoom)),
-            "Zoom below which nearby notes collapse into semantic-zoom clusters.",
-        ));
-        items.push(setting(
-            "Auto-zoom trigger",
-            number(Field::AutoZoomTrigger, app.draft(Field::AutoZoomTrigger)),
-            "Adding a node while zoomed out below this flies the camera in.",
-        ));
-        items.push(setting(
-            "Auto-zoom level",
-            number(Field::AutoZoomLevel, app.draft(Field::AutoZoomLevel)),
-            "Zoom the camera flies to when auto-zoom triggers.",
-        ));
-
-        items.push(header("Nodes & Layout"));
-        items.push(setting(
-            "New node min width",
-            number(Field::NewNodeMinWidth, app.draft(Field::NewNodeMinWidth)),
-            "Smallest width a freshly created / auto-sized text node grows within.",
-        ));
-        items.push(setting(
-            "New node min height",
-            number(Field::NewNodeMinHeight, app.draft(Field::NewNodeMinHeight)),
-            "Smallest height a freshly created text node grows within.",
-        ));
-        items.push(setting(
-            "Max node width",
-            number(Field::MaxNodeWidth, app.draft(Field::MaxNodeWidth)),
-            "Largest width an auto-sized text node grows to.",
-        ));
-        items.push(setting(
-            "Layout rank gap",
-            number(Field::LayoutRankGap, app.draft(Field::LayoutRankGap)),
-            "Gap between layers in the Auto-layout command (world px).",
-        ));
-        items.push(setting(
-            "Layout node gap",
-            number(Field::LayoutNodeGap, app.draft(Field::LayoutNodeGap)),
-            "Gap between siblings in the Auto-layout command (world px).",
-        ));
-        items.push(setting(
-            "Auto-layout on add",
-            toggle(Field::AutoLayout, c.auto_layout),
-            "Adding a connected node re-lays-out its graph automatically.",
-        ));
-        items.push(setting(
-            "Auto-layout direction",
-            choices(
-                Field::AutoLayoutDirection,
-                vec!["LR".to_owned(), "TD".to_owned()],
-                c.auto_layout_direction.clone(),
-            ),
-            "Flow direction of the auto-layout: LR (left-to-right) or TD (top-down).",
-        ));
-
-        items.push(header("Behavior"));
-        items.push(setting(
-            "Autosave delay (ms)",
-            number(Field::AutosaveDebounceMs, app.draft(Field::AutosaveDebounceMs)),
-            "Idle time after your last edit before the board autosaves.",
-        ));
-
-        items.push(header("AI (advanced)"));
-        items.push(setting(
-            "Max AI nodes",
-            number(Field::MaxAiNodes, app.draft(Field::MaxAiNodes)),
-            "Cap on notes a single AI answer may split into.",
-        ));
-        items.push(setting(
-            "Trigger color",
-            choices(Field::AiTriggerColor, color_options(), c.ai_trigger_color.clone()),
-            "Obsidian color a node is tinted while it triggers an AI request (0 = none).",
-        ));
-        items.push(setting(
-            "Response color",
-            choices(Field::AiNodeColor, color_options(), c.ai_node_color.clone()),
-            "Obsidian color given to AI-generated response nodes (0 = none).",
-        ));
-        items.push(setting(
-            "AI thinking",
-            toggle(Field::AiThinking, c.ai_thinking),
-            "Let a reasoning model think before answering (wasteful for short node generation).",
-        ));
-    }
-
-    let content = Column::with_children(items)
-        .spacing(18)
-        .padding(Padding::from([16, 26]))
-        .max_width(CONTENT_WIDTH);
-
-    // Cap the content width and center it once the window is wider than that.
-    let centered = container(content).center_x(Fill);
-
-    container(scrollable(centered).width(Fill))
-        .width(Fill)
-        .height(Fill)
-        .style(|theme: &iced::Theme| container::Style {
-            background: Some(theme.palette().background.into()),
-            text_color: Some(theme.palette().text),
-            ..container::Style::default()
-        })
-        .into()
+/// Whether `theme_css` is a stylesheet someone chose, rather than the one the
+/// vault's Obsidian theme put there — which is the app's doing, not theirs.
+pub(crate) fn hand_picked_css(c: &Config) -> bool {
+    c.theme_css
+        .as_deref()
+        .filter(|css| !css.trim().is_empty())
+        .is_some_and(|css| !thinkboard_core::vault::is_vault_theme(Path::new(css), Path::new(c.vault.trim())))
 }
-
-// --- Row + editor builders ---
-
-/// A group header: a bold title over a hairline rule.
-fn header_row(title: &'static str, font: Font) -> Element<'static, Message> {
-    column![
-        text(title).size(HEADER_SIZE).font(Font {
-            weight: iced::font::Weight::Bold,
-            ..font
-        }),
-        rule::horizontal(1),
-    ]
-    .spacing(6)
-    .into()
-}
-
-/// The clickable "Advanced" disclosure: a header-styled row with a ▸/▾ marker
-/// that expands or collapses the advanced groups below it.
-fn advanced_header(open: bool, font: Font) -> Element<'static, Message> {
-    let marker = if open { "▾" } else { "▸" };
-    let label = text(format!("{marker}  Advanced")).size(HEADER_SIZE).font(Font {
-        weight: iced::font::Weight::Bold,
-        ..font
-    });
-    column![
-        button(label)
-            .padding(0)
-            .on_press(Message::Settings(Msg::ToggleAdvanced))
-            .style(|theme: &iced::Theme, _status| button::Style {
-                background: None,
-                text_color: theme.palette().text,
-                ..button::Style::default()
-            }),
-        rule::horizontal(1),
-    ]
-    .spacing(6)
-    .into()
-}
-
-/// What the overlay-background row says. The live desktop is the Dashboard
-/// look, and it costs: the board is blended over every window under it, every
-/// frame, which on a ProMotion display over a busy desktop drops it to 60 Hz.
-const OVERLAY_BACKGROUND: &str = if crate::platform::SUPPORTS_BACKDROP_PICTURE {
-    "What's behind the board. Transparent shows the desktop live, and can stutter over busy windows; the others cover them. The wallpaper is read when the app starts. Overlay only."
-} else {
-    "What's behind the board. Theme colour if transparent renders black, or stutters over other windows. Restart to apply. Overlay only."
-};
-
-/// A settings row: `label ........ editor`, with a secondary description below
-/// in the theme's muted color.
-fn setting_row<'a>(
-    label: &'static str,
-    editor: Element<'a, Message>,
-    desc: &'static str,
-    font: Font,
-    muted: Color,
-    stacked: bool,
-) -> Element<'a, Message> {
-    let label = text(label).size(LABEL_SIZE).font(font);
-    let top: Element<'a, Message> = if stacked {
-        column![label, editor].spacing(6).into()
-    } else {
-        row![label, Space::new().width(Fill), editor].align_y(Alignment::Center).spacing(12).into()
-    };
-    column![top, text(desc).size(DESC_SIZE).color(muted).font(font)].spacing(5).into()
-}
-
-fn toggle<'a>(field: Field, on: bool) -> Element<'a, Message> {
-    toggle_when(field, on, true)
-}
-
-/// A switch that only flips while `enabled` — one setting that depends on
-/// another shows its value greyed rather than vanishing, so the dependency
-/// can be read off the form.
-fn toggle_when<'a>(field: Field, on: bool, enabled: bool) -> Element<'a, Message> {
-    toggler(on)
-        .on_toggle_maybe(enabled.then_some(move |b| Message::Settings(Msg::Toggle(field, b))))
-        .size(20)
-        .into()
-}
-
-/// A freeform text field.
-fn line<'a>(field: Field, value: &'a str, placeholder: &'a str, width: f32) -> Element<'a, Message> {
-    text_input(placeholder, value)
-        .on_input(move |s| Message::Settings(Msg::Edit(field, s)))
-        .on_submit(Message::Settings(Msg::Commit))
-        .size(EDITOR_SIZE)
-        .width(width)
-        .into()
-}
-
-/// A numeric text field (parsed on the way into the config).
-fn number<'a>(field: Field, value: &'a str) -> Element<'a, Message> {
-    text_input("", value)
-        .on_input(move |s| Message::Settings(Msg::Edit(field, s)))
-        .on_submit(Message::Settings(Msg::Commit))
-        .size(EDITOR_SIZE)
-        .width(100)
-        .into()
-}
-
-/// A 0..=`max` slider with a live value readout.
-fn feel_slider<'a>(field: Field, value: f32, max: f32) -> Element<'a, Message> {
-    row![
-        slider(0.0..=max, value, move |v| Message::Settings(Msg::Slide(field, v)))
-            .on_release(Message::Settings(Msg::Commit))
-            .step(0.01_f32)
-            .width(170),
-        text(format!("{value:.2}")).size(EDITOR_SIZE).width(38),
-    ]
-    .spacing(10)
-    .align_y(Alignment::Center)
-    .into()
-}
-
-fn choices<'a>(field: Field, options: Vec<String>, selected: String) -> Element<'a, Message> {
-    pick_list(options, Some(selected), move |s| {
-        Message::Settings(Msg::Pick(field, s))
-    })
-    .text_size(EDITOR_SIZE)
-    .into()
-}
-
-/// A text field with a Browse… button that opens a native file dialog.
-fn path_line<'a>(field: Field, value: &'a str, width: f32) -> Element<'a, Message> {
-    row![
-        text_input("", value)
-            .on_input(move |s| Message::Settings(Msg::Edit(field, s)))
-            .on_submit(Message::Settings(Msg::Commit))
-            .size(EDITOR_SIZE)
-            .width(width),
-        button(text("Browse…").size(EDITOR_SIZE))
-            .padding([5, 12])
-            .on_press(Message::Settings(Msg::Browse(field))),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center)
-    .into()
-}
-
-/// A masked (bulleted) text field with a Paste button, for the API key.
-fn key_line<'a>(field: Field, value: &'a str, width: f32) -> Element<'a, Message> {
-    row![
-        text_input("", value)
-            .secure(true)
-            .on_input(move |s| Message::Settings(Msg::Edit(field, s)))
-            .on_submit(Message::Settings(Msg::Commit))
-            .size(EDITOR_SIZE)
-            .width(width),
-        button(text("Paste").size(EDITOR_SIZE))
-            .padding([5, 12])
-            .on_press(Message::Settings(Msg::Paste(field))),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center)
-    .into()
-}
-
-/// The model field, with a button that lists what the endpoint serves.
-fn model_line(value: &str, width: f32) -> Element<'_, Message> {
-    row![
-        text_input("", value)
-            .on_input(|s| Message::Settings(Msg::Edit(Field::AiModel, s)))
-            .on_submit(Message::Settings(Msg::Commit))
-            .size(EDITOR_SIZE)
-            .width(width),
-        button(text("Choose…").size(EDITOR_SIZE))
-            .padding([5, 12])
-            .on_press(Message::Settings(Msg::ChooseModel)),
-    ]
-    .spacing(8)
-    .align_y(Alignment::Center)
-    .into()
-}
-
-/// Whether the configured endpoint can list its models yet: a key is stored
-/// for it, or it's on this machine, where a runtime asks for none. A hosted
-/// provider picked before its key is pasted would only answer the list with
-/// a refusal.
-fn ready_to_list(config: &crate::config::Config) -> bool {
-    !config.ai_key().is_empty() || is_local(&config.ai_url)
-}
-
-/// Whether `url` points at this machine.
-fn is_local(url: &str) -> bool {
-    let rest = url.trim().split_once("://").map_or(url.trim(), |(_, rest)| rest);
-    let host = rest.split(['/', ':']).next().unwrap_or_default();
-    matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0") || rest.starts_with("[::1]")
-}
-
-/// The "no endpoint" provider — AI disabled. Represented by an empty `ai_url`.
-pub(super) const PROVIDER_OFF: &str = "Off";
-
-/// The provider-preset picker: "Off" (AI disabled), the known providers, then
-/// "Custom" (any URL not matching one). `selected` is the name for the current
-/// URL.
-fn preset_choices(selected: String) -> Element<'static, Message> {
-    let options: Vec<String> = std::iter::once(PROVIDER_OFF.to_owned())
-        .chain(crate::ai::PRESETS.iter().map(|p| p.name.to_owned()))
-        .chain(std::iter::once("Custom".to_owned()))
-        .collect();
-    pick_list(options, Some(selected), |s| Message::Settings(Msg::PickPreset(s)))
-        .text_size(EDITOR_SIZE)
-        .into()
-}
-
-/// The preset name for `url`: "Off" when empty, else the matching provider
-/// (ignoring a trailing slash), else "Custom".
-fn current_preset(url: &str) -> String {
-    let url = url.trim().trim_end_matches('/');
-    if url.is_empty() {
-        return PROVIDER_OFF.to_owned();
-    }
-    crate::ai::PRESETS
-        .iter()
-        .find(|p| p.url.trim_end_matches('/') == url)
-        .map_or_else(|| "Custom".to_owned(), |p| p.name.to_owned())
-}
-
-/// The summon-hotkey row: shows the current combo (or "Press a shortcut…" while
-/// recording) and a Record button that captures the next key combination.
-fn hotkey_row(app: &App, font: Font, muted: Color, stacked: bool) -> Element<'_, Message> {
-    let editor: Element<Message> = if app.hotkey_recording {
-        row![
-            text("Press a shortcut…  (Esc to cancel)")
-                .size(EDITOR_SIZE)
-                .font(font)
-                .color(muted),
-        ]
-        .into()
-    } else {
-        let current = app.config.summon_hotkey.trim();
-        let shown = if current.is_empty() {
-            "None".to_owned()
-        } else {
-            current.to_owned()
-        };
-        row![
-            text(shown).size(EDITOR_SIZE).font(font),
-            button(text("Set shortcut…").size(EDITOR_SIZE).font(font))
-                .padding([5, 12])
-                .on_press(Message::RecordHotkey),
-        ]
-        .spacing(12)
-        .align_y(Alignment::Center)
-        .into()
-    };
-
-    setting_row(
-        "Summon hotkey",
-        editor,
-        "Global summon/dismiss key. Click Set shortcut and press the combination.",
-        font,
-        muted,
-        stacked,
-    )
-}
-
-/// The Obsidian color-code choices for AI tints: "0" (none) through "6".
-fn color_options() -> Vec<String> {
-    (0..=6).map(|n| n.to_string()).collect()
-}
-
-// --- Applying edits to the config ---
 
 /// Whether a field is edited as a number (so text input is parsed as `f32`).
 pub(crate) fn is_number(field: Field) -> bool {
-    matches!(
-        field,
-        Field::MinZoom
-            | Field::MaxZoom
-            | Field::ZoomSmoothing
-            | Field::WheelZoomStep
-            | Field::PinchZoomStep
-            | Field::AutosaveDebounceMs
-            | Field::ClusterZoom
-            | Field::AutoZoomTrigger
-            | Field::AutoZoomLevel
-            | Field::NewNodeMinWidth
-            | Field::NewNodeMinHeight
-            | Field::MaxNodeWidth
-            | Field::LayoutRankGap
-            | Field::LayoutNodeGap
-            | Field::MaxAiNodes
-    )
+    matches!(field, Field::MaxNodeWidth | Field::SnapGridSize | Field::ClusterZoom)
 }
 
-/// The current config value of a text-editable `field`, formatted for display.
-/// Used to seed `settings_drafts` when the window opens.
+/// The config's value for a text or number field, as its editor shows it.
 pub(crate) fn config_text(config: &Config, field: Field) -> String {
     match field {
-        Field::Canvas => config.canvas.clone(),
-        Field::Vault => config.vault.clone(),
-        Field::Theme => config.theme.clone(),
-        Field::Font => config.font.clone(),
-        Field::SummonHotkey => config.summon_hotkey.clone(),
-        Field::ThemeCss => config.theme_css.clone().unwrap_or_default(),
-        Field::OverlayImage => config.overlay_image.clone(),
         Field::AiUrl => config.ai_url.clone(),
         Field::AiModel => config.ai_model.clone(),
         Field::AiApiKey => config.ai_key().to_owned(),
-        Field::MinZoom => config.min_zoom.to_string(),
-        Field::MaxZoom => config.max_zoom.to_string(),
-        Field::ZoomSmoothing => config.zoom_smoothing.to_string(),
-        Field::WheelZoomStep => config.wheel_zoom_step.to_string(),
-        Field::PinchZoomStep => config.pinch_zoom_step.to_string(),
-        Field::AutosaveDebounceMs => config.autosave_debounce_ms.to_string(),
-        Field::ClusterZoom => config.cluster_zoom.to_string(),
-        Field::AutoZoomTrigger => config.auto_zoom_trigger.to_string(),
-        Field::AutoZoomLevel => config.auto_zoom_level.to_string(),
-        Field::NewNodeMinWidth => config.new_node_min_width.to_string(),
-        Field::NewNodeMinHeight => config.new_node_min_height.to_string(),
         Field::MaxNodeWidth => config.max_node_width.to_string(),
-        Field::LayoutRankGap => config.layout_rank_gap.to_string(),
-        Field::LayoutNodeGap => config.layout_node_gap.to_string(),
-        Field::MaxAiNodes => config.max_ai_nodes.to_string(),
-        // Non-text fields (toggles, sliders, pick lists) never seed a draft.
+        Field::SnapGridSize => config.snap_grid_size.to_string(),
+        Field::ClusterZoom => config.cluster_zoom.to_string(),
         _ => String::new(),
     }
 }
@@ -812,7 +313,6 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
         (Field::AiModel, Value::Text(s)) => config.ai_model = s,
         (Field::AiApiKey, Value::Text(s)) => config.set_ai_key(&s),
         (Field::AutoLayoutDirection, Value::Text(s)) => config.auto_layout_direction = s,
-        (Field::AiTriggerColor, Value::Text(s)) => config.ai_trigger_color = s,
         (Field::AiNodeColor, Value::Text(s)) => config.ai_node_color = s,
 
         (Field::DismissOnBackgroundClick, Value::Bool(b)) => config.dismiss_on_background_click = b,
@@ -839,37 +339,58 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
                 .as_str()
                 .to_owned();
         }
+        (Field::SnapToGrid, Value::Bool(b)) => config.snap_to_grid = b,
         (Field::AutoLayout, Value::Bool(b)) => config.auto_layout = b,
         (Field::AiThinking, Value::Bool(b)) => config.ai_thinking = b,
 
-        (Field::MinZoom, Value::Num(v)) => config.min_zoom = v,
-        (Field::MaxZoom, Value::Num(v)) => config.max_zoom = v,
-        (Field::ZoomSmoothing, Value::Num(v)) => config.zoom_smoothing = v,
-        (Field::WheelZoomStep, Value::Num(v)) => config.wheel_zoom_step = v,
-        (Field::PinchZoomStep, Value::Num(v)) => config.pinch_zoom_step = v,
-        (Field::PanInertia, Value::Num(v)) => config.pan_inertia = v,
-        (Field::AnimationScale, Value::Num(v)) => config.animation_scale = v,
-        (Field::AutosaveDebounceMs, Value::Num(v)) => config.autosave_debounce_ms = v.max(0.0) as u64,
-        (Field::ClusterZoom, Value::Num(v)) => config.cluster_zoom = v,
-        (Field::AutoZoomTrigger, Value::Num(v)) => config.auto_zoom_trigger = v,
-        (Field::AutoZoomLevel, Value::Num(v)) => config.auto_zoom_level = v,
         (Field::OverlayDim, Value::Num(v)) => config.overlay_dim = v,
         (Field::ColoredCardOpacity, Value::Num(v)) => config.colored_card_opacity = v,
-        (Field::NewNodeMinWidth, Value::Num(v)) => config.new_node_min_width = v,
-        (Field::NewNodeMinHeight, Value::Num(v)) => config.new_node_min_height = v,
         (Field::MaxNodeWidth, Value::Num(v)) => config.max_node_width = v,
-        (Field::LayoutRankGap, Value::Num(v)) => config.layout_rank_gap = v,
-        (Field::LayoutNodeGap, Value::Num(v)) => config.layout_node_gap = v,
-        (Field::MaxAiNodes, Value::Num(v)) => config.max_ai_nodes = v.max(0.0) as usize,
+        (Field::SnapGridSize, Value::Num(v)) => config.snap_grid_size = v,
+        (Field::ZoomSpeed, Value::Num(v)) => config.zoom_speed = v,
+        (Field::PanInertia, Value::Num(v)) => config.pan_inertia = v,
+        (Field::ClusterZoom, Value::Num(v)) => config.cluster_zoom = v,
+        (Field::AnimationScale, Value::Num(v)) => config.animation_scale = v,
 
         // Type/field mismatches (shouldn't happen — editors and fields agree).
         _ => {}
     }
 }
 
+/// Whether the configured endpoint can list its models yet: a key is stored
+/// for it, or it's on this machine, where a runtime asks for none. A hosted
+/// provider picked before its key is pasted would only answer the list with
+/// a refusal.
+fn ready_to_list(config: &Config) -> bool {
+    !config.ai_key().is_empty() || is_local(&config.ai_url)
+}
+
+/// Whether `url` points at this machine.
+fn is_local(url: &str) -> bool {
+    let rest = url.trim().split_once("://").map_or(url.trim(), |(_, rest)| rest);
+    let host = rest.split(['/', ':']).next().unwrap_or_default();
+    matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0") || rest.starts_with("[::1]")
+}
+
+/// The "no endpoint" provider — AI disabled. Represented by an empty `ai_url`.
+pub(super) const PROVIDER_OFF: &str = "Off";
+
+/// The preset name for `url`: "Off" when empty, else the matching provider
+/// (ignoring a trailing slash), else "Custom".
+fn current_preset(url: &str) -> String {
+    let url = url.trim().trim_end_matches('/');
+    if url.is_empty() {
+        return PROVIDER_OFF.to_owned();
+    }
+    crate::ai::PRESETS
+        .iter()
+        .find(|p| p.url.trim_end_matches('/') == url)
+        .map_or_else(|| "Custom".to_owned(), |p| p.name.to_owned())
+}
+
 impl App {
     /// The raw text of a settings text/number field (seeded from the config when
-    /// the window opens; reflects exactly what the user has typed since).
+    /// the form opens; reflects exactly what the user has typed since).
     pub(super) fn draft(&self, field: Field) -> &str {
         self.settings_drafts
             .get(&field)
@@ -882,12 +403,7 @@ impl App {
     pub(super) fn populate_settings_drafts(&mut self) {
         use Field::*;
         self.settings_drafts.clear();
-        for field in [
-            Canvas, SummonHotkey, ThemeCss, OverlayImage, AiUrl, AiModel, AiApiKey, MinZoom, MaxZoom,
-            ZoomSmoothing, WheelZoomStep, PinchZoomStep, AutosaveDebounceMs, ClusterZoom,
-            AutoZoomTrigger, AutoZoomLevel, NewNodeMinWidth, NewNodeMinHeight, MaxNodeWidth,
-            LayoutRankGap, LayoutNodeGap, MaxAiNodes,
-        ] {
+        for field in [AiUrl, AiModel, AiApiKey, MaxNodeWidth, SnapGridSize, ClusterZoom] {
             self.settings_drafts.insert(field, config_text(&self.config, field));
         }
     }
@@ -900,6 +416,9 @@ impl App {
     /// mid-drag/mid-type, which persist on `Commit`), and refreshes anything the
     /// change affects live.
     pub(super) fn apply_setting(&mut self, msg: Msg) -> Task<Message> {
+        if let Some(field) = msg.field() {
+            self.settings_focus = Some(field);
+        }
         match msg {
             Msg::Toggle(field, b) => {
                 apply(&mut self.config, field, Value::Bool(b));
@@ -983,11 +502,112 @@ impl App {
                 Task::none()
             }
             Msg::ChooseModel => self.open_model_picker_over_settings(),
-            Msg::ToggleAdvanced => {
-                self.settings_advanced_open = !self.settings_advanced_open;
+            Msg::ChooseTheme => self.open_theme_picker_over_settings(),
+            Msg::ChooseFont => self.open_font_picker_over_settings(),
+            Msg::Backdrop(backdrop) => {
+                let again = OverlayBackdrop::of(&self.config) == backdrop;
+                backdrop.set(&mut self.config);
+                self.persist_config();
+                let changed = self.after_setting_change(Field::OverlayBackdrop);
+                // The image tile is also where the picture is chosen: the first
+                // time it's picked, or when it's picked again to change it.
+                if backdrop == OverlayBackdrop::Image && (again || self.config.overlay_image.trim().is_empty()) {
+                    return Task::batch([changed, self.browse_for(Field::OverlayImage)]);
+                }
+                changed
+            }
+            Msg::Tab(tab) => {
+                // What was typed on the last tab is kept, as leaving the form
+                // would keep it.
+                self.persist_config();
+                self.settings_tab = tab;
+                self.settings_focus = None;
                 Task::none()
             }
+            Msg::Focus(_) => Task::none(),
+            Msg::Reset(field) => self.reset_setting(field),
+            Msg::CopyConfigPath => {
+                if let Some(path) = crate::config::path(super::config_path_arg().as_deref()) {
+                    super::clipboard::write_text(path.to_string_lossy().into_owned());
+                }
+                Task::none()
+            }
+            Msg::ReloadConfig => self.reload_config(),
         }
+    }
+
+    /// Puts `field` back the way a fresh config has it.
+    fn reset_setting(&mut self, field: Field) -> Task<Message> {
+        let fresh = Config::default();
+        let c = &mut self.config;
+        match field {
+            Field::Vault => c.vault.clear(),
+            Field::Theme => c.theme.clear(),
+            Field::Font => c.font.clear(),
+            // Back to what the vault's Obsidian theme says, if there's one —
+            // which is what an unpicked stylesheet would have been.
+            Field::ThemeCss => {
+                c.theme_css = None;
+                c.adopt_vault_theme();
+            }
+            Field::AiProvider => {
+                self.settings_custom_ai = false;
+                c.ai_url.clear();
+            }
+            Field::OverlayDim => c.overlay_dim = fresh.overlay_dim,
+            Field::ColoredCardOpacity => c.colored_card_opacity = fresh.colored_card_opacity,
+            Field::MaxNodeWidth => c.max_node_width = fresh.max_node_width,
+            Field::ZoomSpeed => c.zoom_speed = fresh.zoom_speed,
+            Field::PanInertia => c.pan_inertia = fresh.pan_inertia,
+            Field::ClusterZoom => c.cluster_zoom = fresh.cluster_zoom,
+            Field::AnimationScale => c.animation_scale = fresh.animation_scale,
+            _ => return Task::none(),
+        }
+        self.config.sanitize();
+        self.persist_config();
+        self.populate_settings_drafts();
+        // The provider is the URL, as far as anything downstream knows.
+        let field = if field == Field::AiProvider { Field::AiUrl } else { field };
+        self.after_setting_change(field)
+    }
+
+    /// Reads the config file again and applies what it says, for the settings
+    /// [`FILE_ONLY`] leaves to it. The file is read at launch and written whole,
+    /// so an edit made by hand while the app runs was otherwise lost to the next
+    /// change made here.
+    ///
+    /// The open board stays open whatever the file names — Reload is for
+    /// settings, not for switching boards.
+    pub(super) fn reload_config(&mut self) -> Task<Message> {
+        let mut fresh = Config::load(super::config_path_arg().as_deref());
+        fresh.canvas = self.config.canvas.clone();
+        // As at launch: the vault's Obsidian theme is resolved, not read.
+        fresh.adopt_vault_theme();
+        let before = std::mem::replace(&mut self.config, fresh);
+        self.populate_settings_drafts();
+        if before.summon_hotkey != self.config.summon_hotkey {
+            self.reregister_hotkey();
+        }
+        if crate::platform::SUPPORTS_GESTURES {
+            crate::platform::set_summon_gesture_enabled(self.overlay && self.config.summon_gesture);
+        }
+        super::tray::set_monochrome(self.config.tray_icon_monochrome);
+        if self.overlay {
+            self.apply_backdrop();
+        }
+        self.cache.clear();
+        let c = &self.config;
+        let looks = before.theme != c.theme || before.theme_css != c.theme_css || before.font != c.font;
+        let text = before.rasterize_text != c.rasterize_text || before.center_node_text != c.center_node_text;
+        let mut tasks = Vec::new();
+        if looks {
+            tasks.push(self.apply_theme_css());
+        }
+        if text {
+            tasks.push(self.refresh_snapshots());
+            tasks.push(self.schedule_recluster());
+        }
+        Task::batch(tasks)
     }
 
     /// Live side effects of a settings change (over and above the config write).
@@ -997,6 +617,8 @@ impl App {
         if matches!(field, Field::OverlayBackdrop | Field::OverlayImage) && self.overlay {
             self.apply_backdrop();
         }
+        // A new picture of your own, for its tile.
+        let previews = if field == Field::OverlayImage { self.preview_backdrops() } else { Task::none() };
         self.cache.clear();
         // Keys are per endpoint, so changing the endpoint changes which one the
         // field is showing.
@@ -1004,7 +626,7 @@ impl App {
             self.settings_drafts
                 .insert(Field::AiApiKey, self.config.ai_key().to_owned());
         }
-        match field {
+        let effect = match field {
             // These change how node *and* cluster text is drawn — re-rasterize
             // both. Cluster snapshots aren't produced while rasterize is off, so
             // turning it on must regenerate them or clusters render empty.
@@ -1035,7 +657,8 @@ impl App {
                 Task::none()
             }
             _ => Task::none(),
-        }
+        };
+        Task::batch([previews, effect])
     }
 
     /// Opens a file dialog for a path setting. macOS/Windows use the blocking
@@ -1089,8 +712,13 @@ impl App {
         let Some(path) = path else {
             return Task::none();
         };
+        // The launch board is the open one — every way of opening a board
+        // rewrites it — so choosing one opens it, rather than leaving the
+        // board on screen and the row disagreeing until the next launch.
+        if field == Field::Canvas {
+            return self.open_canvas(path);
+        }
         let text = path.to_string_lossy().into_owned();
-        self.settings_drafts.insert(field, text.clone());
         apply(&mut self.config, field, Value::Text(text));
         self.config.sanitize();
         self.persist_config();
@@ -1099,16 +727,107 @@ impl App {
         self.after_setting_change(field)
     }
 
-    /// Closes the settings window's state (its drafts and the Advanced
-    /// disclosure), persisting whatever was typed.
-    pub(super) fn close_settings_window(&mut self, persist: bool) {
+    /// Opens the form: drafts from the config, nothing focused, on the tab it
+    /// was left on — the old form's Advanced forgot it had been opened.
+    pub(super) fn open_settings_form(&mut self) -> Task<Message> {
+        self.populate_settings_drafts();
+        self.settings_focus = None;
+        self.preview_backdrops()
+    }
+
+    /// Starts the overlay background tiles' pictures, each once per launch:
+    /// the wallpaper, and the image of your own if there's one. They're
+    /// prepared as the overlay would show them, so a tile is a preview, and a
+    /// picture chosen from it is ready by the time it's shown.
+    pub(super) fn preview_backdrops(&mut self) -> Task<Message> {
+        if !crate::platform::SUPPORTS_BACKDROP_PICTURE {
+            return Task::none();
+        }
+        let mut wanted = vec![BackdropPicture::Wallpaper];
+        let image = PathBuf::from(self.config.overlay_image.trim());
+        if image.is_file() {
+            wanted.push(BackdropPicture::File(image));
+        }
+        let mut tasks = Vec::new();
+        for picture in wanted {
+            if self.backdrop_previews.iter().any(|(asked, _)| *asked == picture) {
+                continue;
+            }
+            self.backdrop_previews.push((picture.clone(), Preview::Pending));
+            let (sender, receiver) = iced::futures::channel::oneshot::channel();
+            crate::platform::preview_backdrop_picture(picture.clone(), move |png| {
+                let _ = sender.send(png);
+            });
+            tasks.push(Task::perform(receiver, move |png| Message::BackdropPreview(picture, png.ok().flatten())));
+        }
+        Task::batch(tasks)
+    }
+
+    /// A tile's picture, ready.
+    pub(super) fn backdrop_previewed(&mut self, picture: BackdropPicture, png: Option<Vec<u8>>) {
+        if let Some((_, preview)) = self.backdrop_previews.iter_mut().find(|(asked, _)| *asked == picture) {
+            // Made once and kept: a handle made from bytes is a new image to
+            // the renderer each time, uploaded again on every frame.
+            *preview = png.map_or(Preview::Missing, |png| Preview::Ready(image::Handle::from_bytes(png)));
+        }
+        self.cache.clear();
+    }
+
+    /// What a picture tile shows, when it's ready.
+    pub(super) fn backdrop_preview(&self, picture: &BackdropPicture) -> Option<&image::Handle> {
+        self.backdrop_previews.iter().find(|(asked, _)| asked == picture).and_then(|(_, preview)| match preview {
+            Preview::Ready(handle) => Some(handle),
+            Preview::Pending | Preview::Missing => None,
+        })
+    }
+
+    /// Closes the settings window's state (its drafts and focus), persisting
+    /// whatever was typed.
+    pub(super) fn close_settings_window(&mut self, persist: bool) -> Task<Message> {
         if persist {
             self.persist_config();
         }
         self.settings_window = None;
         self.settings_drafts.clear();
-        self.settings_advanced_open = false;
-        self.close_settings_model_picker();
+        self.settings_focus = None;
+        self.close_settings_pickers()
+    }
+
+    /// Closes a picker opened over the settings form, with the form: left
+    /// open, it would hold the board modal behind a panel nobody can see. The
+    /// two that preview are cancelled, as every other dismissal of them is.
+    pub(super) fn close_settings_pickers(&mut self) -> Task<Message> {
+        if self.model_picker.as_ref().is_some_and(|picker| picker.over_settings) {
+            self.model_picker = None;
+        }
+        let mut tasks = Vec::new();
+        if self.theme_picker.as_ref().is_some_and(|picker| picker.over_settings) {
+            tasks.push(self.cancel_theme_picker());
+        }
+        if self.font_picker.as_ref().is_some_and(|picker| picker.over_settings) {
+            tasks.push(self.cancel_font_picker());
+        }
+        Task::batch(tasks)
+    }
+
+    /// Whichever picker the form opened, drawn over it — in the board's modal
+    /// or in the settings window, wherever the form is.
+    pub(super) fn settings_picker(&self) -> Option<iced::Element<'_, Message>> {
+        if let Some(picker) = self.model_picker.as_ref().filter(|picker| picker.over_settings) {
+            return Some(self.model_picker_view(picker));
+        }
+        if let Some(picker) = self.theme_picker.as_ref().filter(|picker| picker.over_settings) {
+            return Some(self.theme_picker_view(picker));
+        }
+        if let Some(picker) = self.font_picker.as_ref().filter(|picker| picker.over_settings) {
+            return Some(self.font_picker_view(picker));
+        }
+        None
+    }
+
+    /// Whether a picker is open: its Esc and Tab are its own, not the form's.
+    pub(super) fn picker_open(&self) -> bool {
+        self.model_picker.is_some() || self.theme_picker.is_some() || self.font_picker.is_some()
     }
 }
 
@@ -1121,7 +840,7 @@ mod tests {
     fn apply_writes_each_value_kind() {
         let mut c = Config::default();
 
-        apply(&mut c, Field::OverlayBackdrop, Value::Text("Theme colour".to_owned()));
+        apply(&mut c, Field::OverlayBackdrop, Value::Text("Theme color".to_owned()));
         assert_eq!(OverlayBackdrop::of(&c), OverlayBackdrop::Theme);
         assert!(!c.overlay_transparent, "kept in step, for an older build");
 
@@ -1131,9 +850,11 @@ mod tests {
         apply(&mut c, Field::AiModel, Value::Text("gpt-x".to_owned()));
         assert_eq!(c.ai_model, "gpt-x");
 
-        // usize/u64 fields coerce from the numeric value.
-        apply(&mut c, Field::MaxAiNodes, Value::Num(9.0));
-        assert_eq!(c.max_ai_nodes, 9);
+        apply(&mut c, Field::ZoomSpeed, Value::Num(1.5));
+        assert_eq!(c.zoom_speed, 1.5);
+
+        apply(&mut c, Field::SnapToGrid, Value::Bool(true));
+        assert!(c.snap_to_grid);
 
         // theme_css: a blank string clears it to None.
         apply(&mut c, Field::ThemeCss, Value::Text("  ".to_owned()));
@@ -1145,13 +866,15 @@ mod tests {
         // config_text formats the value; parsing that text back and applying it
         // must restore the same value (the drafts-backed number editor path).
         let c = Config::default();
-        for field in [Field::MinZoom, Field::MaxNodeWidth, Field::AutosaveDebounceMs] {
+        for field in [Field::MaxNodeWidth, Field::SnapGridSize, Field::ClusterZoom] {
+            assert!(is_number(field));
             let text = config_text(&c, field);
             let value: f32 = text.parse().expect("numeric field formats as a number");
             let mut edited = Config::default();
             apply(&mut edited, field, Value::Num(value));
             assert_eq!(config_text(&edited, field), text, "round-trip for {field:?}");
         }
+        assert!(!is_number(Field::AiModel));
     }
 
     #[test]
@@ -1168,10 +891,39 @@ mod tests {
     }
 
     #[test]
-    fn is_number_matches_numeric_fields() {
-        assert!(is_number(Field::MinZoom));
-        assert!(is_number(Field::MaxAiNodes));
-        assert!(!is_number(Field::AiModel));
-        assert!(!is_number(Field::OverlayBackdrop));
+    fn a_fresh_config_has_nothing_changed() {
+        // Every row starts without its dot, or the form would open claiming
+        // changes nobody made — the platform-dependent default included.
+        let fresh = Config::default();
+        for field in [
+            Field::SummonHotkey, Field::SummonGesture, Field::Vault, Field::DismissOnBackgroundClick,
+            Field::DoubleClickAddsNote, Field::PersistAcrossSpaces, Field::OverlayDim, Field::Windowed,
+            Field::Theme, Field::Font, Field::OverlayBackdrop, Field::TrayIconMonochrome, Field::LinkStyle,
+            Field::CenterNodeText, Field::NodeScrollbars, Field::ColoredCardOpacity, Field::MaxNodeWidth,
+            Field::SnapToGrid, Field::SnapGridSize, Field::AutoLayout, Field::AutoLayoutDirection,
+            Field::ZoomSpeed, Field::PanInertia, Field::AiProvider, Field::AiNodeColor, Field::AiThinking,
+            Field::RasterizeText, Field::ClusterZoom, Field::AnimationScale, Field::ThemeCss,
+        ] {
+            assert!(!field.modified(&fresh), "{field:?} reads as changed on a fresh config");
+        }
+    }
+
+    #[test]
+    fn a_vaults_own_stylesheet_is_not_a_change() {
+        let mut c = Config { vault: "/notes".to_owned(), ..Config::default() };
+        c.theme_css = Some("/notes/.obsidian/themes/Minimal/theme.css".to_owned());
+        assert!(!Field::ThemeCss.modified(&c), "the app put it there");
+        c.theme_css = Some("/elsewhere/theme.css".to_owned());
+        assert!(Field::ThemeCss.modified(&c), "chosen by hand");
+    }
+
+    #[test]
+    fn every_file_only_key_is_in_the_file() {
+        // The count at the foot of Advanced names keys; one renamed in the
+        // config would leave it counting something that isn't there.
+        let written = serde_json::to_value(Config::default()).expect("config serializes");
+        for key in FILE_ONLY {
+            assert!(written.get(key).is_some(), "{key} isn't a config key");
+        }
     }
 }

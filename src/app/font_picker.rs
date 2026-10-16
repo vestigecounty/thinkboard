@@ -37,6 +37,9 @@ pub(crate) struct FontPicker {
     before: Theme,
     /// The configured font then, for restoring and for marking the row.
     before_font: String,
+    /// Opened from the settings form's Font row, and drawn over the form —
+    /// see [`App::open_font_picker_over_settings`].
+    pub over_settings: bool,
 }
 
 /// Keyboard nav while the picker is open. Enter is the input's `on_submit`.
@@ -74,8 +77,20 @@ impl App {
             base,
             before: self.theme,
             before_font,
+            over_settings: false,
         });
         Task::batch([opened, self.preview_highlighted_font()])
+    }
+
+    /// The picker over the settings form, from its Font row's "Change…" —
+    /// drawn wherever the form is, as the model picker is. The form is drawn
+    /// in the theme too, so it takes the preview with the board.
+    pub(super) fn open_font_picker_over_settings(&mut self) -> Task<Message> {
+        let opened = self.open_font_picker();
+        if let Some(picker) = &mut self.font_picker {
+            picker.over_settings = true;
+        }
+        opened
     }
 
     /// The families matching what's been typed, best first.

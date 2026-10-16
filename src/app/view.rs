@@ -270,17 +270,17 @@ impl App {
         if let Some(picker) = self.model_picker.as_ref().filter(|picker| !picker.over_settings) {
             layers = layers.push(self.model_picker_view(picker));
         }
-        if let Some(picker) = &self.font_picker {
+        if let Some(picker) = self.font_picker.as_ref().filter(|picker| !picker.over_settings) {
             layers = layers.push(self.font_picker_view(picker));
         }
-        if let Some(picker) = &self.theme_picker {
+        if let Some(picker) = self.theme_picker.as_ref().filter(|picker| !picker.over_settings) {
             layers = layers.push(self.theme_picker_view(picker));
         }
         if self.settings_overlay {
             layers = layers.push(self.settings_overlay_view());
-            // Chosen from the form, the model picker belongs above it.
-            if let Some(picker) = self.model_picker.as_ref().filter(|picker| picker.over_settings) {
-                layers = layers.push(self.model_picker_view(picker));
+            // Chosen from the form, a picker belongs above it.
+            if let Some(picker) = self.settings_picker() {
+                layers = layers.push(picker);
             }
         }
 
@@ -748,49 +748,41 @@ impl App {
     }
 
     /// The settings form as an in-board modal: a dim backdrop (click to close)
-    /// behind a centered, scrollable panel with a titled header and × button.
-    /// Opened from the command palette; the tray still uses the settings window.
+    /// behind a centered panel of the form's natural height, capped by the
+    /// window. Opened from the command palette; the tray still uses the
+    /// settings window.
     fn settings_overlay_view(&self) -> Element<'_, Message> {
-        let theme = &self.theme;
         let ct = self.theme;
-        let font = theme.ui_font();
-        let (text_c, muted, accent) = (theme.text, theme.text_muted, theme.accent);
-
-        let close = button(text("×").size(20).font(font).color(muted))
-            .padding([0, 8])
-            .on_press(Message::CloseSettingsOverlay)
-            .style(move |_theme, status| chrome_button_style(status, muted, accent));
-
-        let header = row![
-            text("Settings").size(17).font(font).color(text_c).width(Fill),
-            close,
-        ]
-        .align_y(iced::Alignment::Center);
+        let viewport = self.camera.viewport;
+        // Narrower than a window that's narrower than the panel: the form
+        // stacks its rows rather than run off the edge.
+        let width = (viewport.width - 32.0).clamp(240.0, 600.0);
+        let height = (viewport.height - 32.0).clamp(200.0, 720.0);
 
         // Render the form under the settings window's own theme, so its
-        // background and widget colors match the standalone Settings window
-        // exactly (the board window is `Theme::Dark`, which would recolor it).
-        let form = iced::widget::themer(Some(startup::settings_theme(self)), settings::view(self));
+        // pick lists' menus match the standalone Settings window exactly (the
+        // board window is `Theme::Dark`, which would recolor them).
+        let form = iced::widget::themer(Some(startup::settings_theme(self)), settings::modal(self, width));
 
-        let body = column![header, iced::widget::scrollable(form).height(Length::Shrink)].spacing(12);
-
-        // The panel shares the form's own background so there's no seam (the
-        // form below is themed to match).
-        let panel = container(body)
-            .width(Length::Fixed(600.0))
-            .max_height(720.0)
-            .padding(20)
+        let panel = container(form)
+            .width(Length::Fixed(width))
+            .max_height(height)
+            .clip(true)
             .style(move |_theme| chrome::panel(&ct, ct.background));
 
         // A click on the panel is swallowed; a click on the backdrop closes.
         let panel = mouse_area(panel).on_press(Message::Noop);
 
+        // Hung from where a full-height panel's top would be, rather than
+        // centred: each tab is its own height, and centred, the tabs jumped
+        // up and down under the pointer as you went along them.
+        let top = ((viewport.height - height) / 2.0).max(16.0);
         let backdrop = mouse_area(
             container(panel)
                 .width(Fill)
                 .height(Fill)
                 .center_x(Fill)
-                .center_y(Fill)
+                .padding(iced::Padding { top, ..iced::Padding::ZERO })
                 .style(|_theme| container::Style {
                     background: Some(iced::Color { a: 0.45, ..iced::Color::BLACK }.into()),
                     ..container::Style::default()

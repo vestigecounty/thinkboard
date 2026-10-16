@@ -345,6 +345,11 @@ pub enum Clip {
     },
 }
 
+/// Puts `text` on the clipboard.
+pub fn write_text(text: String) {
+    system::set_text(text);
+}
+
 /// The clipboard's text, if any. Cheap (unlike an image read), so it's fine
 /// to call on menu open to look for a pasteable color value.
 pub fn read_text() -> Option<String> {

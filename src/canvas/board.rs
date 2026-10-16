@@ -1720,7 +1720,7 @@ impl Board<'_> {
                     // Mouse wheel (line-based): zoom toward the cursor.
                     ScrollDelta::Lines { y, .. } => {
                         Some(canvas::Action::publish(Message::ZoomBy {
-                            factor: 1.0 + y * self.config.wheel_zoom_step,
+                            factor: 1.0 + y * self.config.wheel_zoom_step * self.config.zoom_speed,
                             cursor: position,
                         })
                         .and_capture())
@@ -1730,7 +1730,7 @@ impl Board<'_> {
                     ScrollDelta::Pixels { x, y } => {
                         let message = if state.modifiers.command() || state.modifiers.control() {
                             Message::ZoomBy {
-                                factor: (1.0 + y * self.config.pinch_zoom_step).max(0.5),
+                                factor: (1.0 + y * self.config.pinch_zoom_step * self.config.zoom_speed).max(0.5),
                                 cursor: position,
                             }
                         } else {
