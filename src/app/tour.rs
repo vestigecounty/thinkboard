@@ -1535,6 +1535,16 @@ fn links() {
         tour.app.cache.clear();
         tour.shot(&format!("style-{style}"));
     }
+    // Square links with triangle tips: the diagram look the two make together.
+    tour.app.config.arrow_tip = "triangle".to_owned();
+    tour.app.cache.clear();
+    tour.shot("tips-triangle");
+    // Hovered, on its curve: the line drawn into a big head is cut short, and
+    // has to stay on the ring drawn under it all the way along.
+    tour.app.config.link_style = "obsidian".to_owned();
+    tour.app.cache.clear();
+    tour.move_to(middle);
+    tour.shot("tips-triangle-hovered");
 }
 
 /// Grouping: three notes swept up with a marquee, framed, named, moved.
@@ -1584,6 +1594,12 @@ fn vault() {
 fn big_board() {
     let mut tour = Tour::new("big_board", first_launch(sample_board));
     tour.shot("fitted");
+    // The clusters' links with triangle tips: big heads in short gaps.
+    tour.app.config.arrow_tip = "triangle".to_owned();
+    tour.app.cache.clear();
+    tour.shot("fitted-triangle");
+    tour.app.config.arrow_tip = "chevron".to_owned();
+    tour.app.cache.clear();
     let center = Point::new(720.0, 450.0);
     for step in 1..=3 {
         tour.wheel(center, 3.0);

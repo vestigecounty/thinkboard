@@ -184,6 +184,14 @@ pub struct Config {
     /// Stored by name so the file stays readable and an unknown value degrades
     /// to the default rather than failing to parse.
     pub link_style: String,
+    /// The shape at the end of a link that has an arrow — see [`ArrowTip`].
+    /// Which ends have one is the link's own, in the board's file; the shape
+    /// has nowhere to go in that format, so it's a preference of the app's.
+    pub arrow_tip: String,
+    /// How solid a link is drawn, coloured or not: below 1 what's under it —
+    /// another link crossing it, a frame, the desktop behind the overlay —
+    /// shows through. Only in this file (`settings::FILE_ONLY`).
+    pub link_opacity: f32,
     /// When true, dragging/resizing a node snaps it to a world-space grid.
     /// Toggled from the canvas context menu; persisted here.
     pub snap_to_grid: bool,
@@ -285,6 +293,8 @@ impl Default for Config {
             auto_layout_direction: "LR".to_owned(),
 
             link_style: LinkStyle::default().as_str().to_owned(),
+            arrow_tip: ArrowTip::default().as_str().to_owned(),
+            link_opacity: 0.75,
             snap_to_grid: false,
             snap_grid_size: 20.0,
 
@@ -363,6 +373,52 @@ impl LinkStyle {
     /// The style named in a config, ready to draw with.
     pub fn of(config: &Config) -> LinkStyle {
         LinkStyle::parse(&config.link_style)
+    }
+}
+
+/// The shape at the end of a link with an arrow.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ArrowTip {
+    /// Two strokes meeting at the point: an open chevron, as light as the
+    /// link it ends.
+    #[default]
+    Chevron,
+    /// A filled triangle, the line running into its base: heavier, and
+    /// read as a diagram's — suits square links.
+    Triangle,
+}
+
+impl ArrowTip {
+    /// In the order they are offered.
+    pub const ALL: [ArrowTip; 2] = [ArrowTip::Chevron, ArrowTip::Triangle];
+
+    /// What the config file holds.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ArrowTip::Chevron => "chevron",
+            ArrowTip::Triangle => "triangle",
+        }
+    }
+
+    /// What the settings form shows.
+    pub fn label(self) -> &'static str {
+        match self {
+            ArrowTip::Chevron => "Chevron",
+            ArrowTip::Triangle => "Triangle",
+        }
+    }
+
+    /// Reads a config value, case-insensitively; anything else is the default.
+    pub fn parse(value: &str) -> ArrowTip {
+        ArrowTip::ALL
+            .into_iter()
+            .find(|tip| tip.as_str().eq_ignore_ascii_case(value.trim()))
+            .unwrap_or_default()
+    }
+
+    /// The tip named in a config, ready to draw with.
+    pub fn of(config: &Config) -> ArrowTip {
+        ArrowTip::parse(&config.arrow_tip)
     }
 }
 
@@ -563,6 +619,8 @@ impl Config {
         self.layout_rank_gap = self.layout_rank_gap.max(0.0);
         self.layout_node_gap = self.layout_node_gap.max(0.0);
         self.snap_grid_size = self.snap_grid_size.clamp(2.0, 500.0);
+        // A floor, as for coloured cards, so a link can't be hidden by accident.
+        self.link_opacity = self.link_opacity.clamp(0.1, 1.0);
         if self.auto_layout_direction != "LR" && self.auto_layout_direction != "TD" {
             self.auto_layout_direction = "LR".to_owned();
         }
@@ -1086,6 +1144,16 @@ mod tests {
         // Case and stray spaces are forgiven, though.
         assert_eq!(LinkStyle::parse("  Square "), LinkStyle::Square);
         assert_eq!(LinkStyle::parse("MERMAID"), LinkStyle::Mermaid);
+    }
+
+    #[test]
+    fn an_arrow_tip_reads_as_link_styles_do() {
+        assert_eq!(ArrowTip::parse(" Triangle "), ArrowTip::Triangle);
+        assert_eq!(ArrowTip::parse("arrowhead"), ArrowTip::Chevron, "anything else is the default");
+        // A link can't be faded out of sight by a hand edit.
+        let mut config = Config { link_opacity: 0.0, ..Config::default() };
+        config.sanitize();
+        assert!(config.link_opacity >= 0.1);
     }
 
     #[test]

@@ -6,7 +6,7 @@
 //! wrapping stable across zoom levels.
 
 use std::collections::{HashMap, HashSet};
-use std::f32::consts::PI;
+use std::f32::consts::{PI, SQRT_2};
 use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -23,6 +23,7 @@ use iced::{Color, Point, Rectangle, Renderer, Size, Theme, Vector};
 
 use crate::Message;
 use crate::camera::Camera;
+use crate::config::ArrowTip;
 use super::geometry::{
     EdgeGeometry, bezier_distance, covers_any, cubic_bezier, stacking_planes, within_reach,
 };
@@ -36,7 +37,9 @@ const CARD_BORDER: Color = Color::from_rgb(0.45, 0.45, 0.45);
 /// Default node text color, and the fallback used by the app's menu chrome.
 /// Node rendering uses the (possibly themed) color from `Board::theme`.
 pub const TEXT_COLOR: Color = Color::from_rgb(0.86, 0.87, 0.87);
-const EDGE_COLOR: Color = Color::from_rgba(0.35, 0.62, 1.0, 0.75);
+/// A link's colour when it has none of its own. Opaque: how solid a link is
+/// drawn is `config.link_opacity`, for every link alike.
+const EDGE_COLOR: Color = Color::from_rgb(0.35, 0.62, 1.0);
 
 /// Point size (world px) of a link's caption, and the zoom below which drawing
 /// one is pointless — the text is sub-pixel and the board is heading for
@@ -186,6 +189,165 @@ const SELECTED_BORDER_MIN: f32 = 3.0;
 /// Length of an edge's arrowhead, in world units. Shared by the ordinary and
 /// the highlighted edge — only their line weights differ.
 const ARROW_HEAD: f32 = 8.0;
+/// The arrowhead's stroke, in world units. Its round cap reaches half of it
+/// past the tip.
+const ARROW_WIDTH: f32 = 2.0;
+/// The clear space between an arrow's tip and the card it points at, in world
+/// units. On the card's edge, the tip sat on its border: a link the colour of
+/// a card's border lost its tip in it, and links fanning into one card merged
+/// into its outline. In world units so it scales with the board — about 2 px
+/// at 100%, under a pixel zoomed out, where a fixed gap made links look detached
+/// from what they point at.
+const ARROW_GAP: f32 = 2.0;
+
+/// An arrowhead as drawn: its shape, how far a chevron's wings reach back
+/// along the link, and — for a chevron — the width of its stroke, all on
+/// screen. A triangle is sized from the same length; see [`Head::reach`].
+#[derive(Clone, Copy)]
+struct Head {
+    tip: ArrowTip,
+    length: f32,
+    stroke: f32,
+}
+
+/// A triangle's length against a chevron's, and its half-width against its
+/// own length. At a chevron's length, filled, it read as a speck at the end
+/// of the line: these are the proportions of the design it was drawn from —
+/// about five times the line's width long, two and a half either side of it.
+const TRIANGLE_LENGTH: f32 = 1.625;
+const TRIANGLE_SPREAD: f32 = 0.5;
+
+impl Head {
+    /// How far the head reaches back from its point along the link.
+    fn reach(self) -> f32 {
+        match self.tip {
+            ArrowTip::Chevron => self.length,
+            ArrowTip::Triangle => self.length * TRIANGLE_LENGTH,
+        }
+    }
+
+    /// How far past the point the drawn head reaches: a chevron's round cap,
+    /// half its stroke; a triangle comes to the point itself.
+    fn overhang(self) -> f32 {
+        match self.tip {
+            ArrowTip::Chevron => self.stroke / 2.0,
+            ArrowTip::Triangle => 0.0,
+        }
+    }
+
+    /// A triangle's base corners, for a head pointing into `side` at `point`.
+    fn base(self, point: Point, side: &str) -> (Point, Point) {
+        let out = outward(side);
+        let across = Vector::new(-out.y, out.x) * (self.reach() * TRIANGLE_SPREAD);
+        let base = point + out * self.reach();
+        (base + across, base - across)
+    }
+}
+
+/// Where an arrow pointing into `side` of a card at `anchor` puts its point:
+/// [`ARROW_GAP`] clear of the card, measured from what's drawn — a chevron's
+/// round cap reaches past its point — not from the point.
+fn arrow_tip(anchor: Point, side: &str, zoom: f32, head: Head) -> Point {
+    anchor + outward(side) * (ARROW_GAP * zoom + head.overhang())
+}
+
+/// How a link's line is drawn into its arrowheads: how far short of each
+/// point it stops, measured straight back from the point, and — for a
+/// chevron — the wedge left between that end and the chevron's inner corner,
+/// filled in the line's colour.
+///
+/// **A link is translucent, so wherever two of its strokes overlap the colour
+/// is laid down twice.** Run on to the point, the line lay under the
+/// chevron's last few pixels and the tip came out denser than the link. Just
+/// stopping it sooner traded that for a speck of board showing inside the V,
+/// whatever the stop: the V narrows to its corner, a butt end is square.
+/// The wedge is exactly that remainder — its sides are the chevron's inner
+/// edges and its base the line's end — so the line, the wedge and the chevron
+/// tile the tip, each pixel covered once. A chevron's wings sit at 45° to the
+/// line, so its inner corner is `stroke / √2` back from the point, and a line
+/// `line` wide meets the inner edges `line / 2` further. A triangle is
+/// simpler: the line stops at its base, and the two meet edge to edge.
+///
+/// The line must have a butt cap, and is cut from the routed path
+/// ([`Board::link_path_trimmed`]) rather than routed from moved ends. The last
+/// stretch into an arrow runs straight along it in every routing style, so the
+/// cut lands where the wedge expects it.
+fn shaft(ends: [Option<(Point, &str, Head)>; 2], line: f32) -> ([f32; 2], Vec<[Point; 3]>) {
+    let mut trims = [0.0; 2];
+    let mut wedges = Vec::new();
+    for (trim, end) in trims.iter_mut().zip(ends) {
+        let Some((point, side, head)) = end else {
+            continue;
+        };
+        let out = outward(side);
+        *trim = match head.tip {
+            ArrowTip::Chevron => {
+                let corner = head.stroke / SQRT_2;
+                let back = corner + line / 2.0;
+                let across = Vector::new(-out.y, out.x) * (line / 2.0);
+                let base = point + out * back;
+                wedges.push([point + out * corner, base + across, base - across]);
+                back
+            }
+            ArrowTip::Triangle => head.reach(),
+        };
+    }
+    (trims, wedges)
+}
+
+/// A point on a cubic piece at parameter `t`.
+fn cubic_at(piece: &EdgeGeometry, t: f32) -> Point {
+    split_cubic(piece, t).0.end
+}
+
+/// `piece` split at `t` (de Casteljau): the part before and the part after,
+/// each the very curve it was a part of.
+fn split_cubic(piece: &EdgeGeometry, t: f32) -> (EdgeGeometry, EdgeGeometry) {
+    let (p0, p1, p2, p3) = (piece.start, piece.control1, piece.control2, piece.end);
+    let (p01, p12, p23) = (lerp(p0, p1, t), lerp(p1, p2, t), lerp(p2, p3, t));
+    let (p012, p123) = (lerp(p01, p12, t), lerp(p12, p23, t));
+    let at = lerp(p012, p123, t);
+    (
+        EdgeGeometry { start: p0, control1: p01, control2: p012, end: at, ..*piece },
+        EdgeGeometry { start: at, control1: p123, control2: p23, end: p3, ..*piece },
+    )
+}
+
+/// Where along `piece` the point `distance` straight from its end (or, with
+/// `from_end` false, its start) lies, as a parameter — by bisection, since a
+/// cubic has no closed form for it. Close enough is a hundredth of a pixel.
+fn cut_at(piece: &EdgeGeometry, distance: f32, from_end: bool) -> f32 {
+    let anchor = if from_end { piece.end } else { piece.start };
+    // The near and far parameters: the anchor's own, and the other end's.
+    let (mut near, mut far) = if from_end { (1.0, 0.0) } else { (0.0, 1.0) };
+    if cubic_at(piece, far).distance(anchor) <= distance {
+        return far; // the whole piece is inside the cut
+    }
+    for _ in 0..24 {
+        let mid = (near + far) / 2.0;
+        if cubic_at(piece, mid).distance(anchor) < distance {
+            near = mid;
+        } else {
+            far = mid;
+        }
+    }
+    (near + far) / 2.0
+}
+
+/// Fills the wedges [`shaft`] leaves between a line and its arrowheads.
+fn fill_wedges(frame: &mut Frame, wedges: &[[Point; 3]], color: Color) {
+    for [a, b, c] in wedges {
+        frame.fill(
+            &Path::new(|builder| {
+                builder.move_to(*a);
+                builder.line_to(*b);
+                builder.line_to(*c);
+                builder.close();
+            }),
+            color,
+        );
+    }
+}
 
 /// The smallest a drawn glyph is allowed to get. Below this, text on a card
 /// zoomed out is a smudge rather than something you can read the shape of.
@@ -3212,14 +3374,26 @@ impl Board<'_> {
         let alpha = self.node_layer_alpha()
             * self.spawn_factors(from_index).1.min(self.spawn_factors(to_index).1)
             * self.search_dim(from_index).max(self.search_dim(to_index));
-        let start = side_anchor(
+        let mut start = side_anchor(
             self.node_screen_rect(from_index, &self.nodes[from_index]),
             &edge.from_side,
         );
-        let end = side_anchor(
+        let mut end = side_anchor(
             self.node_screen_rect(to_index, &self.nodes[to_index]),
             &edge.to_side,
         );
+        // An end with an arrow stops short of its card; one without stays on
+        // its port, where a drag starts and the hover dot sits. Here, before
+        // routing, so the line, its rings, the hit test and the caption all
+        // take the same ends.
+        let zoom = self.camera.zoom;
+        let head = self.head(ARROW_HEAD * zoom, ARROW_WIDTH * zoom);
+        if edge.to_end() == EdgeEnd::Arrow {
+            end = arrow_tip(end, &edge.to_side, zoom, head);
+        }
+        if edge.from_end() == EdgeEnd::Arrow {
+            start = arrow_tip(start, &edge.from_side, zoom, head);
+        }
         // Control points extend outward from each side by 0.4 x distance
         // (Swift: `calculateBezierControlPoints`).
         let reach = start.distance(end) * 0.4;
@@ -3269,7 +3443,7 @@ impl Board<'_> {
     /// selection passes override this with their highlight colours, so a
     /// coloured link still shows the same feedback as any other.
     fn edge_color(&self, edge: &CanvasEdge) -> Color {
-        edge.palette_color().map(IntoColor::into_color).unwrap_or(EDGE_COLOR)
+        self.link_ink(edge.palette_color().map(IntoColor::into_color).unwrap_or(EDGE_COLOR))
     }
 
     /// The opaque outline (ring) of a highlighted edge: drawn wider than, and
@@ -3344,15 +3518,14 @@ impl Board<'_> {
                     .with_width(5.5 * zoom * thickness)
             },
         );
-        self.draw_arrowhead(
-            frame,
-            g.end,
-            &edge.to_side,
-            g.alpha,
-            ARROW_HEAD * zoom,
-            4.4 * zoom * thickness,
-            color,
-        );
+        // Ringed where the link has a head, and only there.
+        let head = self.head(ARROW_HEAD * zoom, 4.4 * zoom * thickness);
+        if edge.to_end() == EdgeEnd::Arrow {
+            self.draw_arrowhead(frame, g.end, &edge.to_side, g.alpha, head, color, true);
+        }
+        if edge.from_end() == EdgeEnd::Arrow {
+            self.draw_arrowhead(frame, g.start, &edge.from_side, g.alpha, head, color, true);
+        }
     }
 
     /// The brighter line + arrowhead of a highlighted edge.
@@ -3364,11 +3537,17 @@ impl Board<'_> {
             return;
         };
         let zoom = self.camera.zoom;
+        let head = self.head(ARROW_HEAD * zoom, ARROW_WIDTH * zoom);
+        let arrows = [
+            (edge.from_end() == EdgeEnd::Arrow).then_some((g.start, edge.from_side.as_str(), head)),
+            (edge.to_end() == EdgeEnd::Arrow).then_some((g.end, edge.to_side.as_str(), head)),
+        ];
+        let (trims, wedges) = shaft(arrows, EDGE_LINE_WIDTH * zoom);
         frame.stroke(
-            &self.link_path(Some(edge), &g),
+            &self.link_path_trimmed(Some(edge), &g, trims),
             Stroke {
-                // Butt (not round) so the line stops at the tip rather than
-                // poking a half-width past the arrowhead.
+                // Butt (not round), so it meets the wedge into its arrowhead
+                // edge to edge — see `shaft`.
                 line_cap: stroke::LineCap::Butt,
                 line_join: stroke::LineJoin::Round,
                 ..Stroke::default()
@@ -3376,15 +3555,15 @@ impl Board<'_> {
                     .with_width(EDGE_LINE_WIDTH * zoom)
             },
         );
+        fill_wedges(frame, &wedges, fade(color, g.alpha));
         // Obsidian records an arrow at the target and none at the source
         // unless the document says otherwise — an undirected or bidirectional
         // link is drawn as authored.
-        let (head, width) = (ARROW_HEAD * zoom, 2.0 * zoom);
         if edge.to_end() == EdgeEnd::Arrow {
-            self.draw_arrowhead(frame, g.end, &edge.to_side, g.alpha, head, width, color);
+            self.draw_arrowhead(frame, g.end, &edge.to_side, g.alpha, head, color, false);
         }
         if edge.from_end() == EdgeEnd::Arrow {
-            self.draw_arrowhead(frame, g.start, &edge.from_side, g.alpha, head, width, color);
+            self.draw_arrowhead(frame, g.start, &edge.from_side, g.alpha, head, color, false);
         }
     }
 
@@ -3702,8 +3881,15 @@ impl Board<'_> {
             .filter(|snap| snap.target < self.nodes.len())
             .map(|snap| {
                 let rect = self.node_screen_rect(snap.target, &self.nodes[snap.target]);
+                let zoom = self.camera.zoom;
                 (
-                    side_anchor(rect, snap.side),
+                    // Where the link it becomes will end.
+                    arrow_tip(
+                        side_anchor(rect, snap.side),
+                        snap.side,
+                        zoom,
+                        self.head(ARROW_HEAD * zoom, ARROW_WIDTH * zoom),
+                    ),
                     snap.side,
                     crate::camera::ease_out_cubic(snap.strength(now)),
                 )
@@ -3730,68 +3916,104 @@ impl Board<'_> {
 
         // Routed as the link it will become, so releasing the drag doesn't
         // change the shape under the cursor.
+        let g = EdgeGeometry { start, control1, control2, end, alpha: 1.0 };
+        let zoom = self.camera.zoom;
+        let head = self.head(ARROW_HEAD * zoom, ARROW_WIDTH * zoom);
+        let arrow = end_side.filter(|_| strength > 0.0).map(|side| (end, side, head));
+        let (trims, wedges) = shaft([None, arrow], EDGE_LINE_WIDTH * zoom);
+        let ink = self.link_ink(EDGE_COLOR);
+        // Part of the line, so in its colour — it's the arrowhead that fades in.
+        fill_wedges(frame, &wedges, ink);
         frame.stroke(
-            &self.link_path(None, &EdgeGeometry { start, control1, control2, end, alpha: 1.0 }),
+            &self.link_path_trimmed(None, &g, trims),
             Stroke {
-                line_cap: stroke::LineCap::Round,
+                // Butt, to meet the wedge into its arrowhead — see `shaft`.
+                line_cap: stroke::LineCap::Butt,
                 line_join: stroke::LineJoin::Round,
                 ..Stroke::default()
-                    .with_color(EDGE_COLOR)
+                    .with_color(ink)
                     .with_width(EDGE_LINE_WIDTH * self.camera.zoom)
             },
         );
         if let (Some(to_side), true) = (end_side, strength > 0.0) {
-            self.draw_arrowhead(
-                frame,
-                end,
-                to_side,
-                strength,
-                8.0 * self.camera.zoom,
-                2.0 * self.camera.zoom,
-                EDGE_COLOR,
-            );
+            self.draw_arrowhead(frame, end, to_side, strength, head, ink, false);
         }
 
         self.draw_port(frame, from, side);
     }
 
-    /// Port of the Swift `ArrowHead`: two wings at the tip, oriented by the
-    /// side the edge arrives at. `size` and `width` are in screen px.
+    /// The head of an arrow pointing into `side` at `point`: the configured
+    /// shape, in `color` faded by `alpha`. As a `ring` — the opaque outline
+    /// behind a hovered or selected link — a chevron is drawn as before but
+    /// wider, and a triangle grows by its stroke on every side.
     fn draw_arrowhead(
         &self,
         frame: &mut Frame,
-        tip: Point,
-        to_side: &str,
+        point: Point,
+        side: &str,
         alpha: f32,
-        size: f32,
-        width: f32,
+        head: Head,
         color: Color,
+        ring: bool,
     ) {
-        let direction = match to_side.to_lowercase().as_str() {
-            "left" => 0.0,
-            "right" => PI,
-            "top" => PI * 0.5,
-            "bottom" => PI * 1.5,
-            _ => 0.0,
-        };
-        let wing = |angle: f32| {
-            Point::new(tip.x + size * angle.cos(), tip.y + size * angle.sin())
-        };
-        let path = Path::new(|builder| {
-            builder.move_to(wing(direction + PI * 0.75));
-            builder.line_to(tip);
-            builder.line_to(wing(direction - PI * 0.75));
-        });
-        frame.stroke(
-            &path,
-            Stroke {
-                line_cap: stroke::LineCap::Round,
-                line_join: stroke::LineJoin::Round,
-                ..Stroke::default()
-                    .with_color(Color { a: color.a * alpha, ..color })
-                    .with_width(width)
-            },
-        );
+        let color = Color { a: color.a * alpha, ..color };
+        match head.tip {
+            ArrowTip::Chevron => {
+                let direction = match side.to_lowercase().as_str() {
+                    "left" => 0.0,
+                    "right" => PI,
+                    "top" => PI * 0.5,
+                    "bottom" => PI * 1.5,
+                    _ => 0.0,
+                };
+                let wing = |angle: f32| {
+                    Point::new(point.x + head.length * angle.cos(), point.y + head.length * angle.sin())
+                };
+                let path = Path::new(|builder| {
+                    builder.move_to(wing(direction + PI * 0.75));
+                    builder.line_to(point);
+                    builder.line_to(wing(direction - PI * 0.75));
+                });
+                frame.stroke(
+                    &path,
+                    Stroke {
+                        line_cap: stroke::LineCap::Round,
+                        line_join: stroke::LineJoin::Round,
+                        ..Stroke::default().with_color(color).with_width(head.stroke)
+                    },
+                );
+            }
+            ArrowTip::Triangle => {
+                let (left, right) = head.base(point, side);
+                let path = Path::new(|builder| {
+                    builder.move_to(point);
+                    builder.line_to(left);
+                    builder.line_to(right);
+                    builder.close();
+                });
+                frame.fill(&path, color);
+                if ring {
+                    frame.stroke(
+                        &path,
+                        Stroke {
+                            line_join: stroke::LineJoin::Round,
+                            ..Stroke::default().with_color(color).with_width(head.stroke)
+                        },
+                    );
+                }
+            }
+        }
+    }
+
+    /// An arrowhead of the configured shape, `length` long and — a chevron —
+    /// `stroke` wide.
+    fn head(&self, length: f32, stroke: f32) -> Head {
+        Head { tip: ArrowTip::of(self.config), length, stroke }
+    }
+
+    /// `color` as solid as links are drawn (`config.link_opacity`).
+    fn link_ink(&self, color: Color) -> Color {
+        Color { a: color.a * self.config.link_opacity, ..color }
     }
 
     /// Arrows between connected clusters, drawn behind the cluster cards.
@@ -3814,23 +4036,30 @@ impl Board<'_> {
             let from_side = facing_side(to_rect.center(), from_rect);
             let to_side = facing_side(from_rect.center(), to_rect);
             let start = side_anchor(from_rect, from_side);
-            let end = side_anchor(to_rect, to_side);
+            let cluster_head = self.head(head, stroke_width * 0.8);
+            let end = arrow_tip(side_anchor(to_rect, to_side), to_side, zoom, cluster_head);
 
             let reach = start.distance(end) * 0.4;
             let control1 = start + outward(from_side) * reach;
             let control2 = end + outward(to_side) * reach;
 
+            let g = EdgeGeometry { start, control1, control2, end, alpha: 1.0 };
+            let (trims, wedges) = shaft([None, Some((end, to_side, cluster_head))], stroke_width);
+            let ink = self.link_ink(EDGE_COLOR);
+            let color = Color { a: ink.a * alpha, ..ink };
+            fill_wedges(frame, &wedges, color);
             frame.stroke(
-                &self.link_path(None, &EdgeGeometry { start, control1, control2, end, alpha: 1.0 }),
+                &self.link_path_trimmed(None, &g, trims),
                 Stroke {
-                    line_cap: stroke::LineCap::Round,
+                    // Butt, to meet the wedge into its arrowhead — see `shaft`.
+                    line_cap: stroke::LineCap::Butt,
                     line_join: stroke::LineJoin::Round,
                     ..Stroke::default()
-                        .with_color(Color { a: EDGE_COLOR.a * alpha, ..EDGE_COLOR })
+                        .with_color(color)
                         .with_width(stroke_width)
                 },
             );
-            self.draw_arrowhead(frame, end, to_side, alpha, head, stroke_width * 0.8, EDGE_COLOR);
+            self.draw_arrowhead(frame, end, to_side, alpha, cluster_head, ink, false);
         }
     }
 }
@@ -3971,19 +4200,49 @@ impl Board<'_> {
 
     /// A link's drawn path.
     fn link_path(&self, edge: Option<&CanvasEdge>, g: &EdgeGeometry) -> Path {
-        let segments = self.link_segments(edge, g);
-        Path::new(|builder| {
-            let Some(first) = segments.first() else {
-                return;
-            };
-            builder.move_to(first.start);
-            for piece in &segments {
-                builder.line_to(piece.start);
-                builder.bezier_curve_to(piece.control1, piece.control2, piece.end);
-            }
-        })
+        path_through(&self.link_segments(edge, g))
     }
 
+    /// A link's drawn path with `trims[0]` cut from its start and `trims[1]`
+    /// from its end — what [`shaft`] leaves of a line ending in arrowheads.
+    ///
+    /// **Cut from the routed path, not routed from moved ends.** Sliding the
+    /// ends back along the link and routing from there reshaped the whole
+    /// curve — the control points pull on all of it — so the line no longer
+    /// lay on its own hover ring, which is drawn from the true ends. Cut, it's
+    /// the very curve the ring, the hit test and the caption follow, only
+    /// shorter.
+    fn link_path_trimmed(&self, edge: Option<&CanvasEdge>, g: &EdgeGeometry, trims: [f32; 2]) -> Path {
+        let mut segments = self.link_segments(edge, g);
+        if trims[1] > 0.0
+            && let Some(last) = segments.last_mut()
+        {
+            *last = split_cubic(last, cut_at(last, trims[1], true)).0;
+        }
+        if trims[0] > 0.0
+            && let Some(first) = segments.first_mut()
+        {
+            *first = split_cubic(first, cut_at(first, trims[0], false)).1;
+        }
+        path_through(&segments)
+    }
+}
+
+/// The path through a link's cubic pieces, in order.
+fn path_through(segments: &[EdgeGeometry]) -> Path {
+    Path::new(|builder| {
+        let Some(first) = segments.first() else {
+            return;
+        };
+        builder.move_to(first.start);
+        for piece in segments {
+            builder.line_to(piece.start);
+            builder.bezier_curve_to(piece.control1, piece.control2, piece.end);
+        }
+    })
+}
+
+impl Board<'_> {
     /// How far `point` is from the link as drawn, and the box to reject on
     /// before measuring.
     fn link_distance(
@@ -4918,6 +5177,37 @@ mod trunk_tests {
     fn a_close_target_still_pulls_the_trunk_in() {
         // It is a cap, not a fixed distance: a near target has to leave room.
         assert!(trunk_gutter(60.0, 1.0) < trunk_gutter(600.0, 1.0));
+    }
+}
+
+#[cfg(test)]
+mod cut_tests {
+    use super::{EdgeGeometry, cubic_at, cut_at, split_cubic};
+    use iced::Point;
+
+    #[test]
+    fn a_cut_line_is_the_same_curve_only_shorter() {
+        // A link that leaves rightwards and arrives from the left, as a
+        // curve between two ports does.
+        let piece = EdgeGeometry {
+            start: Point::new(0.0, 0.0),
+            control1: Point::new(120.0, 0.0),
+            control2: Point::new(80.0, 90.0),
+            end: Point::new(200.0, 90.0),
+            alpha: 1.0,
+        };
+        let at = cut_at(&piece, 10.0, true);
+        let (kept, _) = split_cubic(&piece, at);
+        assert!((kept.end.distance(piece.end) - 10.0).abs() < 0.01, "cut where asked");
+        // Every point of what's kept lies on the original: moving the ends
+        // instead had reshaped the whole curve off its hover ring.
+        for step in 0..=10 {
+            let s = step as f32 / 10.0;
+            assert!(cubic_at(&kept, s).distance(cubic_at(&piece, s * at)) < 0.01);
+        }
+        // From the start, the same.
+        let (_, rest) = split_cubic(&piece, cut_at(&piece, 10.0, false));
+        assert!((rest.start.distance(piece.start) - 10.0).abs() < 0.01);
     }
 }
 

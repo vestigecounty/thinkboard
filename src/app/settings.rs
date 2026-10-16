@@ -21,7 +21,7 @@ use std::path::{Path, PathBuf};
 use iced::Task;
 use iced::widget::image;
 
-use crate::config::{Config, LinkStyle, OverlayBackdrop};
+use crate::config::{ArrowTip, Config, LinkStyle, OverlayBackdrop};
 use crate::platform::BackdropPicture;
 
 use super::{App, Message};
@@ -57,6 +57,7 @@ pub(crate) enum Field {
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
     TrayIconMonochrome,
     LinkStyle,
+    ArrowTip,
     CenterNodeText,
     NodeScrollbars,
     ColoredCardOpacity,
@@ -114,7 +115,7 @@ impl Tab {
 /// and none is something anyone changes twice: their defaults are tuned, and
 /// any sane value works. Counted at the foot of Advanced, so the form says
 /// they exist rather than leaving them to be found.
-pub(crate) const FILE_ONLY: [&str; 14] = [
+pub(crate) const FILE_ONLY: [&str; 15] = [
     "min_zoom",
     "max_zoom",
     "zoom_smoothing",
@@ -129,6 +130,7 @@ pub(crate) const FILE_ONLY: [&str; 14] = [
     "autosave_debounce_ms",
     "max_ai_nodes",
     "ai_trigger_color",
+    "link_opacity",
 ];
 
 /// A settings-form edit. `Slide`/`Edit` change the value live; `Commit` (slider
@@ -227,6 +229,7 @@ impl Field {
             Field::OverlayBackdrop => OverlayBackdrop::of(c) != OverlayBackdrop::of(&d),
             Field::TrayIconMonochrome => c.tray_icon_monochrome != d.tray_icon_monochrome,
             Field::LinkStyle => LinkStyle::of(c) != LinkStyle::of(&d),
+            Field::ArrowTip => ArrowTip::of(c) != ArrowTip::of(&d),
             Field::CenterNodeText => c.center_node_text != d.center_node_text,
             Field::NodeScrollbars => c.node_scrollbars != d.node_scrollbars,
             Field::ColoredCardOpacity => moved(c.colored_card_opacity, d.colored_card_opacity),
@@ -335,6 +338,14 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
             config.link_style = LinkStyle::ALL
                 .into_iter()
                 .find(|style| style.label() == label)
+                .unwrap_or_default()
+                .as_str()
+                .to_owned();
+        }
+        (Field::ArrowTip, Value::Text(label)) => {
+            config.arrow_tip = ArrowTip::ALL
+                .into_iter()
+                .find(|tip| tip.label() == label)
                 .unwrap_or_default()
                 .as_str()
                 .to_owned();
@@ -899,6 +910,7 @@ mod tests {
             Field::SummonHotkey, Field::SummonGesture, Field::Vault, Field::DismissOnBackgroundClick,
             Field::DoubleClickAddsNote, Field::PersistAcrossSpaces, Field::OverlayDim, Field::Windowed,
             Field::Theme, Field::Font, Field::OverlayBackdrop, Field::TrayIconMonochrome, Field::LinkStyle,
+            Field::ArrowTip,
             Field::CenterNodeText, Field::NodeScrollbars, Field::ColoredCardOpacity, Field::MaxNodeWidth,
             Field::SnapToGrid, Field::SnapGridSize, Field::AutoLayout, Field::AutoLayoutDirection,
             Field::ZoomSpeed, Field::PanInertia, Field::AiProvider, Field::AiNodeColor, Field::AiThinking,

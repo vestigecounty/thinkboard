@@ -31,7 +31,7 @@ use iced::{Alignment, Border, Color, Element, Fill, Font, Padding, Point, Rectan
 
 use super::{FILE_ONLY, Field, Msg, PROVIDER_OFF, Tab, current_preset, hand_picked_css, is_local};
 use crate::app::{App, Message};
-use crate::config::{Config, LinkStyle, OverlayBackdrop};
+use crate::config::{ArrowTip, Config, LinkStyle, OverlayBackdrop};
 use crate::platform::BackdropPicture;
 use crate::document::IntoColor;
 use crate::model;
@@ -403,6 +403,10 @@ fn appearance(app: &App, look: Look) -> Vec<Element<'_, Message>> {
         setting(Field::LinkStyle, "Link style")
             .control(link_styles(app, look))
             .desc("Obsidian curves with the distance spanned; Mermaid routes; Square turns at right angles.")
+            .build(app, look),
+        setting(Field::ArrowTip, "Arrow tips")
+            .control(arrow_tips(app, look))
+            .desc("The shape at a link's arrowed end. Which ends have one is the link's own, set from its right-click menu.")
             .build(app, look),
         setting(Field::CenterNodeText, "Center plain text")
             .control(switch(look, Field::CenterNodeText, c.center_node_text, true))
@@ -1156,6 +1160,92 @@ fn link_styles<'a>(app: &App, look: Look) -> Element<'a, Message> {
         );
     }
     bar.into()
+}
+
+/// The two arrow tips, each drawn rather than named — beside the link
+/// styles, and the same size, since the two choices are read together.
+fn arrow_tips<'a>(app: &App, look: Look) -> Element<'a, Message> {
+    let current = ArrowTip::of(&app.config);
+    let mut bar = Row::new().spacing(6);
+    for tip in ArrowTip::ALL {
+        let on = tip == current;
+        let sketch = container(canvas::Canvas::new(TipSketch { tip, on, look }).width(64).height(34)).style(move |_theme| {
+            container::Style {
+                background: Some(if on { Color { a: 0.1, ..look.accent } } else { look.well }.into()),
+                border: Border {
+                    color: if on { look.accent } else { look.line },
+                    width: if on { 1.5 } else { 1.0 },
+                    radius: 6.0.into(),
+                },
+                ..container::Style::default()
+            }
+        });
+        let caption = say(tip.label(), Type::Small, look.font, if on { look.text } else { look.muted });
+        bar = bar.push(
+            button(column![sketch, caption].spacing(4).align_x(Alignment::Center))
+                .padding(0)
+                .style(bare(look))
+                .on_press(Message::Settings(Msg::Pick(Field::ArrowTip, tip.label().to_owned()))),
+        );
+    }
+    bar.into()
+}
+
+/// An arrow tip in miniature: a link running into the edge of a card.
+struct TipSketch {
+    tip: ArrowTip,
+    on: bool,
+    look: Look,
+}
+
+impl canvas::Program<Message> for TipSketch {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &Renderer,
+        _theme: &Theme,
+        bounds: Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<Geometry> {
+        let look = self.look;
+        let mut frame = Frame::new(renderer, bounds.size());
+        let card = if self.on { look.faint } else { mix(look.faint, look.panel, 0.35) };
+        let ink = if self.on { look.text } else { look.muted };
+        // The card's edge, and the point stopping just short of it.
+        frame.fill(&Pen::rectangle(Point::new(52.0, 7.0), Size::new(8.0, 20.0)), card);
+        let point = Point::new(49.0, 17.0);
+        const HEAD: f32 = 8.0;
+        match self.tip {
+            ArrowTip::Chevron => {
+                frame.stroke(&Pen::line(Point::new(8.0, 17.0), point), Stroke::default().with_color(ink).with_width(1.6));
+                let wings = Pen::new(|b| {
+                    b.move_to(Point::new(point.x - HEAD * 0.707, point.y - HEAD * 0.707));
+                    b.line_to(point);
+                    b.line_to(Point::new(point.x - HEAD * 0.707, point.y + HEAD * 0.707));
+                });
+                frame.stroke(&wings, Stroke::default().with_color(ink).with_width(1.6));
+            }
+            // In the board's proportions: longer than a chevron, half as
+            // wide either side as it is long.
+            ArrowTip::Triangle => {
+                let length = HEAD * 1.625;
+                frame.stroke(
+                    &Pen::line(Point::new(8.0, 17.0), Point::new(point.x - length, 17.0)),
+                    Stroke::default().with_color(ink).with_width(1.6),
+                );
+                let head = Pen::new(|b| {
+                    b.move_to(point);
+                    b.line_to(Point::new(point.x - length, point.y - length * 0.5));
+                    b.line_to(Point::new(point.x - length, point.y + length * 0.5));
+                    b.close();
+                });
+                frame.fill(&head, ink);
+            }
+        }
+        vec![frame.into_geometry()]
+    }
 }
 
 /// A link style in miniature: two ports and the line between them, as

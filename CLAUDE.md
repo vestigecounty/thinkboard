@@ -624,6 +624,32 @@ drawn, and the preview and shimmer built their own — all four disagreed with t
 routing under them until they were brought across. Anything new that draws a
 link goes through here.
 
+**An arrow stops short of its card** (`board::ARROW_GAP`, 2 world units,
+measured from the tip's round cap): on the card's edge the tip sat on its
+border and was lost in a border of its own colour. In world units so it
+scales with zoom rather than leaving zoomed-out links looking detached. The
+gap is taken in `edge_geometry`, *before* routing, so all seven consumers get
+the same ends; an end without an arrow stays on its port. The drag preview,
+once it snaps, and the cluster links take the same tip.
+
+**A link's line stops where the chevron's inner edges meet it** (`shaft`),
+with the small wedge between its butt end and the chevron's inner corner
+filled in its colour. A link is translucent, so run on to the point it lay
+under the chevron and the tip drew denser than the link; just stopping short
+left a speck of board inside the V. Line, wedge and chevron tile the tip,
+each pixel covered once. Drawing only — the geometry still ends at the point,
+and the line is *cut* from the routed path (`link_path_trimmed`), never routed
+from ends slid back: that reshaped the whole curve, and the line left its own
+hover ring.
+
+**The tip's shape is the app's, which ends have one is the file's.** `fromEnd`
+and `toEnd` are per link, in the board, as Obsidian stores them; the shape —
+`config.arrow_tip`, a chevron or a filled triangle — has nowhere to go in that
+format, so it's a preference, chosen beside the link style. A triangle's line
+stops at its base, so it tiles the tip as the chevron's wedge does. How solid
+every link is, coloured or not, is `config.link_opacity` (file-only); the
+hover and selection highlights stay opaque.
+
 **The trunk belongs to the port, not the link** (`Board::trunk`, off the
 per-frame `Board::ports` map). Capped per link it is capped by that link's own
 span, so siblings at different indents step out by different amounts and stand
