@@ -23,7 +23,6 @@ pub(super) fn app_with(nodes: Vec<CanvasNode>, edges: Vec<CanvasEdge>) -> App {
         },
         canvas_path: PathBuf::new(),
         base_path: PathBuf::from("."),
-        file_mtime: None,
         scratch: true,
         hotkey_manager: None,
         registered_hotkey: None,
@@ -281,19 +280,46 @@ fn connecting_two_nodes_is_undoable() {
 }
 
 #[test]
-fn dragging_a_node_records_no_undo_step() {
-    // Drags are deliberately not undoable — they'd flood the history with a
-    // step per mouse-move.
+fn a_drag_is_one_undo_step_however_many_moves_it_took() {
+    // Drags weren't undoable at all, for fear of a step per mouse-move — so a
+    // card dropped in the wrong place couldn't be put back.
     let mut app = app_with(two_nodes(), Vec::new());
-
-    send(
-        &mut app,
-        Message::MoveNode {
-            index: 0,
-            position: Point::new(500.0, 500.0),
-        },
-    );
+    for x in [100.0, 300.0, 500.0] {
+        send(&mut app, Message::MoveNode { index: 0, position: Point::new(x, 500.0) });
+    }
+    assert!(!app.history.can_undo(), "nothing recorded until it ends");
+    send(&mut app, Message::NodeDragEnd { index: 0, moved: true });
     assert_eq!(app.nodes[0].x, 500.0);
+
+    send(&mut app, Message::Undo);
+    assert_eq!((app.nodes[0].x, app.nodes[0].y), (0.0, 0.0), "back where the drag began");
+    assert!(!app.history.can_undo(), "one step for the whole drag");
+    send(&mut app, Message::Redo);
+    assert_eq!(app.nodes[0].x, 500.0);
+}
+
+#[test]
+fn a_press_that_moved_nothing_is_no_step() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    send(&mut app, Message::NodeDragEnd { index: 0, moved: false });
+    // A drag that came back to where it began.
+    send(&mut app, Message::MoveNode { index: 0, position: Point::new(80.0, 0.0) });
+    send(&mut app, Message::MoveNode { index: 0, position: Point::new(0.0, 0.0) });
+    send(&mut app, Message::NodeDragEnd { index: 0, moved: true });
+    assert!(!app.history.can_undo());
+}
+
+#[test]
+fn a_resize_is_one_undo_step() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    let anchor = Point::new(0.0, 0.0);
+    for corner in [Point::new(260.0, 120.0), Point::new(320.0, 160.0)] {
+        send(&mut app, Message::ResizeNode { index: 0, anchor, cursor: corner });
+    }
+    send(&mut app, Message::ResizeEnd);
+    assert_eq!(app.nodes[0].width, 320.0);
+    send(&mut app, Message::Undo);
+    assert_eq!((app.nodes[0].width, app.nodes[0].height), (200.0, 100.0));
     assert!(!app.history.can_undo());
 }
 
@@ -422,6 +448,31 @@ fn a_freshly_created_node_with_text_stays() {
 
     assert_eq!(app.nodes.len(), 1);
     assert_eq!(text_of(&app, 0), Some("kept"));
+}
+
+#[test]
+fn a_new_note_and_its_first_text_are_one_undo_step() {
+    // Adding a note wasn't undoable: its first edit skipped the snapshot, so
+    // Cmd+Z went straight past it to whatever came before.
+    let mut app = app_with(two_nodes(), Vec::new());
+    send(&mut app, Message::CreateNode { world: Point::new(0.0, 400.0) });
+    send(&mut app, Message::StartEditing { index: 2, at: None });
+    type_text(&mut app, "Pack an umbrella");
+    send(&mut app, Message::StopEditing);
+    assert_eq!(app.nodes.len(), 3);
+
+    send(&mut app, Message::Undo);
+    assert_eq!(app.nodes.len(), 2, "the note is gone, not just emptied");
+    assert!(!app.history.can_undo());
+    send(&mut app, Message::Redo);
+    assert_eq!(text_of(&app, 2), Some("Pack an umbrella"));
+
+    // One left empty is taken back without leaving a step to undo.
+    let mut app = app_with(two_nodes(), Vec::new());
+    send(&mut app, Message::CreateNode { world: Point::new(0.0, 400.0) });
+    send(&mut app, Message::StartEditing { index: 2, at: None });
+    send(&mut app, Message::StopEditing);
+    assert!(!app.history.can_undo());
 }
 
 #[test]
@@ -2030,4 +2081,259 @@ fn links_are_drawn_obsidians_way_unless_asked_otherwise() {
         assert_eq!(app.config.link_style, style.as_str());
         assert_eq!(crate::config::LinkStyle::of(&app.config), style);
     }
+}
+
+// --- The board's file, changed by another program ---
+
+/// An app with a board open from a real file in a folder of its own, as
+/// [`app_with`] but saved, watched and merged like a configured board.
+fn file_app(name: &str, nodes: Vec<CanvasNode>) -> (App, PathBuf) {
+    let dir = std::env::temp_dir().join(format!("tb-disk-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("Trip.canvas");
+    let mut app = app_with(nodes, Vec::new());
+    app.current_document().save(&path).unwrap();
+    app.canvas_path = path.clone();
+    app.disk = sync::OnDisk::new(app.current_document(), &path);
+    app.scratch = false;
+    (app, path)
+}
+
+/// Changes the file the way Obsidian does: reads it, changes it, writes it
+/// back whole.
+fn elsewhere(path: &std::path::Path, change: impl FnOnce(&mut CanvasDocument)) {
+    // A write within the same tick as the last would leave the time alone, and
+    // so look like nothing happened — and Windows stamps files from a clock
+    // that ticks every 15 ms or so.
+    std::thread::sleep(Duration::from_millis(20));
+    let mut document = CanvasDocument::load(path).unwrap();
+    change(&mut document);
+    document.save(path).unwrap();
+}
+
+/// Puts the editor's caret after the last character.
+fn caret_to_end(app: &mut App) {
+    send(app, Message::EditorAction(text_editor::Action::Move(text_editor::Motion::DocumentEnd)));
+}
+
+/// Runs the autosave as if its debounce had passed.
+fn autosave(app: &mut App) {
+    app.last_edit = Instant::now() - Duration::from_secs(5);
+    send(app, Message::SaveTick);
+}
+
+#[test]
+fn a_card_added_there_while_one_is_edited_here_survives_the_save() {
+    // What the tour found: the card added in Obsidian was written over by the
+    // edit's autosave, and gone from the file.
+    let (mut app, path) = file_app("editing", two_nodes());
+    send(&mut app, Message::StartEditing { index: 1, at: None });
+    caret_to_end(&mut app);
+    type_text(&mut app, " near Alfama");
+    elsewhere(&path, |doc| doc.nodes.push(text_node("c", "Buy tram passes")));
+    send(&mut app, Message::FileChanged);
+
+    assert_eq!(ids(&app), ["a", "b", "c"]);
+    let editing = app.editing.as_ref().expect("still editing");
+    assert_eq!(app.nodes[editing.index].id, "b");
+    assert_eq!(editing.content.text(), "node b near Alfama", "the edit is untouched");
+
+    send(&mut app, Message::StopEditing);
+    autosave(&mut app);
+    let saved = CanvasDocument::load(&path).unwrap();
+    let texts: Vec<_> = saved.nodes.iter().filter_map(|n| n.text.as_deref()).collect();
+    assert_eq!(texts, ["node a", "node b near Alfama", "Buy tram passes"]);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn a_save_takes_in_a_change_the_watcher_has_not_reported_yet() {
+    // FSEvents can deliver a change a second after it's made: a save in that
+    // window used to write over it.
+    let (mut app, path) = file_app("unreported", two_nodes());
+    send(&mut app, Message::MoveNode { index: 0, position: Point::new(0.0, 300.0) });
+    send(&mut app, Message::NodeDragEnd { index: 0, moved: true });
+    elsewhere(&path, |doc| doc.nodes.push(text_node("c", "Buy tram passes")));
+
+    autosave(&mut app);
+    assert_eq!(ids(&app), ["a", "b", "c"], "taken in before saving");
+    autosave(&mut app);
+    let saved = CanvasDocument::load(&path).unwrap();
+    assert_eq!(saved.nodes.len(), 3);
+    assert_eq!(saved.nodes[0].y, 300.0, "and the move here saved with it");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn an_outside_change_is_a_step_undo_takes_back() {
+    // The history used to be dropped on any outside write, so Cmd+Z after a
+    // sync did nothing.
+    let (mut app, path) = file_app("undo", two_nodes());
+    send(&mut app, Message::SelectNode(Some(0)));
+    send(&mut app, Message::SetNodeColor(Some("4".to_owned())));
+    autosave(&mut app);
+    elsewhere(&path, |doc| doc.nodes[1].x = 900.0);
+    send(&mut app, Message::FileChanged);
+    assert_eq!(app.nodes[1].x, 900.0);
+
+    send(&mut app, Message::Undo);
+    assert_eq!(app.nodes[1].x, 400.0, "the outside change is undone first");
+    assert!(app.doc_dirty, "and the undo is saved back");
+    send(&mut app, Message::Undo);
+    assert_eq!(app.nodes[0].color, None, "then what was done here before it");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn undoing_an_edit_made_across_an_outside_change_keeps_the_change() {
+    let (mut app, path) = file_app("across", two_nodes());
+    send(&mut app, Message::StartEditing { index: 1, at: None });
+    caret_to_end(&mut app);
+    type_text(&mut app, " near Alfama");
+    elsewhere(&path, |doc| doc.nodes.push(text_node("c", "Buy tram passes")));
+    send(&mut app, Message::FileChanged);
+    send(&mut app, Message::StopEditing);
+
+    send(&mut app, Message::Undo);
+    assert_eq!(text_of(&app, 1), Some("node b"), "the edit is undone");
+    assert_eq!(ids(&app), ["a", "b", "c"], "and the card added there stays");
+    send(&mut app, Message::Undo);
+    assert_eq!(ids(&app), ["a", "b"]);
+    assert_eq!(text_of(&app, 1), Some("node b"), "without bringing half the edit back");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn the_editor_follows_a_card_changed_there_before_anything_was_typed() {
+    let (mut app, path) = file_app("follow", two_nodes());
+    send(&mut app, Message::StartEditing { index: 1, at: None });
+    elsewhere(&path, |doc| doc.nodes[1].text = Some("node b, reworded there".to_owned()));
+    send(&mut app, Message::FileChanged);
+    let editing = app.editing.as_ref().expect("still editing");
+    assert_eq!(editing.content.text(), "node b, reworded there");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn the_selection_survives_an_outside_change() {
+    let (mut app, path) = file_app("selection", two_nodes());
+    send(&mut app, Message::SelectNode(Some(1)));
+    // A card added in front of it, so its index moves.
+    elsewhere(&path, |doc| doc.nodes.insert(0, text_node("first", "Packing")));
+    send(&mut app, Message::FileChanged);
+    assert_eq!(ids(&app), ["first", "a", "b"]);
+    assert_eq!(app.selected, [2], "still b");
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn a_board_renamed_there_is_saved_under_its_new_name() {
+    // It used to be written back under its old name, and the folder held both.
+    let (mut app, path) = file_app("rename", two_nodes());
+    let renamed = path.with_file_name("Lisbon.canvas");
+    std::fs::rename(&path, &renamed).unwrap();
+    send(&mut app, Message::FileChanged);
+    assert_eq!(app.canvas_path, renamed);
+    assert!(!app.disk.missing);
+
+    send(&mut app, Message::MoveNode { index: 0, position: Point::new(0.0, 300.0) });
+    send(&mut app, Message::NodeDragEnd { index: 0, moved: true });
+    autosave(&mut app);
+    let names: Vec<_> = std::fs::read_dir(path.parent().unwrap()).unwrap().flatten().map(|e| e.file_name()).collect();
+    assert_eq!(names, ["Lisbon.canvas"]);
+    assert_eq!(CanvasDocument::load(&renamed).unwrap().nodes[0].y, 300.0);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn a_board_whose_file_went_is_not_saved_until_told_to() {
+    let (mut app, path) = file_app("gone", two_nodes());
+    std::fs::remove_file(&path).unwrap();
+    send(&mut app, Message::FileChanged);
+    assert!(app.disk.missing);
+
+    send(&mut app, Message::MoveNode { index: 0, position: Point::new(0.0, 300.0) });
+    send(&mut app, Message::NodeDragEnd { index: 0, moved: true });
+    autosave(&mut app);
+    assert!(!path.exists(), "not quietly recreated");
+    assert!(app.doc_dirty);
+
+    send(&mut app, Message::RestoreFile);
+    assert!(!app.disk.missing);
+    assert_eq!(CanvasDocument::load(&path).unwrap().nodes[0].y, 300.0);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn a_file_left_unreadable_is_saved_over_rather_than_waited_on() {
+    let (mut app, path) = file_app("unreadable", two_nodes());
+    send(&mut app, Message::MoveNode { index: 0, position: Point::new(0.0, 300.0) });
+    send(&mut app, Message::NodeDragEnd { index: 0, moved: true });
+    std::thread::sleep(Duration::from_millis(20));
+    std::fs::write(&path, "{\"nodes\":[{\"id\":").unwrap();
+
+    // Just written: maybe half of something, so nothing is saved over it.
+    autosave(&mut app);
+    autosave(&mut app);
+    assert!(CanvasDocument::load(&path).is_err());
+
+    // Left that way: it was finished broken, and the board is saved.
+    let old = std::time::SystemTime::now() - Duration::from_secs(10);
+    std::fs::File::options().write(true).open(&path).unwrap().set_modified(old).unwrap();
+    autosave(&mut app);
+    autosave(&mut app);
+    assert_eq!(CanvasDocument::load(&path).unwrap().nodes[0].y, 300.0);
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+#[test]
+fn what_another_app_copied_is_pasted_whole_and_in_view() {
+    // One test, since the clipboard stand-in is shared by the whole binary.
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.camera.viewport = Size::new(1200.0, 800.0);
+
+    // A paragraph: sized to its text, not three lines of it.
+    let paragraph = "Lisbon's trams are part of the city: the 28 climbs from Martim Moniz through Graça and \
+                     Alfama to Estrela, past most of what a first visit wants to see, in old wooden cars \
+                     that rattle and lean on every corner. Ride it early, before the queues.";
+    *clipboard::system::held() = Some(clipboard::Clip::Text(paragraph.to_owned()));
+    // Asked for below the window's edge, as a nudge to a free spot can land.
+    let below = app.camera.to_world(Point::new(600.0, 1100.0));
+    send(&mut app, Message::Paste { world: below });
+    let pasted = app.nodes.last().unwrap().clone();
+    let wrap = text_raster::card_text_wrap(pasted.width);
+    let (_, needs) = text_raster::measure_markdown(paragraph, wrap, FONT_SIZE, &app.theme);
+    assert!(pasted.height >= needs + text_raster::NODE_PAD_Y - 0.5, "{} for {needs}", pasted.height);
+
+    // And the view follows it, at the zoom it was at.
+    let focus = app.camera_focus.expect("scrolled to it");
+    assert_eq!(focus.target_zoom, app.camera.zoom);
+    let mut camera = app.camera;
+    camera.offset = focus.target_offset;
+    let screen = camera.rect_to_screen(arrange::node_world_rect(&pasted));
+    assert!(screen.y >= 0.0 && screen.y + screen.height <= 800.0, "{screen:?}");
+
+    // An image on the welcome board is held, not written where the app runs.
+    let mut app = app_with(Vec::new(), Vec::new());
+    *clipboard::system::held() = Some(clipboard::Clip::Image { width: 4, height: 2, rgba: vec![200; 32] });
+    send(&mut app, Message::Paste { world: Point::ORIGIN });
+    let file = app.nodes[0].file.clone().expect("an image node");
+    assert!(app.held_images.contains_key(&file));
+    assert!(!std::path::Path::new(&file).exists(), "nothing written to the working directory");
+    // An undo and redo rebuild the image handles; it's still there after.
+    send(&mut app, Message::Undo);
+    send(&mut app, Message::Redo);
+    assert!(app.images.contains_key(&app.nodes[0].id));
+
+    // Copied from there onto a board with a folder, it's written there.
+    send(&mut app, Message::SelectNode(Some(0)));
+    send(&mut app, Message::CopyNodes);
+    let (_, path) = file_app("held-image", Vec::new());
+    let _ = app.open_canvas(path.clone());
+    send(&mut app, Message::Paste { world: Point::ORIGIN });
+    let file = app.nodes[0].file.clone().expect("an image node");
+    assert!(path.parent().unwrap().join(&file).exists(), "{file} beside the board");
+    *clipboard::system::held() = None;
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }

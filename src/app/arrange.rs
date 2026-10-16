@@ -305,6 +305,23 @@ impl App {
         }
     }
 
+    /// The size a new card takes to show `text` whole: as wide as it needs up
+    /// to `max_node_width`, as tall as its rendered Markdown up to the
+    /// auto-size ceiling — what [`App::autosize_node`] grows a card to, for a
+    /// card that isn't anywhere yet. A paste is sized with it before it's
+    /// placed, so the free spot found is free for the card it'll be.
+    pub(super) fn text_card_size(&self, text: &str) -> (f32, f32) {
+        let (min_width, min_height) = (self.config.new_node_min_width, self.config.new_node_min_height);
+        let max_width = self.config.max_node_width.max(min_width);
+        let wrap = text_raster::card_text_wrap(max_width);
+        let (text_width, text_height) = text_raster::measure_markdown(text, wrap, FONT_SIZE, &self.theme);
+        let width = (text_width + text_raster::NODE_PAD_X).clamp(min_width, max_width);
+        let height = (text_height + text_raster::NODE_PAD_Y)
+            .clamp(min_height, text_raster::MAX_AUTO_HEIGHT.max(min_height));
+        let grid = self.snap_grid();
+        if grid > 0.0 { crate::snap::fit_size(width, height, grid) } else { (width, height) }
+    }
+
     /// The size a text node takes when a resize drag sweeps `drag_w`×`drag_h`,
     /// floored so its text never clips (unless node scrollbars are on, where
     /// the overflow scrolls instead).
@@ -397,6 +414,10 @@ impl App {
     /// overlap), animates it in, and queues its editor to open. Returns the
     /// new node's index.
     pub(super) fn spawn_text_node(&mut self, world: Point) -> usize {
+        // Undoing the note takes it back whole, so the point is before it was
+        // made — and before whatever made it moved anything (a connected
+        // note's link and the relayout after it).
+        self.fresh_undo = Some(self.snapshot());
         let width = self.config.new_node_min_width;
         let height = self.config.new_node_min_height;
         let center = self.find_free_placement(world, width, height);
@@ -555,6 +576,7 @@ impl App {
         // undo step on top of the creation. Unlike a text node, a frame left
         // unnamed is *not* taken back — an unnamed group is a fine group.
         self.fresh_node = Some(index);
+        self.fresh_undo = None;
         self.mark_dirty();
         self.cache.clear();
         // Drop straight into naming it, the way a drag-created note opens its

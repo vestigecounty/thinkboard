@@ -97,7 +97,7 @@ rasterizer) stays desktop-side.
 | `history` | document undo/redo snapshots and the deletions that record them |
 | `raster` | text bitmaps and semantic-zoom clusters (both computed off-thread) |
 | `ai` / `ghosts` | streamed answers; Copilot-style suggestion cards (shelved — nothing offers them; `ghosts::OFFERED`) |
-| `canvas_file` | opening, autosaving, reloading the `.canvas` file; vault roots |
+| `canvas_file` | opening, autosaving, merging outside changes into the `.canvas` file; vault roots |
 | `picker` | the panel shell shared by the palette, vault browser and the pickers |
 | `theme_picker` / `font_picker` / `model_picker` | what fills that shell besides the palette |
 | `vault` | finding the vault's boards and switching between them |
@@ -184,7 +184,9 @@ plane in use. Don't give every geometry a layer "to be safe".
 ## First run
 
 No configured board means the embedded **welcome board** — a scratch canvas
-that never touches disk and comes back each launch. `finish_welcome` completes
+that never touches disk and comes back each launch. An image pasted onto it is
+held in memory as the board is (`clipboard::HeldImage`), and written out only
+if it's copied onto a board with a folder. `finish_welcome` completes
 it for the machine it's on, which is why the file has a `SUMMON` placeholder in
 it rather than instructions.
 
@@ -610,6 +612,41 @@ gaps with dummy nodes. Ours come from the file.
   is a single label: host and URL centred in the card. Text nodes centre or
   left-align per `center_node_text`. Keep new kinds consistent with whichever
   of the two they resemble.
+
+## When the file changes elsewhere
+
+Obsidian, a sync client or a text editor can write the board's file while it's
+open, so an outside change is **merged, not reloaded**: `thinkboard_core::merge`
+compares each card and link, by id, with the copy both sides started from —
+`App::disk` (`sync::OnDisk`), the file as last read or written here. Whichever
+side changed a card is the one kept; where both did, field by field, and where
+both changed the same field, ours. Position and size are each one field (x
+from one side and y from the other is a place neither chose), and a deletion
+doesn't take a card the other side changed. It used to be last write wins: an
+outside change was reloaded only when nothing here was unsaved, so a card
+added in Obsidian while one was edited here was written over by the edit.
+
+- **Compared as written.** Everything goes through the serializer, which rounds
+  geometry — a card dragged to x = 100.4 and read back as 100 wasn't moved.
+- **Our own writes come back as events**, and are told apart by the
+  modification time they left (`disk.mtime`). The watcher can trail a write by a
+  second, so `SaveTick` checks the time too and takes a change in *before*
+  saving, rather than write over it unseen.
+- **The card being edited is held**: it counts as changed here, so a deletion
+  there can't pull it from under the editor. If it was changed there before
+  anything was typed, the editor follows (`follow_edited_card`).
+- **An outside change is an undo step**, as in an editor whose file changes on
+  disk; the history used to be dropped. An edit, gesture or new note under way
+  has taken its undo point already, so the change is recorded from that point
+  and the point is rebased past it — undoing the edit then keeps the change.
+- **A rename is followed** (`sync::find_renamed`: the same inode, or the same
+  modification time, in the same folder), or the next save recreated the old
+  name beside the new one. A file that's gone otherwise stops the autosave and
+  says so on the board, with "Save it again" — never quietly recreated.
+- **Saves are whole**: written beside the file and renamed over it
+  (`model::write_whole`), so nothing reads one half-written. A file that stays
+  unparseable for `UNREADABLE_SETTLED` was finished that way, and is saved over
+  rather than waited on forever.
 
 ## Testing conventions worth knowing
 

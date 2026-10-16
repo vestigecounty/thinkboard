@@ -13,7 +13,8 @@
 //! - [`raster`] — text bitmaps and semantic-zoom clusters
 //! - [`ai`] / [`ghosts`] — streamed answers and Copilot-style suggestions
 //!   (shelved: see [`ghosts`])
-//! - [`canvas_file`] — opening, autosaving and reloading the `.canvas` file
+//! - [`canvas_file`] — opening, autosaving, and merging in outside changes to
+//!   the `.canvas` file
 //! - [`vault`] — the Obsidian vault: finding its boards and switching between
 //!   them, over the [`picker`] shell the command palette also uses
 //! - [`search`] — the in-board find
@@ -23,11 +24,11 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::LazyLock;
-use std::time::{Duration, Instant, SystemTime};
+use std::time::{Duration, Instant};
 
 use iced::widget::{image, text_editor};
 use iced::window;
-use iced::{Font, Point, Size, Subscription, Task, Vector};
+use iced::{Font, Point, Rectangle, Size, Subscription, Task, Vector};
 
 use global_hotkey::GlobalHotKeyManager;
 use global_hotkey::hotkey::HotKey;
@@ -320,6 +321,9 @@ pub(crate) enum Message {
     Tick(Instant),
     SaveTick,
     FileChanged,
+    /// Write the board back to its file, which was moved or deleted outside
+    /// the app — the board's "save it again".
+    RestoreFile,
     SnapshotsReady(Vec<(usize, text_raster::Snapshot)>),
     ClustersReady(cluster::Clustering, HashMap<usize, text_raster::Snapshot>),
     /// A press on node `index` let go — after a drag when `moved`, else a click.
@@ -484,6 +488,10 @@ struct App {
     nodes: Vec<CanvasNode>,
     edges: Vec<CanvasEdge>,
     images: HashMap<String, image::Handle>,
+    /// Images pasted onto a board with nowhere to write them — the welcome
+    /// board — keyed by the `file` their node names, and kept in memory as the
+    /// board itself is.
+    held_images: HashMap<String, clipboard::HeldImage>,
     /// Body text of the file nodes that embed a Markdown note, keyed by node
     /// id. Read from the vault at load; a note that can't be read is absent and
     /// the card shows just its title.
@@ -507,9 +515,9 @@ struct App {
     doc_dirty: bool,
     /// Time of the last change, for the save debounce.
     last_edit: Instant,
-    /// Last file mtime we know about (set on load/save/reload); external
-    /// writes are detected by comparison, our own writes adopt the new one.
-    file_mtime: Option<SystemTime>,
+    /// The file as last read or written here (set on load, save and merge):
+    /// what an outside change is detected by, and merged against.
+    disk: sync::OnDisk,
     /// Semantic-zoom cluster summaries and their labels.
     clusters: Clusters,
     /// Text bitmaps for the nodes, and the ones warming up to replace them.
@@ -634,12 +642,20 @@ struct App {
     picker_anim: Option<Instant>,
     /// In-progress auto-layout animation easing nodes to new positions.
     layout_anim: Option<LayoutAnim>,
-    /// Undo/redo history of document snapshots. Deletes and completed edits
-    /// record an entry; drags do not.
+    /// Undo/redo history of document snapshots. Every change to the document
+    /// records an entry — a drag or resize one for the whole gesture, a new
+    /// note one with its first text, an outside change one of its own.
     history: History<DocSnapshot>,
     /// Pre-edit snapshot captured while editing an existing node, committed
     /// to the undo stack only if the text actually changed.
     edit_undo: Option<DocSnapshot>,
+    /// The document before a drag or resize began, committed when it ends if
+    /// anything moved — one step for the whole gesture, rather than one per
+    /// mouse-move.
+    gesture_undo: Option<DocSnapshot>,
+    /// The document before `fresh_node` was created. Its editor takes this as
+    /// its pre-edit snapshot, so the note and its first text are one step.
+    fresh_undo: Option<DocSnapshot>,
     phase: Phase,
     /// 0 = hidden, 1 = fully shown; the board eases node positions, node
     /// alpha, and the dim from this.
@@ -658,7 +674,6 @@ struct Init {
     document: CanvasDocument,
     canvas_path: PathBuf,
     base_path: PathBuf,
-    file_mtime: Option<SystemTime>,
     scratch: bool,
     hotkey_manager: Option<GlobalHotKeyManager>,
     registered_hotkey: Option<HotKey>,
@@ -698,20 +713,19 @@ impl App {
 
         // A real canvas loads from (and autosaves to) its file; the scratch
         // board is parsed from the embedded string and never touches disk.
-        let (document, canvas_path, base_path, file_mtime, scratch) = match boot {
+        let (document, canvas_path, base_path, scratch) = match boot {
             startup::Boot::Canvas(path) => {
                 let document =
                     CanvasDocument::load(&path).unwrap_or_else(|error| panic!("{error}"));
                 let vault = (!config.vault.trim().is_empty())
                     .then(|| PathBuf::from(config.vault.trim()));
                 let base_path = canvas_file::vault_root(&path, &document, vault.as_deref());
-                let file_mtime = sync::file_mtime(&path);
-                (document, path, base_path, file_mtime, false)
+                (document, path, base_path, false)
             }
             startup::Boot::Scratch => {
                 let document = canvas_file::scratch_document(&theme);
                 let base_path = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
-                (document, PathBuf::new(), base_path, None, true)
+                (document, PathBuf::new(), base_path, true)
             }
         };
 
@@ -729,7 +743,6 @@ impl App {
             document,
             canvas_path,
             base_path,
-            file_mtime,
             scratch,
             hotkey_manager,
             registered_hotkey,
@@ -740,7 +753,8 @@ impl App {
 
     /// Assembles the initial state from an already-resolved [`Init`]: loads the
     /// document's images, computes the first clustering, and seeds every
-    /// transient field. No I/O beyond reading the images the document names.
+    /// transient field. No I/O beyond a stat of the board's file and reading
+    /// the images the document names.
     fn build(init: Init) -> Self {
         let Init {
             config,
@@ -748,7 +762,6 @@ impl App {
             document,
             canvas_path,
             base_path,
-            file_mtime,
             scratch,
             hotkey_manager,
             registered_hotkey,
@@ -780,11 +793,13 @@ impl App {
 
         // Captured before `config` is moved into the struct below.
         let (min_zoom, max_zoom) = (config.min_zoom, config.max_zoom);
+        let disk = sync::OnDisk::new(document.clone(), &canvas_path);
 
         let mut app = Self {
             nodes: document.nodes,
             edges: document.edges,
             images,
+            held_images: HashMap::new(),
             notes: HashMap::new(),
             config,
             theme,
@@ -794,7 +809,7 @@ impl App {
             doc_extra: document.extra,
             doc_dirty: false,
             last_edit: Instant::now(),
-            file_mtime,
+            disk,
             clusters: Clusters::default(),
             rasters: Rasters::default(),
             camera: Camera {
@@ -851,6 +866,8 @@ impl App {
             layout_anim: None,
             history: History::new(MAX_UNDO),
             edit_undo: None,
+            gesture_undo: None,
+            fresh_undo: None,
             phase: if windowed {
                 Phase::Running
             } else {
@@ -899,17 +916,31 @@ impl App {
             }
 
             // --- Direct manipulation ---
-            Message::MoveNode { index, position } => self.move_node(index, position),
-            Message::MoveCluster { index, delta } => self.move_cluster(index, delta),
-            Message::ClusterDragEnd => return self.schedule_recluster(),
+            Message::MoveNode { index, position } => {
+                self.begin_gesture();
+                self.move_node(index, position);
+            }
+            Message::MoveCluster { index, delta } => {
+                self.begin_gesture();
+                self.move_cluster(index, delta);
+            }
+            Message::ClusterDragEnd => {
+                self.end_gesture();
+                return self.schedule_recluster();
+            }
             Message::NodeDragEnd { index, moved } => {
                 if moved {
                     self.raise_dropped(index);
                 }
+                self.end_gesture();
                 return self.schedule_recluster();
             }
-            Message::ResizeNode { index, anchor, cursor } => self.resize_node(index, anchor, cursor),
+            Message::ResizeNode { index, anchor, cursor } => {
+                self.begin_gesture();
+                self.resize_node(index, anchor, cursor);
+            }
             Message::ResizeEnd => {
+                self.end_gesture();
                 return Task::batch([self.refresh_snapshots(), self.schedule_recluster()]);
             }
             Message::SetNodeScroll { id, offset } => {
@@ -931,7 +962,7 @@ impl App {
                 self.context_menu = None;
                 self.dismiss_ghosts();
                 let index = self.spawn_text_node(world);
-                self.focus_on_node(index);
+                let _ = self.focus_on_node(index);
             }
             Message::DeleteSelected => {
                 self.context_menu = None;
@@ -1116,10 +1147,18 @@ impl App {
                     self.last_edit.elapsed(),
                     self.config.autosave_debounce(),
                 ) {
+                    // Written there since and not yet seen here — the watcher's
+                    // event can trail the write by a second. Take it in first
+                    // and save the merge on a later tick, rather than write
+                    // over what nobody here has seen.
+                    if self.disk_changed() {
+                        return self.check_reload();
+                    }
                     self.save_document();
                 }
             }
             Message::FileChanged => return self.check_reload(),
+            Message::RestoreFile => self.restore_file(),
             Message::CanvasAction(action) => return self.canvas_action(&action),
             Message::OpenBoardDialog => {
                 if let Some(create) = self.pending_board_create.take() {
@@ -1534,19 +1573,57 @@ impl App {
 
     /// Starts a smooth camera fly-to that centers the node at a comfortable
     /// editing zoom — but only when currently zoomed out, so adding a node
-    /// at node level doesn't move the view.
-    fn focus_on_node(&mut self, index: usize) {
+    /// at node level doesn't move the view. Returns whether it did.
+    fn focus_on_node(&mut self, index: usize) -> bool {
         if self.camera.zoom >= self.config.auto_zoom_trigger {
-            return;
+            return false;
         }
         let Some(node) = self.nodes.get(index) else {
-            return;
+            return false;
         };
         let center = Vector::new(node.x + node.width / 2.0, node.y + node.height / 2.0);
         let level = self.config.auto_zoom_level;
         self.camera_focus = Some(CameraFocus {
             target_zoom: level,
             target_offset: center * -level,
+            last_tick: Instant::now(),
+        });
+        true
+    }
+
+    /// Scrolls just far enough to bring `world` on screen, at the zoom the
+    /// board is already at — or centres it, when it's too big to fit.
+    ///
+    /// For a paste: one lands at the cursor unless something is there, and
+    /// then the nearest free spot can be past the edge of the window. Unlike
+    /// an answer, a paste has no link leading off to it, and the place was
+    /// chosen — so the view follows it, as little as it can.
+    fn reveal(&mut self, world: Rectangle) {
+        const MARGIN: f32 = 24.0;
+        let screen = self.camera.rect_to_screen(world);
+        let shift = |start: f32, length: f32, view: f32| {
+            if length > view - 2.0 * MARGIN {
+                view / 2.0 - (start + length / 2.0)
+            } else if start < MARGIN {
+                MARGIN - start
+            } else if start + length > view - MARGIN {
+                view - MARGIN - (start + length)
+            } else {
+                0.0
+            }
+        };
+        let viewport = self.camera.viewport;
+        let shift = Vector::new(
+            shift(screen.x, screen.width, viewport.width),
+            shift(screen.y, screen.height, viewport.height),
+        );
+        if shift == Vector::ZERO {
+            return;
+        }
+        self.inertia = None;
+        self.camera_focus = Some(CameraFocus {
+            target_zoom: self.camera.zoom,
+            target_offset: self.camera.offset + shift,
             last_tick: Instant::now(),
         });
     }
@@ -2294,8 +2371,9 @@ impl App {
             subscriptions.push(Subscription::run(gesture_stream));
         }
         // Autosave debounce ticks only while there are unsaved changes (never
-        // for the scratch board, which is never saved).
-        if self.doc_dirty && !self.scratch {
+        // for the scratch board, which is never saved, nor for a board whose
+        // file has gone, which isn't until it's told to be).
+        if self.doc_dirty && !self.scratch && !self.disk.missing {
             subscriptions.push(iced::time::every(SAVE_POLL).map(|_| Message::SaveTick));
         }
         // Animate the "…" dots while an AI request awaits its first token.

@@ -10,7 +10,7 @@ use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 use iced::widget::image;
-use iced::{Point, Task};
+use iced::{Point, Rectangle, Task};
 use serde::{Deserialize, Serialize};
 
 use super::{App, Message, arrange};
@@ -26,6 +26,17 @@ const CANVAS_CLIP_KEY: &str = "thinkboard/canvas";
 pub struct NodeClip {
     pub nodes: Vec<CanvasNode>,
     pub edges: Vec<CanvasEdge>,
+}
+
+/// An image pasted onto a board with no folder to put it in — the welcome
+/// board, which is never saved — held in memory for as long as the board is.
+/// It used to be written into the app's working directory: the source folder
+/// when run from a checkout, `/` in an installed app, where it failed.
+pub(super) struct HeldImage {
+    width: usize,
+    height: usize,
+    rgba: Vec<u8>,
+    pub(super) handle: image::Handle,
 }
 
 /// Writes copied nodes to the clipboard, wrapped under [`CANVAS_CLIP_KEY`].
@@ -83,13 +94,13 @@ impl App {
         }
         let node = match read() {
             Some(Clip::Image { width, height, rgba }) => {
-                match self.write_pasted_image(width, height, &rgba) {
-                    Ok((file, path, id)) => {
+                match self.keep_pasted_image(width, height, rgba) {
+                    Ok((file, handle, id)) => {
                         // Fit the image to a comfortable size, keeping its aspect.
                         let (w, h) =
                             arrange::fit_image_size(width, height, self.config.max_node_width);
                         let center = self.find_free_placement(world, w, h);
-                        self.images.insert(id.clone(), image::Handle::from_path(path));
+                        self.images.insert(id.clone(), handle);
                         CanvasNode {
                             id,
                             kind: "file".to_owned(),
@@ -110,9 +121,10 @@ impl App {
                 }
             }
             Some(Clip::Text(text)) => {
-                let width = self.config.new_node_min_width;
-                let lines = text.lines().count().max(1) as f32;
-                let height = (lines * 22.0 + 24.0).clamp(self.config.new_node_min_height, 400.0);
+                // Sized to the text, as one typed would be — guessed from its
+                // line count, a pasted paragraph is one line, and clipped to
+                // the three that fit.
+                let (width, height) = self.text_card_size(&text);
                 let center = self.find_free_placement(world, width, height);
                 CanvasNode {
                     id: model::random_id(),
@@ -133,12 +145,15 @@ impl App {
         self.push_undo();
         let mut node = node;
         arrange::snap_node_geometry(&mut node, self.snap_grid());
+        let rect = arrange::node_world_rect(&node);
         self.nodes.push(node);
         let index = self.nodes.len() - 1;
         self.spawning.insert(index, Instant::now());
         self.mark_dirty();
         self.cache.clear();
-        self.focus_on_node(index);
+        if !self.focus_on_node(index) {
+            self.reveal(rect);
+        }
         Task::batch([self.refresh_snapshots(), self.schedule_recluster()])
     }
 
@@ -166,6 +181,7 @@ impl App {
 
         let mut id_map: HashMap<String, String> = HashMap::new();
         let mut selection = Vec::new();
+        let mut bounds: Option<Rectangle> = None;
         for mut node in clip.nodes {
             let new_id = model::random_id();
             id_map.insert(node.id.clone(), new_id.clone());
@@ -173,12 +189,34 @@ impl App {
             node.x += dx;
             node.y += dy;
             arrange::snap_node_geometry(&mut node, self.snap_grid());
+            bounds = Some(match bounds {
+                Some(bounds) => arrange::node_world_rect(&node).union(&bounds),
+                None => arrange::node_world_rect(&node),
+            });
             // File nodes reference the same image on disk; load its handle.
-            if let Some(file) = node.file.as_deref() {
-                self.images.insert(
-                    new_id,
-                    image::Handle::from_path(self.base_path.as_path().join(file)),
-                );
+            if let Some(file) = node.file.clone() {
+                // Unless it was only ever in memory, copied off the welcome
+                // board: a board with a folder writes it there, as a paste
+                // onto it would have.
+                let handle = match self.held_images.get(&file) {
+                    // Copied within the welcome board: the same picture, still held.
+                    Some(held) if self.scratch => held.handle.clone(),
+                    Some(held) => {
+                        let (width, height, rgba) = (held.width, held.height, held.rgba.clone());
+                        match self.keep_pasted_image(width, height, rgba) {
+                            Ok((file, handle, _)) => {
+                                node.file = Some(file);
+                                handle
+                            }
+                            Err(error) => {
+                                eprintln!("paste: could not save image ({error})");
+                                image::Handle::from_path(self.base_path.as_path().join(&file))
+                            }
+                        }
+                    }
+                    None => image::Handle::from_path(self.base_path.as_path().join(&file)),
+                };
+                self.images.insert(new_id, handle);
             }
             self.nodes.push(node);
             let index = self.nodes.len() - 1;
@@ -200,31 +238,40 @@ impl App {
         self.selected_edge = None;
         self.mark_dirty();
         self.cache.clear();
+        if let Some(bounds) = bounds {
+            self.reveal(bounds);
+        }
         Task::batch([self.refresh_snapshots(), self.schedule_recluster()])
     }
 
-    /// Writes a pasted image as a PNG in the canvas file's directory. Returns
-    /// the node's `file` value (relative to the vault base, as Obsidian
-    /// stores it), the absolute path (for the in-memory image handle), and a
-    /// fresh node id reused as the file stem.
-    fn write_pasted_image(
-        &self,
+    /// Keeps a pasted image: as a PNG in the canvas file's directory, or — on
+    /// the welcome board, which has none — in memory (see [`HeldImage`]).
+    /// Returns the node's `file` value (relative to the vault base, as
+    /// Obsidian stores it), the handle to draw it with, and a fresh node id
+    /// reused as the file stem.
+    fn keep_pasted_image(
+        &mut self,
         width: usize,
         height: usize,
-        rgba: &[u8],
-    ) -> Result<(String, PathBuf, String), String> {
+        rgba: Vec<u8>,
+    ) -> Result<(String, image::Handle, String), String> {
         let id = model::random_id();
+        let name = format!("pasted-{id}.png");
+        if self.scratch {
+            let handle = image::Handle::from_rgba(width as u32, height as u32, rgba.clone());
+            self.held_images.insert(name.clone(), HeldImage { width, height, rgba, handle: handle.clone() });
+            return Ok((name, handle, id));
+        }
         let dir = self
             .canvas_path
             .parent()
             .map(Path::to_path_buf)
             .unwrap_or_else(|| PathBuf::from("."));
-        let name = format!("pasted-{id}.png");
         let path = dir.join(&name);
         // `::image` (the crate) — `image` alone resolves to `iced::widget::image`.
         ::image::save_buffer(
             &path,
-            rgba,
+            &rgba,
             width as u32,
             height as u32,
             ::image::ExtendedColorType::Rgba8,
@@ -232,7 +279,7 @@ impl App {
         .map_err(|e| e.to_string())?;
 
         let file = super::canvas_file::vault_relative(&path, self.base_path.as_path());
-        Ok((file, path, id))
+        Ok((file, image::Handle::from_path(path), id))
     }
 }
 

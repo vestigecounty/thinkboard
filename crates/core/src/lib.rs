@@ -16,6 +16,7 @@ pub mod fuzzy;
 pub mod history;
 pub mod layout;
 pub mod markdown;
+pub mod merge;
 pub mod model;
 pub mod obsidian;
 pub mod search;

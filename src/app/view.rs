@@ -252,6 +252,9 @@ impl App {
         if let Some(editor) = self.editor_overlay(camera) {
             layers = layers.push(editor);
         }
+        if self.disk.missing && !self.scratch {
+            layers = layers.push(self.missing_file_notice());
+        }
         if let Some(menu) = self.context_menu_overlay() {
             layers = layers.push(menu);
         }
@@ -871,6 +874,44 @@ impl App {
                 bottom: 0.0,
                 left: 16.0,
             })
+            .into()
+    }
+
+    /// Says, along the bottom of the board, that its file was moved or deleted
+    /// and nothing is being saved — with the way to write it again. The board
+    /// in front of you may be the only copy left, so it's said where it can't
+    /// be missed rather than in a log.
+    fn missing_file_notice(&self) -> Element<'_, Message> {
+        let ct = self.theme;
+        let font = ct.ui_font();
+        let name = self
+            .canvas_path
+            .file_name()
+            .map_or_else(|| "This board's file".to_owned(), |name| name.to_string_lossy().into_owned());
+        let notice = row![
+            text(format!("{name} was moved or deleted, so changes here aren't being saved."))
+                .size(14)
+                .font(font)
+                .color(ct.text),
+            button(text("Save it again").size(14).font(font))
+                .padding([4, 10])
+                .on_press(Message::RestoreFile)
+                .style(move |_theme, status| {
+                    let mut style = chrome_button_style(status, ct.accent, ct.accent);
+                    style.border = iced::Border { width: 1.0, color: ct.accent, ..style.border };
+                    style
+                }),
+        ]
+        .spacing(14)
+        .align_y(iced::Alignment::Center);
+        let panel =
+            container(notice).padding([10, 14]).style(move |_theme| chrome::panel(&ct, ct.elevated()));
+        container(panel)
+            .width(Fill)
+            .height(Fill)
+            .align_x(iced::alignment::Horizontal::Center)
+            .align_y(iced::alignment::Vertical::Bottom)
+            .padding(Padding { top: 0.0, right: 16.0, bottom: 28.0, left: 16.0 })
             .into()
     }
 

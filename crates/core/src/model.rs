@@ -355,9 +355,40 @@ impl CanvasDocument {
     }
 
     pub fn save(&self, path: &Path) -> Result<(), String> {
-        std::fs::write(path, self.to_canvas_json()?)
+        write_whole(path, self.to_canvas_json()?.as_bytes())
             .map_err(|e| format!("cannot write {}: {e}", path.display()))
     }
+}
+
+/// Writes `bytes` to `path` in one step as far as a reader can tell: into a
+/// file beside it, then renamed over it.
+///
+/// A plain write truncates the file and then fills it, and Obsidian watches
+/// the vault and reads a changed canvas straight away — so it could read one
+/// half-written, as could a sync client. Through a symlink it writes the file
+/// the link names, since a rename over the link would replace the link with a
+/// copy; and it keeps the file's permissions. Where the rename is refused — on
+/// Windows, a file another program holds open — it falls back to writing in
+/// place, which is what it always did.
+fn write_whole(path: &Path, bytes: &[u8]) -> io::Result<()> {
+    let target = std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let (Some(dir), Some(name)) = (target.parent(), target.file_name()) else {
+        return std::fs::write(path, bytes);
+    };
+    // A dot-file, so neither Obsidian nor the vault browser lists it in the
+    // moment it exists.
+    let temp = dir.join(format!(".{}.{}.tmp", name.to_string_lossy(), random_id()));
+    let staged = std::fs::write(&temp, bytes).and_then(|()| {
+        if let Ok(metadata) = std::fs::metadata(&target) {
+            std::fs::set_permissions(&temp, metadata.permissions())?;
+        }
+        std::fs::rename(&temp, &target)
+    });
+    if staged.is_err() {
+        let _ = std::fs::remove_file(&temp);
+        return std::fs::write(&target, bytes);
+    }
+    Ok(())
 }
 
 /// Default size of a node created through the add-node helpers (Obsidian's
@@ -1204,6 +1235,41 @@ mod tests {
     fn hsv_wraps_hue_past_one() {
         // Hue 1.0 wraps back to red.
         assert_eq!(color_to_hex(hsv(1.0, 1.0, 1.0)), "#ff0000");
+    }
+
+    #[test]
+    fn a_save_replaces_the_file_whole_and_leaves_nothing_beside_it() {
+        let dir = std::env::temp_dir().join(format!("tb-save-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("board.canvas");
+        let document = |text: &str| CanvasDocument {
+            nodes: vec![CanvasNode { text: Some(text.to_owned()), ..crate::fixtures::node("a") }],
+            edges: Vec::new(),
+            extra: Map::new(),
+        };
+        document("first").save(&path).unwrap();
+        document("second").save(&path).unwrap();
+        assert_eq!(CanvasDocument::load(&path).unwrap().nodes[0].text.as_deref(), Some("second"));
+        let names: Vec<_> = std::fs::read_dir(&dir).unwrap().flatten().map(|e| e.file_name()).collect();
+        assert_eq!(names, ["board.canvas"], "the staging file is renamed into place, not left");
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            // Its permissions are the file's, not a fresh file's.
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+            document("third").save(&path).unwrap();
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+
+            // Through a link, the file it names is what's written; the link stays one.
+            let link = dir.join("linked.canvas");
+            std::os::unix::fs::symlink(&path, &link).unwrap();
+            document("fourth").save(&link).unwrap();
+            assert!(std::fs::symlink_metadata(&link).unwrap().file_type().is_symlink());
+            assert_eq!(CanvasDocument::load(&path).unwrap().nodes[0].text.as_deref(), Some("fourth"));
+        }
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

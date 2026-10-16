@@ -406,9 +406,14 @@ impl App {
         } else {
             return Task::none();
         };
-        // Capture a pre-edit snapshot to make the edit undoable — but not for
-        // a brand-new node (its creation isn't an undoable edit).
-        self.edit_undo = (self.fresh_node != Some(index)).then(|| self.snapshot());
+        // Capture a pre-edit snapshot to make the edit undoable. A brand-new
+        // note's is from before it was created, so the note and its first
+        // text are one step — undone, it's gone, as it was before.
+        self.edit_undo = if self.fresh_node == Some(index) {
+            self.fresh_undo.take()
+        } else {
+            Some(self.snapshot())
+        };
         self.rasters.invalidate(index);
         let mut editing = Editing::new(index, target, &seed);
         // Defer caret placement to the first frame (see `pending_caret`); a
@@ -518,6 +523,7 @@ impl App {
             }
         }
         self.fresh_node = None;
+        self.fresh_undo = None;
         self.editing = None;
         self.mark_dirty();
         self.cache.clear();
@@ -526,6 +532,23 @@ impl App {
             tasks.push(self.begin_completions(anchor));
         }
         Task::batch(tasks)
+    }
+
+    /// Shows in the editor what its card holds, if a merge changed it: the
+    /// card was changed there before anything had been typed here — had it
+    /// been, ours would have won. Typing into the old text would write over
+    /// theirs with the first keystroke.
+    pub(super) fn follow_edited_card(&mut self) {
+        let Some(editing) = &mut self.editing else {
+            return;
+        };
+        let Some(value) = self.nodes.get(editing.index).map(|node| edited_value(node, editing.target)) else {
+            return;
+        };
+        let value = value.unwrap_or_default();
+        if value.trim() != editing.content.text().trim() {
+            *editing = Editing::new(editing.index, editing.target, value.trim());
+        }
     }
 
     /// Applies one editor action, mirroring the result back onto the node.

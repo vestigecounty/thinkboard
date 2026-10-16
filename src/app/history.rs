@@ -2,9 +2,10 @@
 //!
 //! History is snapshot-based: an action records the whole node/edge set before
 //! it mutates anything (the document is small enough that this beats tracking
-//! per-field diffs). Drags deliberately record nothing — they would push a step
-//! per mouse-move — and in-flight AI generations are excluded until they
-//! finish, so an unrelated action's snapshot never captures a half-written note.
+//! per-field diffs). A drag or a resize takes its snapshot on its first step
+//! and records it when it ends, so the gesture is one step rather than one per
+//! mouse-move; and in-flight AI generations are excluded until they finish, so
+//! an unrelated action's snapshot never captures a half-written note.
 
 use std::collections::{HashMap, HashSet};
 
@@ -18,6 +19,7 @@ use crate::model::{self, CanvasEdge, CanvasNode};
 pub(super) const MAX_UNDO: usize = 100;
 
 /// A document state for undo/redo.
+#[derive(Clone)]
 pub(super) struct DocSnapshot {
     pub(super) nodes: Vec<CanvasNode>,
     pub(super) edges: Vec<CanvasEdge>,
@@ -30,7 +32,7 @@ pub(super) fn is_transient_edge(edge: &CanvasEdge, transient: &HashSet<String>) 
 
 /// A document snapshot with the transient AI nodes (and the edges touching
 /// them) left out — in-flight generations don't belong in history.
-fn committed_snapshot(
+pub(super) fn committed_snapshot(
     nodes: &[CanvasNode],
     edges: &[CanvasEdge],
     transient: &HashSet<String>,
@@ -48,7 +50,7 @@ fn committed_snapshot(
 /// the already-uploaded texture can be reused across an undo/redo instead of
 /// re-rasterizing (which blanks the node for a frame while the new texture
 /// uploads). Size is compared with the same 0.5px slack as `autosize_node`.
-fn text_bitmap_reusable(
+pub(super) fn text_bitmap_reusable(
     old_text: &Option<String>,
     old_size: (f32, f32),
     new_text: &Option<String>,
@@ -78,7 +80,7 @@ pub(super) fn remap_indices<V>(map: &mut HashMap<usize, V>, new_of_old: &[usize]
 impl App {
     /// Node ids belonging to in-flight AI generations, which are transient and
     /// excluded from undo history until they finish.
-    fn transient_node_ids(&self) -> HashSet<String> {
+    pub(super) fn transient_node_ids(&self) -> HashSet<String> {
         self.ai
             .streams
             .values()
@@ -93,7 +95,31 @@ impl App {
     /// Records the current document as an undo point and clears the redo
     /// history (a new action diverges from any undone future).
     pub(super) fn push_undo(&mut self) {
+        // A gesture that never saw its end (a release lost outside the window)
+        // mustn't record its start later, over this step.
+        self.gesture_undo = None;
         self.history.record(self.snapshot());
+    }
+
+    /// Takes the undo point for a drag or resize, on its first step.
+    pub(super) fn begin_gesture(&mut self) {
+        if self.gesture_undo.is_none() {
+            self.gesture_undo = Some(self.snapshot());
+        }
+    }
+
+    /// Commits the gesture's starting point as one undo step — if it moved or
+    /// resized anything, since a drag that came back to where it began is no
+    /// step at all.
+    pub(super) fn end_gesture(&mut self) {
+        let Some(before) = self.gesture_undo.take() else {
+            return;
+        };
+        let now = self.snapshot();
+        let place = |node: &CanvasNode| (node.id.clone(), node.x, node.y, node.width, node.height);
+        if !before.nodes.iter().map(place).eq(now.nodes.iter().map(place)) {
+            self.history.record(before);
+        }
     }
 
     /// Replaces the document with a snapshot (used by undo/redo), rebuilding
@@ -101,6 +127,8 @@ impl App {
     fn restore(&mut self, snapshot: DocSnapshot) -> Task<Message> {
         self.editing = None;
         self.layout_anim = None;
+        self.gesture_undo = None;
+        self.fresh_undo = None;
         // In-flight AI nodes aren't in snapshots; carry the live ones across so
         // undo/redo of an unrelated action doesn't drop a streaming node.
         let transient = self.transient_node_ids();
@@ -247,6 +275,7 @@ impl App {
         });
         self.pending_edit = None;
         self.fresh_node = None;
+        self.fresh_undo = None;
         self.selected.clear();
         self.selected_edge = None;
         self.hovered_edge = None;

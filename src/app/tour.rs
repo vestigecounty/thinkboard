@@ -222,7 +222,7 @@ impl Tour {
             self.dots = Instant::now();
             self.send(Message::AiTick);
         }
-        if self.app.doc_dirty && !self.app.scratch && self.saves.elapsed() >= SAVE_POLL {
+        if self.app.doc_dirty && !self.app.scratch && !self.app.disk.missing && self.saves.elapsed() >= SAVE_POLL {
             self.saves = Instant::now();
             self.send(Message::SaveTick);
         }
@@ -1014,7 +1014,7 @@ fn file_launch(path: &std::path::Path) -> App {
     let document = CanvasDocument::load(path).expect("the board");
     let mut app = launch(|_| document, true, path.parent().expect("its folder").to_owned());
     app.canvas_path = path.to_owned();
-    app.file_mtime = sync::file_mtime(path);
+    app.disk = sync::OnDisk::new(app.current_document(), path);
     app.scratch = false;
     app
 }
@@ -1065,7 +1065,6 @@ fn launch(document: impl FnOnce(&ColorTheme) -> CanvasDocument, windowed: bool, 
         document,
         canvas_path: PathBuf::new(),
         base_path: base,
-        file_mtime: None,
         scratch: true,
         hotkey_manager: None,
         registered_hotkey: None,
@@ -1896,8 +1895,8 @@ fn on_disk(path: &std::path::Path) -> String {
 
 /// The board's file changed by another program while it's open — idle, with
 /// a card selected, after an edit here that undo should take back, while a
-/// card is being edited, and renamed. What the file holds after each is in
-/// `notes.txt` beside the shots.
+/// card is being edited, renamed, and deleted. What the file holds after each
+/// is in `notes.txt` beside the shots.
 fn outside_changes() {
     use thinkboard_core::fixtures::{edge, node};
     let dir = std::env::temp_dir().join(format!("thinkboard-tour-{}", std::process::id()));
@@ -1954,12 +1953,17 @@ fn outside_changes() {
         }
     });
     tour.settle_until(|app| app.nodes.iter().any(|n| n.text.as_deref().is_some_and(|t| t.ends_with("and back?"))));
-    tour.chord(Modifiers::COMMAND, "z");
-    tour.shot("undo-after-a-change-there");
-    let after_undo = tour.app.nodes[tour.find("Pack an umbrella")].x;
-    tour.note(&format!(
-        "undo after a change elsewhere: the umbrella card was moved to x={moved_to}, and after Cmd+Z is at x={after_undo}"
-    ));
+    let state = |tour: &Tour| (tour.app.nodes.clone(), tour.app.edges.clone());
+    for step in 1..=2 {
+        let before = state(&tour);
+        tour.chord(Modifiers::COMMAND, "z");
+        tour.note(&format!("Cmd+Z #{step} after a change there (the umbrella was moved here to x={moved_to}): {}", changes(&before, &state(&tour))));
+        tour.shot(&format!("undo-{step}-after-a-change-there"));
+    }
+    // And back, so the scene goes on from the board as it was.
+    for _ in 1..=2 {
+        tour.chord(Modifiers::COMMAND | Modifiers::SHIFT, "z");
+    }
 
     // A card being edited here while one is added there.
     let eat = tour.find("Where should we eat");
@@ -1984,7 +1988,9 @@ fn outside_changes() {
     // Renamed there, then a card moved here.
     let renamed = dir.join("Lisbon.canvas");
     std::fs::rename(&path, &renamed).expect("renamed");
-    tour.wait(Duration::from_secs(1));
+    tour.settle_until(|app| app.canvas_path == renamed);
+    // The subscription watches whatever `canvas_path` names; so does this.
+    tour.watch();
     let eat = tour.find("Where should");
     let from = tour.node_center(eat);
     tour.drag(from, Point::new(from.x, from.y - 40.0));
@@ -1997,6 +2003,20 @@ fn outside_changes() {
         .collect();
     files.sort();
     tour.note(&format!("renamed Trip.canvas to Lisbon.canvas there, then moved a card here — the folder holds: {}", files.join(", ")));
+
+    // Deleted there, then a card moved here: nothing is saved until it's
+    // asked for.
+    std::fs::remove_file(&renamed).expect("deleted");
+    tour.settle_until(|app| app.disk.missing);
+    let from = tour.node_center(tour.find("Where should"));
+    tour.drag(from, Point::new(from.x, from.y + 40.0));
+    tour.wait(Duration::from_secs(1));
+    tour.shot("deleted-there");
+    tour.note(&format!("deleted there, then moved a card here — Lisbon.canvas exists: {}", renamed.exists()));
+    tour.click_label("Save it again");
+    tour.settle_until(|app| !app.disk.missing);
+    tour.shot("saved-again");
+    tour.note(&format!("after \"Save it again\" — on disk: {}", on_disk(&renamed)));
 
     let _ = std::fs::remove_dir_all(&dir);
 }

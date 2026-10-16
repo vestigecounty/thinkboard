@@ -1,14 +1,16 @@
 //! The `.canvas` file behind the board: opening, creating, autosaving, and
-//! reloading it when another process writes it — plus resolving the Obsidian
+//! taking in what another process writes to it — plus resolving the Obsidian
 //! vault root that a canvas's image paths are relative to.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path as FsPath, PathBuf};
 
 use iced::widget::image;
 use iced::{Task, window};
+use thinkboard_core::merge;
 
-use super::sync::{file_mtime, should_reload};
+use super::history::{committed_snapshot, text_bitmap_reusable};
+use super::sync::{self, OnDisk, changed_since, file_mtime};
 use super::{App, Message};
 use crate::model::{CanvasEdge, CanvasDocument, CanvasNode, NodeKind};
 
@@ -164,6 +166,10 @@ pub(super) fn drop_event(
     is_canvas_file(&path).then_some(Message::OpenDropped(path))
 }
 
+/// How long a board's file has to have gone unwritten before an unreadable one
+/// is taken as finished rather than caught mid-write (see `check_reload`).
+const UNREADABLE_SETTLED: std::time::Duration = std::time::Duration::from_secs(2);
+
 /// The most a note's body is read into memory. A card shows a few hundred
 /// characters at most, so anything past this can't be seen — and a stray
 /// multi-megabyte file shouldn't be pulled in just to render one card.
@@ -241,20 +247,6 @@ pub(super) fn vault_root(
     canvas_dir.to_path_buf()
 }
 
-/// Writes `document` to `path` only when there are unsaved changes — the app
-/// calls this to flush a pending autosave before quitting, so edits made
-/// inside the autosave debounce window aren't dropped on exit. Returns whether
-/// it wrote.
-fn save_if_dirty(dirty: bool, document: &CanvasDocument, path: &FsPath) -> bool {
-    if !dirty {
-        return false;
-    }
-    if let Err(error) = document.save(path) {
-        eprintln!("save on quit failed: {error}");
-    }
-    true
-}
-
 /// The `file` value stored for an image written beside the canvas: its path
 /// relative to `base` (the vault root, how Obsidian records file nodes),
 /// falling back to the bare file name when the image lies outside the base.
@@ -279,28 +271,55 @@ impl App {
     }
 
     /// Writes the current document to disk, preserving unknown fields, and
-    /// adopts the resulting mtime so the reload poll ignores our own write.
-    pub(super) fn save_document(&mut self) {
-        if self.scratch {
-            return; // the scratch board is never written to disk
+    /// adopts what it wrote as what's on disk — so the event our own write
+    /// raises is ignored, and the next outside change is merged against it.
+    /// Returns whether it wrote.
+    pub(super) fn save_document(&mut self) -> bool {
+        // The scratch board is never written to disk; a board whose file went
+        // is written only when the board is told to.
+        if self.scratch || self.disk.missing {
+            return false;
         }
-        match self.current_document().save(&self.canvas_path) {
+        let document = self.current_document();
+        match document.save(&self.canvas_path) {
             Ok(()) => {
                 self.doc_dirty = false;
-                self.file_mtime = file_mtime(&self.canvas_path);
+                self.disk = OnDisk::new(document, &self.canvas_path);
+                true
             }
-            Err(error) => eprintln!("autosave failed: {error}"),
+            Err(error) => {
+                eprintln!("autosave failed: {error}");
+                false
+            }
         }
+    }
+
+    /// Saves whatever is pending now, for leaving the board — quitting it, or
+    /// switching to another — when there's no later tick to save on. Merged
+    /// first with anything written there that hasn't been taken in, as an
+    /// autosave is.
+    fn flush(&mut self) {
+        if self.disk_changed() {
+            // Its task only refreshes bitmaps, which a board being left
+            // won't draw.
+            let _ = self.check_reload();
+        }
+        if self.doc_dirty {
+            self.save_document();
+        }
+    }
+
+    /// Whether the file has changed since this app last read or wrote it —
+    /// written by something else, or gone.
+    pub(super) fn disk_changed(&self) -> bool {
+        !self.scratch && file_mtime(&self.canvas_path) != self.disk.mtime
     }
 
     /// Flushes a pending autosave (if any) and quits. Used on every exit path
     /// so edits made within the autosave debounce window are never lost.
     pub(super) fn save_and_exit(&mut self) -> Task<Message> {
-        if !self.scratch
-            && save_if_dirty(self.doc_dirty, &self.current_document(), &self.canvas_path)
-        {
-            self.doc_dirty = false;
-            self.file_mtime = file_mtime(&self.canvas_path);
+        if !self.scratch {
+            self.flush();
         }
         // macOS: our NSPanel class-morph leaves winit's KVO teardown
         // inconsistent, which throws NSRangeException on a clean exit. The save
@@ -325,10 +344,11 @@ impl App {
             .filter(|node| node.node_kind() == NodeKind::Image)
             .filter_map(|node| {
                 let file = node.file.as_ref()?;
-                Some((
-                    node.id.clone(),
-                    image::Handle::from_path(self.base_path.as_path().join(file)),
-                ))
+                let handle = match self.held_images.get(file) {
+                    Some(held) => held.handle.clone(),
+                    None => image::Handle::from_path(self.base_path.as_path().join(file)),
+                };
+                Some((node.id.clone(), handle))
             })
             .collect()
     }
@@ -403,14 +423,13 @@ impl App {
 
     /// Switches the live document to the canvas at `path`: leaves the scratch
     /// board (or a previous file) behind, reframes the camera, and remembers
-    /// the choice so the next launch opens it directly. Generalizes
-    /// `reload_document` (which reloads the *same* path) to a different file.
+    /// the choice so the next launch opens it directly.
     pub(super) fn open_canvas(&mut self, path: PathBuf) -> Task<Message> {
         // Flush pending edits to the board we're leaving before switching, so a
         // drag-drop / open while mid-edit doesn't drop them. No-op for the
         // scratch board (which is never saved) and when there's nothing dirty.
-        if self.doc_dirty {
-            self.save_document();
+        if !self.scratch {
+            self.flush();
         }
 
         let document = match CanvasDocument::load(&path) {
@@ -427,7 +446,7 @@ impl App {
             &document,
             self.vault_path().as_deref(),
         );
-        self.file_mtime = file_mtime(&self.canvas_path);
+        self.disk = OnDisk::new(document.clone(), &self.canvas_path);
         self.scratch = false;
 
         self.adopt_document(document);
@@ -436,6 +455,8 @@ impl App {
         self.editing = None;
         self.history.clear();
         self.edit_undo = None;
+        self.gesture_undo = None;
+        self.fresh_undo = None;
         self.doc_dirty = false;
         self.interacted = false;
         self.camera.fit(self.content_bounds());
@@ -447,38 +468,212 @@ impl App {
         Task::batch([self.refresh_snapshots(), self.schedule_recluster()])
     }
 
-    /// Reloads the file if another process changed it — unless we have
-    /// unsaved edits or an open editor, in which case our own state wins
-    /// (last-write-wins; our pending save will overwrite). Only touches the
-    /// disk (one stat) when we might actually reload.
+    /// Takes in a change another program made to the board's file, merged
+    /// with whatever here isn't saved yet, card by card (`thinkboard_core::
+    /// merge`) — so neither side's work is lost to the other.
+    ///
+    /// It used to reload only when nothing here was unsaved and no card was
+    /// being edited, and let the next save win otherwise: a card added in
+    /// Obsidian while one was edited here was simply written over. Our own
+    /// writes raise events too, and are told apart by the modification time
+    /// they left.
     pub(super) fn check_reload(&mut self) -> Task<Message> {
-        if self.scratch || self.doc_dirty || self.editing.is_some() {
+        if self.scratch {
             return Task::none();
         }
-        let current = file_mtime(&self.canvas_path);
-        if should_reload(false, false, current, self.file_mtime) {
-            return self.reload_document();
+        let mtime = file_mtime(&self.canvas_path);
+        if mtime.is_none() {
+            return self.follow_file();
         }
-        Task::none()
+        if !self.disk.missing && !changed_since(mtime, self.disk.mtime) {
+            return Task::none();
+        }
+        let theirs = match CanvasDocument::load(&self.canvas_path) {
+            Ok(theirs) => theirs,
+            Err(error) => {
+                // Caught half-written: the rest of the write raises another
+                // event. But one that has stayed unreadable a while was
+                // finished that way — broken by hand in a text editor, say —
+                // and waiting for it to parse would stop the autosave for
+                // good. It's written over instead, as every outside change
+                // was before there was a merge.
+                let settled = mtime.and_then(|m| m.elapsed().ok()).is_some_and(|age| age > UNREADABLE_SETTLED);
+                if settled {
+                    eprintln!("{} can't be read, and will be saved over: {error}", self.canvas_path.display());
+                    self.disk.mtime = mtime;
+                }
+                return Task::none();
+            }
+        };
+        self.take_in(theirs)
     }
 
-    pub(super) fn reload_document(&mut self) -> Task<Message> {
-        let Ok(document) = CanvasDocument::load(&self.canvas_path) else {
+    /// The board's file is gone from where it was: renamed beside it, which is
+    /// what renaming a board in Obsidian does, or moved away, or deleted.
+    ///
+    /// A rename is followed, so the next save goes to the new name — it used to
+    /// write the old one again, and the folder held both. Anything else stops
+    /// the autosave and says so on the board, where writing the file again is
+    /// one click; quietly recreating a file someone just deleted would be
+    /// worse than not saving.
+    fn follow_file(&mut self) -> Task<Message> {
+        let Some(path) = sync::find_renamed(&self.canvas_path, self.disk.id, self.disk.mtime) else {
+            self.disk.missing = true;
             return Task::none();
         };
-        self.file_mtime = file_mtime(&self.canvas_path);
+        self.canvas_path = path;
+        // The next launch opens it under its new name.
+        self.config.canvas = self.canvas_path.to_string_lossy().into_owned();
+        self.persist_config();
+        // Whatever it holds now, if it changed as it moved.
+        self.check_reload()
+    }
 
-        self.adopt_document(document);
-        // The document changed under us; the old history no longer applies.
-        self.history.clear();
-        self.edit_undo = None;
+    /// Writes the board back where its file was, after something else moved
+    /// or deleted it, and resumes autosaving there.
+    pub(super) fn restore_file(&mut self) {
+        if !self.disk.missing {
+            return;
+        }
+        self.disk.missing = false;
+        if !self.save_document() {
+            // The folder went too, or it can't be written: still not saved.
+            self.disk.missing = true;
+        }
+    }
 
+    /// Merges `theirs` — the file as it is now — into the board.
+    fn take_in(&mut self, theirs: CanvasDocument) -> Task<Message> {
+        let ours = self.current_document();
+        let editing = self.editing.as_ref().and_then(|e| self.nodes.get(e.index)).map(|n| n.id.clone());
+        let held: HashSet<&str> = editing.iter().map(String::as_str).collect();
+        let merged = merge::merge(&self.disk.document, &ours, &theirs, &held);
+        // What the file lacks of the merge, the next save writes.
+        let unsaved = !merge::same(&merged, &theirs);
+        self.disk = OnDisk::new(theirs, &self.canvas_path);
+        if merge::same(&merged, &ours) {
+            // Nothing there that isn't here already.
+            if !unsaved {
+                self.doc_dirty = false;
+            } else if !self.doc_dirty {
+                self.mark_dirty();
+            }
+            return Task::none();
+        }
+        self.record_outside_change(&ours, &merged);
+        self.replace_document(merged);
+        if unsaved {
+            self.mark_dirty();
+        } else {
+            self.doc_dirty = false;
+        }
         Task::batch([self.refresh_snapshots(), self.schedule_recluster()])
     }
 
+    /// Makes an outside change a step undo can take back, as an editor does
+    /// when a file it has open changes on disk. The history used to be dropped
+    /// instead, so Cmd+Z after any sync — Obsidian touching the file, or a
+    /// sync client — did nothing at all.
+    ///
+    /// A gesture or an edit under way has already taken the point it'll undo
+    /// to. The change is recorded from that point, as if it came first, and
+    /// the point moves past it — so undoing the edit, once it's done, doesn't
+    /// take the change with it, and undoing the change doesn't restore half
+    /// an edit.
+    fn record_outside_change(&mut self, ours: &CanvasDocument, merged: &CanvasDocument) {
+        let transient = self.transient_node_ids();
+        let point = [&self.fresh_undo, &self.edit_undo, &self.gesture_undo]
+            .into_iter()
+            .flatten()
+            .next()
+            .cloned()
+            .unwrap_or_else(|| self.snapshot());
+        for pending in [&mut self.fresh_undo, &mut self.edit_undo, &mut self.gesture_undo].into_iter().flatten() {
+            let before = CanvasDocument {
+                nodes: std::mem::take(&mut pending.nodes),
+                edges: std::mem::take(&mut pending.edges),
+                extra: ours.extra.clone(),
+            };
+            // Ours is the base here: what `before` lacks of it is the edit,
+            // and what the merge adds to it is theirs.
+            let past = merge::merge(ours, &before, merged, &HashSet::new());
+            *pending = committed_snapshot(&past.nodes, &past.edges, &transient);
+        }
+        self.history.record(point);
+    }
+
+    /// Swaps in `document`, a merge of this board with its file, keeping what
+    /// is keyed to a card by index on the card it was keyed to: its bitmap, its
+    /// place in the selection, the editor open on it, the find bar's hits.
+    /// Opening another board drops all of that, and reloading this one used
+    /// to — which lost the selection and blanked every card for a frame.
+    fn replace_document(&mut self, document: CanvasDocument) {
+        let new_index: HashMap<&str, usize> =
+            document.nodes.iter().enumerate().map(|(i, node)| (node.id.as_str(), i)).collect();
+        let moved: Vec<Option<usize>> =
+            self.nodes.iter().map(|node| new_index.get(node.id.as_str()).copied()).collect();
+        let at = |old: usize| moved.get(old).copied().flatten();
+        // A bitmap is kept for a card whose text and size are still the ones
+        // it depicts.
+        let depicts = |old: usize| {
+            let new = at(old)?;
+            let (was, is) = (&self.nodes[old], &document.nodes[new]);
+            text_bitmap_reusable(&was.text, (was.width, was.height), &is.text, (is.width, is.height))
+                .then_some(new)
+        };
+        self.rasters.text =
+            std::mem::take(&mut self.rasters.text).into_iter().filter_map(|(i, v)| Some((depicts(i)?, v))).collect();
+        self.rasters.staging =
+            std::mem::take(&mut self.rasters.staging).into_iter().filter_map(|(i, v)| Some((depicts(i)?, v))).collect();
+        self.spawning = std::mem::take(&mut self.spawning).into_iter().filter_map(|(i, v)| Some((at(i)?, v))).collect();
+        self.selected = self.selected.iter().filter_map(|&i| at(i)).collect();
+        self.pending_edit = self.pending_edit.and_then(at);
+        self.fresh_node = self.fresh_node.and_then(at);
+        if self.fresh_node.is_none() {
+            self.fresh_undo = None;
+        }
+        if let Some(anim) = &mut self.layout_anim {
+            anim.moves.retain_mut(|(node, ..)| at(*node).map(|new| *node = new).is_some());
+        }
+        let editing = self.editing.as_ref().map(|editing| at(editing.index));
+        let edge_at = |old: Option<usize>| {
+            let id = &self.edges.get(old?)?.id;
+            document.edges.iter().position(|edge| &edge.id == id)
+        };
+        self.selected_edge = edge_at(self.selected_edge);
+        self.hovered_edge = edge_at(self.hovered_edge);
+
+        self.nodes = document.nodes;
+        self.edges = document.edges;
+        self.doc_extra = document.extra;
+        self.images = self.load_images(&self.nodes);
+        self.notes = self.load_notes(&self.nodes);
+        match editing {
+            Some(Some(index)) => {
+                if let Some(editing) = &mut self.editing {
+                    editing.index = index;
+                }
+                self.follow_edited_card();
+            }
+            // Never the case: the card being edited is held through the merge.
+            Some(None) => self.editing = None,
+            None => {}
+        }
+        if let Some(search) = &mut self.search {
+            search.matches = super::search::find_matches(&self.nodes, &search.query);
+            search.current = search.current.min(search.matches.len().saturating_sub(1));
+            // A hit is painted by the live text path, so a card with one holds
+            // no bitmap.
+            for hit in &search.matches {
+                self.rasters.invalidate(hit.node);
+            }
+        }
+        self.cache.clear();
+    }
+
     /// Installs a freshly loaded document, dropping the per-node caches and
-    /// transient state that the old node indices keyed. Shared by opening a
-    /// different board and reloading the same one after an external write.
+    /// transient state that the old node indices keyed — for opening a
+    /// different board.
     fn adopt_document(&mut self, document: CanvasDocument) {
         self.images = self.load_images(&document.nodes);
         self.notes = self.load_notes(&document.nodes);
@@ -796,41 +991,5 @@ mod tests {
             Vec::new(),
         );
         assert!(app.load_notes(&app.nodes).is_empty());
-    }
-
-    #[test]
-    fn save_if_dirty_flushes_only_when_dirty() {
-        let dir = std::env::temp_dir().join(format!("tb-quit-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join("quit.canvas");
-
-        let document = CanvasDocument {
-            nodes: vec![CanvasNode {
-                id: "n".into(),
-                kind: "text".into(),
-                text: Some("hello".into()),
-                file: None,
-                x: 0.0,
-                y: 0.0,
-                width: 100.0,
-                height: 40.0,
-                color: None,
-                extra: Default::default(),
-            }],
-            edges: Vec::new(),
-            extra: Default::default(),
-        };
-
-        // Clean document: quitting writes nothing.
-        assert!(!save_if_dirty(false, &document, &path));
-        assert!(!path.exists());
-
-        // Unsaved edits: quitting flushes them, and they round-trip.
-        assert!(save_if_dirty(true, &document, &path));
-        let reloaded = CanvasDocument::load(&path).unwrap();
-        assert_eq!(reloaded.nodes.len(), 1);
-        assert_eq!(reloaded.nodes[0].text.as_deref(), Some("hello"));
-
-        let _ = std::fs::remove_dir_all(&dir);
     }
 }
