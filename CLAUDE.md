@@ -143,6 +143,16 @@ the scene cache, and the editor only publishes its scroll while laying out —
 after `view` has built the widget but before it draws. Reading it in `view` is
 always one update stale.
 
+**A point on a card's text is found the way it's drawn.** `board::text_frame`
+is where a card's Markdown is laid out — centred in the card, or, on a card that
+scrolls, top-aligned and shifted by its scroll — and the drawing, a link's hover
+and click, a double-click's caret and the find bar's scroll all go through it.
+Link clicks ignored the scroll and hit another line's link. The caret is found
+in the *rendered* layout and traced back to the source (`edit::locate`), not by
+clicking the editor at the same point: the editor shows the source, with its
+markers and body-size headings, so the same point is a different line further
+down a note — and on a scrolled card, a paragraph that wasn't on screen.
+
 ## Drawing inside a clip
 
 **A mesh filled inside `frame.with_clip` is painted over by the parent's own

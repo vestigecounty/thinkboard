@@ -4,7 +4,9 @@
 
 use iced::{Task, Vector, window};
 
-use super::{App, CameraFocus, Message};
+use super::arrange::node_world_rect;
+use super::{App, CameraFocus, FONT_SIZE, Message};
+use crate::canvas::{board, text_raster};
 
 pub(super) use thinkboard_core::search::{Match, find_matches};
 
@@ -48,20 +50,27 @@ impl App {
             .is_some_and(|search| search.matches.iter().any(|m| m.node == index))
     }
 
-    /// Flies the camera to center the current search match's node. Unlike
-    /// `focus_on_node`, it centers even when already zoomed in (only zooming in
-    /// if the view is currently too far out to read).
+    /// Flies the camera to the current search match: its card, centred on the
+    /// line the hit is on. Unlike `focus_on_node`, it centers even when already
+    /// zoomed in (only zooming in if the view is currently too far out to
+    /// read).
     pub(super) fn focus_current_match(&mut self) -> Task<Message> {
-        let Some(index) = self
-            .search
-            .as_ref()
-            .and_then(|s| s.matches.get(s.current))
-            .map(|m| m.node)
-        else {
+        let Some((index, ordinal)) = self.search.as_ref().and_then(|s| {
+            let current = s.matches.get(s.current)?;
+            // Counted in the card's reading order, as the board counts them.
+            let ordinal = s
+                .matches
+                .iter()
+                .filter(|m| m.node == current.node)
+                .position(|m| m.start == current.start)?;
+            Some((current.node, ordinal))
+        }) else {
             return Task::none();
         };
+        let line = self.scroll_to_hit(index, ordinal);
         if let Some(node) = self.nodes.get(index) {
-            let center = Vector::new(node.x + node.width / 2.0, node.y + node.height / 2.0);
+            let y = line.unwrap_or(node.y + node.height / 2.0);
+            let center = Vector::new(node.x + node.width / 2.0, y);
             let zoom = self.camera.zoom.max(self.config.auto_zoom_level);
             self.camera_focus = Some(CameraFocus {
                 target_zoom: zoom,
@@ -70,5 +79,46 @@ impl App {
             });
         }
         Task::none()
+    }
+
+    /// Scrolls a card that scrolls so its `ordinal`-th hit sits a third of
+    /// the way down it, and returns the world y of the hit's line as it now
+    /// is. Centring on the card wasn't enough: a hit in a long note's overflow
+    /// was counted, highlighted, and out of sight below the card's edge.
+    fn scroll_to_hit(&mut self, index: usize, ordinal: usize) -> Option<f32> {
+        let query = self.search.as_ref()?.query.clone();
+        let node = self.nodes.get(index)?;
+        let text = node.text.as_deref()?;
+        let scrolls = board::scrolls(&self.config, node);
+        // Laid out as it's drawn, from the top: how far down is the hit?
+        let frame = board::text_frame(node_world_rect(node), scrolls.then_some(0.0), 1.0);
+        let wrap = text_raster::card_text_wrap(node.width);
+        let (top, height) = text_raster::with_markdown_layout(
+            text,
+            frame.width,
+            frame.height,
+            wrap,
+            FONT_SIZE,
+            self.theme,
+            self.config.center_node_text,
+            |runs| {
+                runs.iter()
+                    .flat_map(|run| {
+                        let line = (run.y, run.size * text_raster::LINE_HEIGHT);
+                        board::hit_ranges(&run.text, &query).into_iter().map(move |_| line)
+                    })
+                    .nth(ordinal)
+            },
+        )?;
+        let mut y = frame.y + top;
+        if scrolls {
+            let overflow = (board::content_height(text, node.width, &self.theme) - node.height).max(0.0);
+            let scroll = (y - node.y - node.height / 3.0).clamp(0.0, overflow);
+            let id = node.id.clone();
+            self.node_scroll.insert(id, scroll);
+            self.cache.clear();
+            y -= scroll;
+        }
+        Some(y + height / 2.0)
     }
 }

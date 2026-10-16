@@ -406,6 +406,11 @@ impl App {
         } else {
             return Task::none();
         };
+        // Where a double-click landed in the text — found before anything below
+        // resizes or unscrolls the card it's measured on.
+        let caret = caret_at
+            .filter(|_| target == EditTarget::Body)
+            .and_then(|at| self.text_position_at(index, at));
         // Capture a pre-edit snapshot to make the edit undoable. A brand-new
         // note's is from before it was created, so the note and its first
         // text are one step — undone, it's gone, as it was before.
@@ -416,9 +421,13 @@ impl App {
         };
         self.rasters.invalidate(index);
         let mut editing = Editing::new(index, target, &seed);
-        // Defer caret placement to the first frame (see `pending_caret`); a
-        // `window::frames()` subscription then fires `PlaceEditorCaret`.
-        editing.pending_caret = caret_at;
+        match caret {
+            // The editor scrolls itself to the caret when it first lays out.
+            Some(position) => editing.content.move_to(text_editor::Cursor { position, selection: None }),
+            // Defer caret placement to the first frame (see `pending_caret`); a
+            // `window::frames()` subscription then fires `PlaceEditorCaret`.
+            None => editing.pending_caret = caret_at,
+        }
         self.editing = Some(editing);
         self.cache.clear();
         // With scrollbars on, editing a node re-grows it to fit (its shrink was
@@ -481,7 +490,27 @@ impl App {
                                 node.text = Some(trimmed.to_owned());
                             }
                         }
-                        self.autosize_node(index, true);
+                        // Unless nothing changed, which leaves the card as it
+                        // was. Fitting it was for text that changed: a card
+                        // Obsidian left smaller than its note grew over the one
+                        // below on a double-click and an Esc — a change to the
+                        // file, and none undo could take back.
+                        let untouched = self
+                            .edit_undo
+                            .as_ref()
+                            .and_then(|before| before.nodes.iter().find(|n| Some(&n.id) == edited_id.as_ref()))
+                            .filter(|before| {
+                                let now = self.nodes.get(index).and_then(|n| n.text.as_deref());
+                                before.text.as_deref().map(str::trim) == now.map(str::trim)
+                            })
+                            .map(|before| (before.x, before.y, before.width, before.height));
+                        match untouched {
+                            Some(geometry) => {
+                                let node = &mut self.nodes[index];
+                                (node.x, node.y, node.width, node.height) = geometry;
+                            }
+                            None => self.autosize_node(index, true),
+                        }
                         // A fresh node with a parent → ask for sibling ideas.
                         completion_anchor = self.completion_anchor(index);
                     }
@@ -812,6 +841,92 @@ impl App {
     fn editor_text_origin(&self, index: usize) -> Option<Point> {
         self.editor_box(index).map(|b| b.origin)
     }
+
+    /// The place in a card's text under the world point `at`, as the card
+    /// draws it: a line and byte column of its trimmed text, which is what the
+    /// editor opens on.
+    ///
+    /// Found in the rendered Markdown, rather than by clicking the editor at
+    /// the same point. The editor shows the source — markers take room, a
+    /// heading is body size — so the further down a note, the further that
+    /// click landed from the word under it; and a card scrolled to its middle
+    /// opened at its top, with the caret in a paragraph that hadn't been on
+    /// screen. `None` where the text can't be traced back to the source, and
+    /// the click is placed the old way.
+    fn text_position_at(&self, index: usize, at: Point) -> Option<text_editor::Position> {
+        let node = self.nodes.get(index)?;
+        let text = node.text.as_deref()?;
+        let source = text.trim();
+        let scroll = board::scrolls(&self.config, node)
+            .then(|| board::scroll_offset(&self.config, &self.theme, &self.node_scroll, node));
+        let frame = board::text_frame(node_world_rect(node), scroll, 1.0);
+        let (x, y) = (at.x - frame.x, at.y - frame.y);
+        let wrap = text_raster::card_text_wrap(node.width);
+        let offset = text_raster::with_markdown_layout(
+            text,
+            frame.width,
+            frame.height,
+            wrap,
+            FONT_SIZE,
+            self.theme,
+            self.config.center_node_text,
+            |runs| {
+                // The line under the point or the nearest one, and on it the
+                // run under the point or the nearest one.
+                let off = |at: f32, start: f32, end: f32| (start - at).max(at - end).max(0.0);
+                let line = |run: &text_raster::TextRun| off(y, run.y, run.y + run.size * text_raster::LINE_HEIGHT);
+                let nearest = runs.iter().min_by(|a, b| line(a).total_cmp(&line(b)))?;
+                let (target, run) = runs
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, run)| (run.y - nearest.y).abs() < 0.5)
+                    .min_by(|(_, a), (_, b)| off(x, a.x, a.x + a.width).total_cmp(&off(x, b.x, b.x + b.width)))?;
+                // The character boundary nearest the point, measured as the
+                // run is set.
+                let advance = |end: usize| text_raster::run_advance(&run.text[..end], run, &self.theme);
+                let within = run
+                    .text
+                    .char_indices()
+                    .map(|(i, _)| i)
+                    .chain([run.text.len()])
+                    .min_by(|&a, &b| (advance(a) - (x - run.x)).abs().total_cmp(&(advance(b) - (x - run.x)).abs()))?;
+                // Each run found in the source after the one before it, so a
+                // word that recurs is found where this run of it is.
+                let mut from = 0;
+                for (i, run) in runs.iter().enumerate() {
+                    let found = locate(source, from, &run.text);
+                    if i == target {
+                        return found.map(|(start, skipped, _)| start + within.saturating_sub(skipped));
+                    }
+                    if let Some((start, _, len)) = found {
+                        from = start + len;
+                    }
+                }
+                None
+            },
+        )?;
+        let offset = offset.min(source.len());
+        let before = &source[..offset];
+        let line = before.matches('\n').count();
+        let column = offset - before.rfind('\n').map_or(0, |at| at + 1);
+        Some(text_editor::Position { line, column })
+    }
+}
+
+/// Where a laid-out run of text sits in the Markdown source it was rendered
+/// from, at or after byte `from`: the byte it starts at, how much of the run's
+/// front was left out to find it, and the length found.
+///
+/// Rendering puts things in front of some runs that the source spells another
+/// way — a list's bullet, a task's box — and a run ending at a wrap carries the
+/// space the source may have as a line break; those are tried without.
+fn locate(source: &str, from: usize, run: &str) -> Option<(usize, usize, usize)> {
+    let rest = source.get(from..)?;
+    let bare = run.trim_start_matches(|c: char| !c.is_alphanumeric());
+    [(run, 0), (run.trim_end(), 0), (bare.trim_end(), run.len() - bare.len())]
+        .into_iter()
+        .filter(|(part, _)| !part.is_empty())
+        .find_map(|(part, skipped)| rest.find(part).map(|at| (from + at, skipped, part.len())))
 }
 
 #[cfg(test)]

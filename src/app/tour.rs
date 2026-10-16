@@ -2199,6 +2199,251 @@ fn postcard(width: usize, height: usize) -> Vec<u8> {
     rgba
 }
 
+/// A guide to getting around, long enough to pass the auto-size ceiling when
+/// it's pasted — with one word, *Cacilhas*, only near its end, to find.
+const ARTICLE: &str = "# Getting around Lisbon
+
+Lisbon is built on seven hills, and most of what a first visit wants to see is on the side of one. Good shoes matter more than any ticket.
+
+## Trams
+
+The **28** is the famous one: it climbs from Martim Moniz through Graça and Alfama to Estrela in old wooden cars that rattle and lean on every corner. Ride it early, before the queues, or take the 12 for a shorter loop through the same streets.
+
+The 15 is the opposite: a modern articulated tram along the river to Belém, quick and dull, and the right way to reach the monastery and the tower.
+
+## Funiculars and the lift
+
+Three funiculars — Glória, Bica and Lavra — haul you up the steepest streets in a single car. The Santa Justa lift goes straight up from the Baixa to the Carmo ruins; the queue is longer than the ride.
+
+## Metro
+
+Four lines, clean and frequent. The **green** line runs from Cais do Sodré to the old town; the **red** goes to the airport in about twenty minutes, which beats any taxi at rush hour.
+
+## Tickets
+
+Buy a *Viva Viagem* card at any metro station and load it with zapping credit: one tap per ride, cheaper than single tickets, and it works on trams, buses, funiculars, the lift and the ferries. Validate it as you board — inspectors are common on the 28.
+
+A 24-hour pass pays off after five rides. It doesn't cover the Sintra or Cascais trains, which have their own fares.
+
+## Trains
+
+Trains to Sintra leave from Rossio every twenty minutes; the ride is forty. Trains to Cascais leave from Cais do Sodré along the coast, and the right-hand seats have the sea.
+
+## Walking
+
+Walk downhill. Take a tram or a funicular up, then walk the long way down through the alleys, where the city is. Pavements are polished limestone and slippery when it rains.
+
+## Ferries
+
+The ferry from Cais do Sodré to Cacilhas takes ten minutes and costs less than a coffee. Go at sunset for the view back across the river to the whole city, then eat grilled fish by the water before the last boat home.";
+
+/// A note an Obsidian card was left too small for — how a card drawn in
+/// Obsidian holds a note that later grew.
+const GROWN: &str = "## Restaurants to try
+
+**Taberna da Rua das Flores** — no bookings, so arrive at opening; the menu is a chalkboard and changes daily.
+
+**Cervejaria Ramiro** — seafood, loud, worth the queue; finish with a steak sandwich, as everyone does.
+
+**A Cevicheria** — the giant octopus on the ceiling is the landmark.
+
+**Tasca do Chico** — fado after nine, tiny, bring cash.";
+
+/// A long note in the vault, embedded on the board as a file.
+const GUIDE: &str = "---
+tags: [travel, lisbon]
+---
+# Lisbon guide
+
+Notes gathered over two visits, for whoever goes next.
+
+## Neighbourhoods
+
+**Alfama** is the oldest: a maze of stairs below the castle, washing hung across the alleys, fado in the evenings. Stay here for atmosphere, not for sleep.
+
+**Baixa** and **Chiado** are the grid rebuilt after the 1755 earthquake — shops, cafés, the big squares down to the river.
+
+**Bairro Alto** is quiet by day and a street party by night.
+
+**Belém** is a tram ride west: the monastery, the tower, the monument to the discoveries, and the original pastéis de nata.
+
+## Food
+
+Grilled sardines in June, bifanas any time, a ginjinha in a chocolate cup if you insist. Lunch is the big meal, and the *prato do dia* is the cheap way to eat well.
+
+## Practical
+
+Tap water is fine. Cards are taken almost everywhere, but small tascas want cash. Sundays are quiet; Mondays many museums close.";
+
+/// Long notes: a guide pasted past the auto-size ceiling, a card Obsidian
+/// left smaller than its note, a link and a line of code too long to wrap, a
+/// table, and a long note from the vault — read, scrolled, searched, edited
+/// and zoomed. What a shot can't show (sizes, scroll offsets) is in
+/// `notes.txt`.
+fn long_notes() {
+    let dir = std::env::temp_dir().join(format!("thinkboard-tour-long-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("a folder for the vault");
+    std::fs::write(dir.join("Lisbon guide.md"), GUIDE).expect("a note in the vault");
+    let document = |_: &ColorTheme| {
+        use thinkboard_core::fixtures::node;
+        let text = |id: &str, text: &str, (x, y, w, h): (f32, f32, f32, f32)| CanvasNode {
+            text: Some(text.to_owned()),
+            x,
+            y,
+            width: w,
+            height: h,
+            ..node(id)
+        };
+        let nodes = vec![
+            text("grown", GROWN, (0.0, 0.0, 400.0, 180.0)),
+            text(
+                "link",
+                "Booking: https://www.example-hotels.com/lisbon/alfama/rooms/deluxe-river-view?checkin=2026-10-23&checkout=2026-10-26&guests=2",
+                (0.0, 240.0, 300.0, 100.0),
+            ),
+            text(
+                "code",
+                "```sh\ncurl -s \"https://api.example.com/v1/forecast?lat=38.72&lon=-9.14&days=4\" | jq '.daily[] | {date, rain: .precipitation_probability}'\n```",
+                (0.0, 400.0, 360.0, 130.0),
+            ),
+            text(
+                "table",
+                "| Day | Morning | Evening |\n|---|---|---|\n| Fri | Land, check in | Alfama, fado |\n| Sat | Belém | Bairro Alto |\n| Sun | Sintra | Ferry at sunset |",
+                (0.0, 590.0, 400.0, 170.0),
+            ),
+            CanvasNode {
+                kind: "file".to_owned(),
+                text: None,
+                file: Some("Lisbon guide.md".to_owned()),
+                x: 480.0,
+                y: 0.0,
+                width: 400.0,
+                height: 400.0,
+                ..node("guide")
+            },
+        ];
+        CanvasDocument { nodes, edges: Vec::new(), extra: serde_json::Map::new() }
+    };
+    let mut tour = Tour::new("long_notes", launch(document, true, dir.clone()));
+    tour.shot("board");
+
+    // The guide, pasted onto the board from wherever it was written.
+    *super::clipboard::system::held() = Some(super::clipboard::Clip::Text(ARTICLE.to_owned()));
+    let beside = tour.app.camera.to_screen(Point::new(1100.0, 300.0));
+    tour.move_to(beside);
+    tour.chord(Modifiers::COMMAND, "v");
+    let article = tour.find("# Getting around");
+    let card = tour.app.nodes[article].clone();
+    tour.note(&format!(
+        "pasted the guide ({} chars): card {}×{}, ceiling {}",
+        ARTICLE.len(), card.width, card.height, text_raster::MAX_AUTO_HEIGHT
+    ));
+    tour.shot("pasted");
+
+    // Read at 1:1, from its top.
+    let zoom = tour.app.camera.zoom;
+    tour.send(Message::ZoomBy { factor: 1.0 / zoom, cursor: Point::new(720.0, 450.0) });
+    tour.settle();
+    let card = tour.app.nodes[article].clone();
+    tour.send(Message::FocusWorld(Point::new(card.x + card.width / 2.0, card.y + 420.0)));
+    tour.settle();
+    tour.shot("article-top");
+
+    // Scrolled the way a trackpad scrolls, over the card.
+    let over = tour.node_center(article);
+    let before = (tour.app.camera.offset, tour.app.node_scroll.get(&card.id).copied());
+    tour.swipe(over, 0.0, -300.0);
+    let after = (tour.app.camera.offset, tour.app.node_scroll.get(&card.id).copied());
+    tour.note(&format!("two-finger scroll over the guide: camera {:?} → {:?}, the card's own scroll {:?} → {:?}", before.0, after.0, before.1, after.1));
+    tour.shot("scrolled-over-it");
+    tour.swipe(over, 0.0, 300.0);
+
+    // By its scrollbar, which is the way the card has.
+    let rect = tour.app.camera.rect_to_screen(arrange::node_world_rect(&tour.app.nodes[article]));
+    let grab = Point::new(rect.x + rect.width - 6.0, rect.y.max(0.0) + 30.0);
+    tour.drag(grab, Point::new(grab.x, grab.y + 500.0));
+    tour.note(&format!("dragged the scrollbar down 500 px: the card's scroll is {:?}", tour.app.node_scroll.get(&card.id)));
+    tour.shot("scrolled-by-its-bar");
+
+    // A word down there, double-clicked to edit: where does the caret go, and
+    // where does the editor open?
+    let region = Rectangle::new(Point::new(rect.x - 20.0, 0.0), Size::new(rect.width + 40.0, 900.0));
+    let mut edit = tour.strip("editing-scrolled", region);
+    tour.frame(&mut edit, "scrolled, reading");
+    tour.double_click(Point::new(rect.x + rect.width / 2.0, 520.0));
+    tour.frame(&mut edit, "double-clicked at y=520");
+    tour.type_text(" HERE");
+    tour.frame(&mut edit, "typed \" HERE\"");
+    tour.named(key::Named::Escape);
+    tour.frame(&mut edit, "esc");
+    tour.save(edit, 4);
+    let text = tour.app.nodes[article].text.clone().unwrap_or_default();
+    let line = text.lines().find(|line| line.contains("HERE")).unwrap_or("(nowhere)");
+    tour.note(&format!("double-clicked a line 520 px down the scrolled card; typed into: {line:?}"));
+    tour.chord(Modifiers::COMMAND, "z");
+
+    // A word that's only near its end, looked for with the card back at its
+    // top.
+    tour.send(Message::SetNodeScroll { id: card.id.clone(), offset: 0.0 });
+    tour.chord(Modifiers::COMMAND, "f");
+    tour.type_text("Cacilhas");
+    tour.settle();
+    tour.note(&format!(
+        "find \"Cacilhas\": {} hit(s); the card's scroll is {:?}",
+        tour.app.search.as_ref().map_or(0, |s| s.matches.len()),
+        tour.app.node_scroll.get(&card.id)
+    ));
+    tour.shot("found-near-the-end");
+    tour.named(key::Named::Escape);
+
+    // The card Obsidian left too small.
+    let grown = tour.find("## Restaurants");
+    let at = tour.app.nodes[grown].clone();
+    tour.send(Message::FocusWorld(Point::new(at.x + at.width / 2.0, at.y + at.height / 2.0 + 150.0)));
+    tour.settle();
+    tour.shot("left-too-small");
+    tour.move_to(tour.node_center(grown));
+    tour.swipe(tour.node_center(grown), 0.0, -120.0);
+    tour.shot("left-too-small-scrolled-over");
+    tour.swipe(tour.node_center(grown), 0.0, 120.0);
+    tour.double_click(tour.node_center(grown));
+    tour.shot("left-too-small-editing");
+    tour.named(key::Named::Escape);
+    let after = &tour.app.nodes[grown];
+    tour.note(&format!("the card Obsidian left at {}×{}: after an edit that changed nothing it's {}×{}", at.width, at.height, after.width, after.height));
+    tour.shot("left-too-small-after-editing");
+
+    // Too long to wrap, and a table.
+    let link = tour.app.nodes.iter().position(|n| n.id == "link").expect("the link card");
+    let at = tour.app.nodes[link].clone();
+    tour.send(Message::FocusWorld(Point::new(at.x + 200.0, at.y + 250.0)));
+    tour.settle();
+    tour.shot("link-code-table");
+
+    // The vault's note, embedded.
+    let guide = tour.app.nodes.iter().position(|n| n.id == "guide").expect("the embedded note");
+    let at = tour.app.nodes[guide].clone();
+    tour.send(Message::FocusWorld(Point::new(at.x + at.width / 2.0, at.y + at.height / 2.0)));
+    tour.settle();
+    tour.shot("embedded-note");
+    tour.swipe(tour.node_center(guide), 0.0, -200.0);
+    tour.shot("embedded-note-scrolled-over");
+
+    // Close up, and far away.
+    let card = tour.app.nodes[article].clone();
+    tour.send(Message::FocusWorld(Point::new(card.x + card.width / 2.0, card.y + 200.0)));
+    tour.settle();
+    tour.send(Message::ZoomBy { factor: 2.5, cursor: Point::new(720.0, 450.0) });
+    tour.settle();
+    std::thread::sleep(UPLOAD_GRACE);
+    tour.shot("article-at-2.5x");
+    tour.send(Message::ZoomBy { factor: 0.06 / tour.app.camera.zoom, cursor: Point::new(720.0, 450.0) });
+    tour.settle();
+    tour.shot("far-away");
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 const SCENES: &[(&str, fn())] = &[
     ("first_run", first_run),
     ("build_a_board", build_a_board),
@@ -2221,6 +2466,7 @@ const SCENES: &[(&str, fn())] = &[
     ("ai_errors", ai_errors),
     ("outside_changes", outside_changes),
     ("undo_and_clipboard", undo_and_clipboard),
+    ("long_notes", long_notes),
 ];
 
 #[test]

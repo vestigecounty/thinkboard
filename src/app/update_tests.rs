@@ -1125,6 +1125,100 @@ fn a_card_stops_growing_at_the_height_ceiling() {
     assert!(height > 500.0, "but it should still have grown: {height}");
 }
 
+/// A note past the height ceiling, in sections, with `word` once near its end.
+fn long_note(word: &str) -> CanvasNode {
+    let mut text = String::from("# A long note");
+    for section in 1..=14 {
+        text.push_str(&format!(
+            "\n\n## Section {section}\n\nSome **text** for section {section}, long enough to wrap onto a second line in the card."
+        ));
+    }
+    text.push_str(&format!("\n\nThe last paragraph mentions {word} once."));
+    CanvasNode {
+        text: Some(text),
+        width: 400.0,
+        height: text_raster::MAX_AUTO_HEIGHT,
+        ..thinkboard_core::fixtures::node("long")
+    }
+}
+
+/// Where `word` is drawn on node `index` (world), found the way the board lays
+/// the card out, scroll and all.
+fn drawn_at(app: &App, index: usize, word: &str) -> Point {
+    let node = &app.nodes[index];
+    let scroll = board::scrolls(&app.config, node)
+        .then(|| board::scroll_offset(&app.config, &app.theme, &app.node_scroll, node));
+    let frame = board::text_frame(arrange::node_world_rect(node), scroll, 1.0);
+    let text = node.text.as_deref().unwrap();
+    text_raster::with_markdown_layout(
+        text, frame.width, frame.height, text_raster::card_text_wrap(node.width), FONT_SIZE, app.theme,
+        app.config.center_node_text,
+        |runs| {
+            let run = runs.iter().find(|run| run.text.contains(word)).expect("the word is drawn");
+            let before = &run.text[..run.text.find(word).unwrap()];
+            let x = run.x + text_raster::run_advance(before, run, &app.theme) + 2.0;
+            Point::new(frame.x + x, frame.y + run.y + run.size * text_raster::LINE_HEIGHT / 2.0)
+        },
+    )
+}
+
+#[test]
+fn double_clicking_a_long_card_puts_the_caret_on_the_word_under_it() {
+    // The editor shows the source, where a heading is body size, and opens at
+    // its top: clicked at the same point, the caret landed in a paragraph
+    // above the word — on a scrolled card, one that hadn't been on screen.
+    let mut app = app_with(vec![long_note("Cacilhas")], Vec::new());
+    for scroll in [0.0, 400.0] {
+        app.node_scroll.insert("long".to_owned(), scroll);
+        let at = drawn_at(&app, 0, "Section 13");
+        send(&mut app, Message::StartEditing { index: 0, at: Some(at) });
+        let editing = app.editing.as_ref().expect("editing");
+        let position = editing.content.cursor().position;
+        let line = editing.content.line(position.line).expect("a line").text.into_owned();
+        assert_eq!(line, "## Section 13", "scrolled {scroll}: caret on {line:?}");
+        assert!((3..=6).contains(&position.column), "on the word clicked, column {}", position.column);
+        send(&mut app, Message::StopEditing);
+    }
+}
+
+#[test]
+fn find_scrolls_a_long_card_to_its_hit() {
+    // The hit was counted and highlighted, and out of sight below the card's
+    // edge, in the part of the note it hadn't scrolled to.
+    let mut app = app_with(vec![long_note("Cacilhas")], Vec::new());
+    send(&mut app, Message::OpenSearch);
+    send(&mut app, Message::SearchInput("cacilhas".to_owned()));
+    let scroll = app.node_scroll.get("long").copied().unwrap_or(0.0);
+    assert!(scroll > 0.0, "scrolled to it");
+    let node = &app.nodes[0];
+    let hit = drawn_at(&app, 0, "Cacilhas");
+    assert!(hit.y > node.y && hit.y < node.y + node.height, "the hit is inside the card: {} in {}..{}", hit.y, node.y, node.y + node.height);
+    // And the camera goes to the hit, not the middle of the card.
+    let focus = app.camera_focus.expect("flying to it");
+    assert!((focus.target_offset.y / -focus.target_zoom - hit.y).abs() < 20.0);
+}
+
+#[test]
+fn an_edit_that_changes_nothing_leaves_the_card_as_it_was() {
+    // A card Obsidian left smaller than its note grew over the one below on a
+    // double-click and an Esc.
+    let small = CanvasNode {
+        width: 300.0,
+        height: 60.0,
+        ..text_node("a", "Taberna da Rua das Flores — no bookings, so arrive at opening; the menu is a chalkboard.")
+    };
+    let mut app = app_with(vec![small], Vec::new());
+    send(&mut app, Message::StartEditing { index: 0, at: None });
+    send(&mut app, Message::StopEditing);
+    assert_eq!((app.nodes[0].width, app.nodes[0].height), (300.0, 60.0));
+    // A change still fits it.
+    send(&mut app, Message::StartEditing { index: 0, at: None });
+    caret_to_end(&mut app);
+    type_text(&mut app, " Cash only.");
+    send(&mut app, Message::StopEditing);
+    assert!(app.nodes[0].height > 60.0);
+}
+
 #[test]
 fn height_still_settles_back_when_text_is_removed() {
     // Height tracks content — otherwise deleting a long note leaves a tall
@@ -2313,6 +2407,18 @@ fn what_another_app_copied_is_pasted_whole_and_in_view() {
     camera.offset = focus.target_offset;
     let screen = camera.rect_to_screen(arrange::node_world_rect(&pasted));
     assert!(screen.y >= 0.0 && screen.y + screen.height <= 800.0, "{screen:?}");
+
+    // Too tall for the window, it's shown from its top, which is where it's
+    // read from — centred, its first lines were off the screen.
+    let long = "A paragraph of the guide, long enough to wrap twice in a card.\n\n".repeat(30);
+    *clipboard::system::held() = Some(clipboard::Clip::Text(long));
+    app.camera_focus = None;
+    send(&mut app, Message::Paste { world: below });
+    let pasted = app.nodes.last().unwrap().clone();
+    assert!(pasted.height > 800.0, "taller than the window: {}", pasted.height);
+    let mut camera = app.camera;
+    camera.offset = app.camera_focus.expect("scrolled to it").target_offset;
+    assert_eq!(camera.rect_to_screen(arrange::node_world_rect(&pasted)).y, 24.0);
 
     // An image on the welcome board is held, not written where the app runs.
     let mut app = app_with(Vec::new(), Vec::new());

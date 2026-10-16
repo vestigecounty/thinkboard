@@ -632,6 +632,90 @@ fn editing_thumb(
     scrollbar_thumb(rect, node_height, content_height, scroll, zoom).map(|(thumb, _)| thumb)
 }
 
+/// Whether a card scrolls its overflow instead of showing all of it.
+///
+/// Either the setting is on, or the card has grown to the auto-size ceiling —
+/// where it stops growing, so without a scrollbar the rest of the note would
+/// simply be unreachable. Public, with [`scroll_offset`] and [`text_frame`],
+/// because the app maps points to text too (a double-click's caret, a find
+/// hit), and a map that disagrees with what's drawn lands on the wrong line.
+pub fn scrolls(config: &crate::config::Config, node: &CanvasNode) -> bool {
+    node.is_text() && (config.node_scrollbars || node.height >= crate::text_raster::MAX_AUTO_HEIGHT - 0.5)
+}
+
+/// Scrollable content height (world px) of a text node: the rendered text
+/// extent (`measure_markdown` insets to the render column) plus the node's
+/// vertical padding, split top/bottom. So a node at its fitted (autosized)
+/// height has no overflow, and a scrolled one keeps `NODE_TEXT_PAD_Y / 2`
+/// padding at each end rather than butting the text against the card edge.
+pub fn content_height(text: &str, width: f32, theme: &ColorTheme) -> f32 {
+    let wrap = crate::text_raster::card_text_wrap(width);
+    crate::text_raster::measure_markdown(text.trim(), wrap, FONT_SIZE, theme).1 + NODE_TEXT_PAD_Y
+}
+
+/// A card's scroll offset (world px), clamped to its overflow; 0 for a card
+/// that doesn't scroll.
+pub fn scroll_offset(
+    config: &crate::config::Config,
+    theme: &ColorTheme,
+    node_scroll: &HashMap<String, f32>,
+    node: &CanvasNode,
+) -> f32 {
+    if !scrolls(config, node) {
+        return 0.0;
+    }
+    let content = content_height(node.text.as_deref().unwrap_or(""), node.width, theme);
+    let raw = node_scroll.get(&node.id).copied().unwrap_or(0.0);
+    raw.clamp(0.0, (content - node.height).max(0.0))
+}
+
+/// The rectangle a card's Markdown is laid out against, in whatever space
+/// `card` is in at `zoom` (world at 1). The card itself, which centres the text
+/// in it; or for a card that scrolls by `scroll`, a zero-height line half the
+/// padding below its top and shifted up by the scroll — zero height turns the
+/// layout's centring off, and the same padding lands at the bottom when it's
+/// scrolled to the end. Everything that puts a point on a card's text goes
+/// through this, as the drawing does.
+pub fn text_frame(card: Rectangle, scroll: Option<f32>, zoom: f32) -> Rectangle {
+    match scroll {
+        Some(scroll) => Rectangle {
+            y: card.y + (NODE_TEXT_PAD_Y / 2.0 - scroll) * zoom,
+            height: 0.0,
+            ..card
+        },
+        None => card,
+    }
+}
+
+/// Where `query` occurs in a run's `text`, as byte ranges, case-folded and not
+/// overlapping — how the find bar's hits are counted on a card, in reading
+/// order. Public because the app counts them the same way, to scroll a card to
+/// the one that's current.
+pub fn hit_ranges(text: &str, query: &str) -> Vec<(usize, usize)> {
+    let fold = |c: char| c.to_lowercase().next().unwrap_or(c);
+    let hay: Vec<char> = text.chars().map(fold).collect();
+    let needle: Vec<char> = query.chars().map(fold).collect();
+    if needle.is_empty() || hay.len() < needle.len() {
+        return Vec::new();
+    }
+    // Char index → byte offset, so we can slice the original run text.
+    let mut byte: Vec<usize> = text.char_indices().map(|(b, _)| b).collect();
+    byte.push(text.len());
+
+    let mut hits = Vec::new();
+    let mut cs = 0;
+    while cs + needle.len() <= hay.len() {
+        if hay[cs..cs + needle.len()] == needle[..] {
+            let ce = cs + needle.len();
+            hits.push((byte[cs], byte[ce]));
+            cs = ce;
+        } else {
+            cs += 1;
+        }
+    }
+    hits
+}
+
 fn scrollbar_thumb(
     rect: Rectangle,
     node_height: f32,
@@ -1775,10 +1859,13 @@ impl Board<'_> {
         let text = node.text.as_deref()?;
         let zoom = self.camera.zoom;
         let wrap = crate::text_raster::card_text_wrap(node.width);
+        // Where the text is drawn — on a scrolled card, not where it would be
+        // unscrolled, which put the hover and the click on another line's link.
+        let frame = self.node_text_frame(node, rect);
         crate::text_raster::with_markdown_layout(
             text,
-            rect.width / zoom,
-            rect.height / zoom,
+            frame.width / zoom,
+            frame.height / zoom,
             wrap,
             FONT_SIZE,
             *self.theme,
@@ -1786,7 +1873,7 @@ impl Board<'_> {
             |runs| {
                 for run in runs {
                     let Some(url) = &run.link else { continue };
-                    let origin = Point::new(rect.x + run.x * zoom, rect.y + run.y * zoom);
+                    let origin = Point::new(frame.x + run.x * zoom, frame.y + run.y * zoom);
                     let size = Size::new(
                         run.width * zoom,
                         run.size * crate::text_raster::LINE_HEIGHT * zoom,
@@ -2141,36 +2228,24 @@ impl Board<'_> {
         )
     }
 
-    /// Scrollable content height (world px) of a text node: the rendered text
-    /// extent (`measure_markdown` insets to the render column) plus the node's
-    /// vertical padding, split top/bottom. So a node at its fitted (autosized)
-    /// height has no overflow, and a scrolled one keeps `NODE_TEXT_PAD_Y / 2`
-    /// padding at each end rather than butting the text against the card edge.
-    /// Whether a card scrolls its overflow instead of showing all of it.
-    ///
-    /// Either the setting is on, or the card has grown to the auto-size ceiling
-    /// — where it stops growing, so without a scrollbar the rest of the note
-    /// would simply be unreachable.
     fn scrollable(&self, node: &CanvasNode) -> bool {
-        node.is_text()
-            && (self.config.node_scrollbars
-                || node.height >= crate::text_raster::MAX_AUTO_HEIGHT - 0.5)
+        scrolls(self.config, node)
     }
 
     fn node_content_height(&self, text: &str, width: f32) -> f32 {
-        let wrap = crate::text_raster::card_text_wrap(width);
-        crate::text_raster::measure_markdown(text.trim(), wrap, FONT_SIZE, self.theme).1
-            + NODE_TEXT_PAD_Y
+        content_height(text, width, self.theme)
     }
 
     /// The clamped scroll offset (world px) for a node, 0 when it fits.
     fn node_scroll_offset(&self, node: &CanvasNode) -> f32 {
-        if !self.scrollable(node) {
-            return 0.0;
-        }
-        let content = self.node_content_height(node.text.as_deref().unwrap_or(""), node.width);
-        let raw = self.node_scroll.get(&node.id).copied().unwrap_or(0.0);
-        raw.clamp(0.0, (content - node.height).max(0.0))
+        scroll_offset(self.config, self.theme, self.node_scroll, node)
+    }
+
+    /// The rectangle (screen) a card's Markdown is laid out against — see
+    /// [`text_frame`].
+    fn node_text_frame(&self, node: &CanvasNode, rect: Rectangle) -> Rectangle {
+        let scroll = self.scrollable(node).then(|| self.node_scroll_offset(node));
+        text_frame(rect, scroll, self.camera.zoom)
     }
 
     /// If `position` is on a scrollable node's scrollbar thumb, returns
@@ -2425,28 +2500,13 @@ impl Board<'_> {
                 }).flatten();
 
                 if let Some((thumb, scroll)) = scrollbar {
+                    // Top-aligned and shifted by the scroll (see `text_frame`).
+                    let scrolled = text_frame(rect, Some(scroll), zoom);
                     // Before the clip: a clipped frame's fills end up beneath
                     // the card's own. See `draw_search_hits`.
-                    let scrolled_rect = Rectangle {
-                        x: rect.x,
-                        y: rect.y + (NODE_TEXT_PAD_Y / 2.0 - scroll) * zoom,
-                        width: rect.width,
-                        height: 0.0,
-                    };
-                    self.draw_search_hits(
-                        frame, scrolled_rect, text, FONT_SIZE, wrap, alpha, highlight,
-                    );
-                    self.draw_quote_bars(frame, scrolled_rect, rect, text, FONT_SIZE, wrap, alpha);
+                    self.draw_search_hits(frame, scrolled, text, FONT_SIZE, wrap, alpha, highlight);
+                    self.draw_quote_bars(frame, scrolled, rect, text, FONT_SIZE, wrap, alpha);
                     frame.with_clip(rect, |clipped| {
-                        // Top-align (height 0 zeroes the layout's vertical centering)
-                        // and start half the padding below the top; the same padding
-                        // lands at the bottom when scrolled to the end.
-                        let scrolled = Rectangle {
-                            x: rect.x,
-                            y: rect.y + (NODE_TEXT_PAD_Y / 2.0 - scroll) * zoom,
-                            width: rect.width,
-                            height: 0.0,
-                        };
                         self.draw_markdown_live(clipped, scrolled, text, FONT_SIZE, wrap, alpha, highlight);
                     });
                     let color = Color { a: 0.55 * alpha, ..self.theme.text_muted };
@@ -2858,38 +2918,18 @@ impl Board<'_> {
     /// caught — acceptable for plain notes, and the alternative is matching
     /// across text that isn't adjacent on screen.
     fn match_hits(&self, run: &crate::text_raster::TextRun, query: &str) -> Vec<Hit> {
-        let fold = |c: char| c.to_lowercase().next().unwrap_or(c);
-        let hay: Vec<char> = run.text.chars().map(fold).collect();
-        let needle: Vec<char> = query.chars().map(fold).collect();
-        if needle.is_empty() || hay.len() < needle.len() {
-            return Vec::new();
-        }
-        // Char index → byte offset, so we can slice the original run text.
-        let mut byte: Vec<usize> = run.text.char_indices().map(|(b, _)| b).collect();
-        byte.push(run.text.len());
-
         // Measured as the run is set — face, weight, slant, features — or a
         // hit's box sits against different letterforms than the ones under it.
         let width = |text: &str| crate::text_raster::run_advance(text, run, self.theme);
-
-        let mut hits = Vec::new();
-        let mut cs = 0;
-        while cs + needle.len() <= hay.len() {
-            if hay[cs..cs + needle.len()] == needle[..] {
-                let ce = cs + needle.len();
-                let (start, end) = (byte[cs], byte[ce]);
-                hits.push(Hit {
-                    start,
-                    end,
-                    x: width(&run.text[..start]),
-                    width: width(&run.text[start..end]),
-                });
-                cs = ce;
-            } else {
-                cs += 1;
-            }
-        }
-        hits
+        hit_ranges(&run.text, query)
+            .into_iter()
+            .map(|(start, end)| Hit {
+                start,
+                end,
+                x: width(&run.text[..start]),
+                width: width(&run.text[start..end]),
+            })
+            .collect()
     }
 
     /// Paints the search hits behind a card's text.

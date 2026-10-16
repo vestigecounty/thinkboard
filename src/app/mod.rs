@@ -1592,7 +1592,8 @@ impl App {
     }
 
     /// Scrolls just far enough to bring `world` on screen, at the zoom the
-    /// board is already at — or centres it, when it's too big to fit.
+    /// board is already at — or, when it's too big to fit, its top-left
+    /// corner, which is where it's read from.
     ///
     /// For a paste: one lands at the cursor unless something is there, and
     /// then the nearest free spot can be past the edge of the window. Unlike
@@ -1602,9 +1603,7 @@ impl App {
         const MARGIN: f32 = 24.0;
         let screen = self.camera.rect_to_screen(world);
         let shift = |start: f32, length: f32, view: f32| {
-            if length > view - 2.0 * MARGIN {
-                view / 2.0 - (start + length / 2.0)
-            } else if start < MARGIN {
+            if length > view - 2.0 * MARGIN || start < MARGIN {
                 MARGIN - start
             } else if start + length > view - MARGIN {
                 view - MARGIN - (start + length)
