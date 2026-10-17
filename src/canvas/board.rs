@@ -132,6 +132,7 @@ enum Chord {
     Find,
     Palette,
     SwitchCanvas,
+    Settings,
     ZoomIn,
     ZoomOut,
     Fit,
@@ -139,6 +140,36 @@ enum Chord {
 
 /// How far ⌘= and ⌘− zoom, per press.
 const ZOOM_KEY_STEP: f32 = 1.25;
+
+/// The latin character a key stands for in a chord, whatever the layout: what
+/// it types, where that's latin — so on AZERTY ⌘, is the comma key wherever it
+/// sits — and otherwise what its place types on a US keyboard.
+///
+/// That is iced's `to_latin`, whose second half stops at letters and digits.
+/// The punctuation it leaves out is here: on a Russian layout the comma's key
+/// types "б", and ⌘, went nowhere.
+fn chord_key(key: &keyboard::Key, physical: keyboard::key::Physical) -> Option<char> {
+    use keyboard::key::{Code, Physical};
+    key.to_latin(physical).or_else(|| {
+        let Physical::Code(code) = physical else {
+            return None;
+        };
+        Some(match code {
+            Code::Comma => ',',
+            Code::Period => '.',
+            Code::Slash => '/',
+            Code::Semicolon => ';',
+            Code::Quote => '\'',
+            Code::BracketLeft => '[',
+            Code::BracketRight => ']',
+            Code::Backslash => '\\',
+            Code::Minus => '-',
+            Code::Equal => '=',
+            Code::Backquote => '`',
+            _ => return None,
+        })
+    })
+}
 
 /// The chord for a latin `letter`, or `None` if the board doesn't claim it —
 /// in which case the key falls through untouched.
@@ -159,6 +190,9 @@ fn chord(letter: char, shift: bool, has_selection: bool) -> Option<Chord> {
         // Switch boards: the vault browser where a vault is configured, the
         // ordinary open dialog where one isn't.
         ('o', false) => Chord::SwitchCanvas,
+        // Settings where every Mac app keeps them, and where VS Code put them
+        // for everyone else.
+        (',', false) => Chord::Settings,
         // Zoom as a browser does: = (and the + above it), −, and 0 for all of it.
         ('=' | '+', _) => Chord::ZoomIn,
         ('-' | '_', _) => Chord::ZoomOut,
@@ -1049,7 +1083,7 @@ impl canvas::Program<Message> for Board<'_> {
                 modifiers,
                 ..
             }) if self.editing.is_none() && modifiers.command() => {
-                let letter = key.to_latin(*physical_key)?;
+                let letter = chord_key(key, *physical_key)?;
                 let message = match chord(letter, modifiers.shift(), !self.selected.is_empty())? {
                     Chord::Undo => Message::Undo,
                     Chord::Redo => Message::Redo,
@@ -1057,6 +1091,7 @@ impl canvas::Program<Message> for Board<'_> {
                     Chord::Find => Message::OpenSearch,
                     Chord::Palette => Message::OpenCommandPalette,
                     Chord::SwitchCanvas => Message::SwitchCanvas,
+                    Chord::Settings => Message::OpenSettingsOverlay,
                     Chord::ZoomIn | Chord::ZoomOut => Message::ZoomBy {
                         factor: if letter == '=' || letter == '+' { ZOOM_KEY_STEP } else { 1.0 / ZOOM_KEY_STEP },
                         cursor: Point::new(bounds.width / 2.0, bounds.height / 2.0),
@@ -4865,7 +4900,23 @@ mod cluster_snap_tests {
 
 #[cfg(test)]
 mod chord_tests {
-    use super::{Chord, chord};
+    use super::{Chord, chord, chord_key};
+
+    #[test]
+    fn a_chords_key_is_read_the_same_on_any_layout() {
+        use iced::keyboard::Key;
+        use iced::keyboard::key::{Code, Physical};
+        let read = |typed: &str, place| chord_key(&Key::Character(typed.into()), Physical::Code(place));
+        // A latin layout: what the key types, wherever it is — AZERTY's comma
+        // sits where a US keyboard has M.
+        assert_eq!(read(",", Code::Comma), Some(','));
+        assert_eq!(read(",", Code::KeyM), Some(','));
+        // A Cyrillic one: what its place types on a US keyboard — the letters
+        // by iced, the punctuation by us.
+        assert_eq!(read("ф", Code::KeyA), Some('a'));
+        assert_eq!(read("б", Code::Comma), Some(','));
+        assert_eq!(read("ю", Code::Period), Some('.'));
+    }
 
     #[test]
     fn the_chord_table_is_shift_sensitive_where_it_should_be() {
@@ -4883,6 +4934,10 @@ mod chord_tests {
         // Cmd+O switches boards, and Cmd+Shift+O is left alone.
         assert_eq!(chord('o', false, false), Some(Chord::SwitchCanvas));
         assert_eq!(chord('o', true, false), None);
+
+        // Cmd+, opens settings; Cmd+Shift+, (Cmd+<) is someone else's.
+        assert_eq!(chord(',', false, false), Some(Chord::Settings));
+        assert_eq!(chord(',', true, false), None);
 
         // The rest don't care either way, and shouldn't start caring quietly.
         for shift in [false, true] {

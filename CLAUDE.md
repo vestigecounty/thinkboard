@@ -296,7 +296,24 @@ those were shaped with.
 `picker` is the shell all five panels draw: input, rows, keyboard nav. Rows are
 a **fixed height applied to the row**, not assumed of it — iced reports a scroll
 position but won't say where a given child landed, so keeping the highlight on
-screen is arithmetic over that constant, and the two must not drift.
+screen is arithmetic over that constant, and the two must not drift. A section
+header takes a row's slot for the same reason: it counts in the arithmetic
+(`picker::slot`) but never in the selection, so the highlight, Enter and the
+drawing all index the same list of rows. It wears the find bar's surface
+(`chrome::accent_panel`, shared rather than copied), bolds the letters a query
+matched (`fuzzy::matched`, the same walk `score` makes), and names its keys in
+a foot. The scrollbar runs in the list's right inset, where iced's floating bar
+is over nothing — inside the rows it crossed the highlight's ring.
+
+**The palette is a menu until you type, then a search** (`command::listing`).
+Empty, it lists what can run *now*, in sections — the selection's commands
+first when there is one, then the last few run this session, then by topic —
+and leaves out what can't run rather than grey it. Typed into, one ranked list,
+settings included, with what can't run moved last and saying what it needs:
+searched for by name, a command should explain itself. The seven colours are
+search-only; listed, they were half the selection's section. A shortcut is
+written once (`command::Keys`) and drawn as the platform spells it — ⇧⌘Z on a
+Mac, Ctrl Shift Z elsewhere — and only shortcuts that exist are drawn.
 
 **`picker::Panel` names which panel a message is about.** Typing, arrowing,
 scrolling and dismissing are the same four interactions everywhere, so they are
@@ -613,9 +630,9 @@ on a selection was out of a keyboard's reach. **The arrows go spatially**
 through, so → is the card beside this one, a card off to the side counting
 twice its distance. Shift+arrow adds to the selection, ⌥+arrow nudges (a run of
 nudges is one undo step), Enter edits with the caret at the end, Tab adds a
-card linked to the right, ⌘= ⌘− ⌘0 zoom and fit. Ending an edit from the
-keyboard (`FinishEditing`: Esc, ⌘Enter) leaves the card selected, as does
-closing the find bar on a hit; undo keeps the selection by id.
+card linked to the right, ⌘= ⌘− ⌘0 zoom and fit, ⌘, opens settings. Ending
+an edit from the keyboard (`FinishEditing`: Esc, ⌘Enter) leaves the card
+selected, as does closing the find bar on a hit; undo keeps the selection by id.
 
 **Esc still dismisses the overlay** once nothing is open over it — the user's
 call. Deselecting first would make putting the board away a two-key job.

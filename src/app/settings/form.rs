@@ -30,6 +30,7 @@ use iced::widget::{
 use iced::{Alignment, Border, Color, Element, Fill, Font, Padding, Point, Rectangle, Renderer, Shrink, Size, Theme};
 
 use super::{FILE_ONLY, Field, Msg, PROVIDER_OFF, Tab, current_preset, hand_picked_css, is_local};
+use crate::app::chrome::mix;
 use crate::app::{App, Message};
 use crate::config::{ArrowTip, Config, LinkStyle, OverlayBackdrop};
 use crate::platform::BackdropPicture;
@@ -200,15 +201,6 @@ impl Look {
 
 fn luminance(color: Color) -> f32 {
     0.2126 * color.r + 0.7152 * color.g + 0.0722 * color.b
-}
-
-fn mix(a: Color, b: Color, t: f32) -> Color {
-    Color {
-        r: a.r + (b.r - a.r) * t,
-        g: a.g + (b.g - a.g) * t,
-        b: a.b + (b.b - a.b) * t,
-        a: a.a + (b.a - a.a) * t,
-    }
 }
 
 fn pad(top: f32, right: f32, bottom: f32, left: f32) -> Padding {

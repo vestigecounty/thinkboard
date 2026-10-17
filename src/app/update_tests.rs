@@ -1414,6 +1414,73 @@ fn switch_canvas_is_only_offered_once_there_is_a_vault() {
     assert!(command::CommandId::SwitchCanvas.is_enabled(&app));
 }
 
+/// The palette with nothing typed: its rows by id, and its sections' labels.
+fn browsed(app: &App) -> (Vec<command::CommandId>, Vec<&'static str>) {
+    let listing = command::listing(app, "");
+    (listing.entries.iter().map(|entry| entry.id).collect(), listing.headers.iter().map(|(_, label)| *label).collect())
+}
+
+#[test]
+fn the_empty_palette_is_a_menu_of_what_can_run_now() {
+    use command::CommandId;
+    let mut app = app_with(two_nodes(), Vec::new());
+    let (ids, sections) = browsed(&app);
+    // AI waits on a provider, and nothing is selected: neither is listed.
+    assert_eq!(sections, ["Board", "Edit", "Appearance", "App"]);
+    assert!(!ids.contains(&CommandId::EditNode));
+    assert!(ids.iter().all(|id| id.is_enabled(&app)), "a menu lists nothing it would grey");
+    assert!(!ids.iter().any(|id| matches!(id, CommandId::Colour(_))), "the colours are for typing");
+
+    // A selection puts its own commands first, and a provider brings AI.
+    app.selected = vec![0];
+    app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
+    let (ids, sections) = browsed(&app);
+    assert_eq!(sections, ["Selection", "Board", "Edit", "Appearance", "AI", "App"]);
+    assert_eq!(ids.first(), Some(&CommandId::EditNode));
+    assert!(ids.contains(&CommandId::AskAi));
+}
+
+#[test]
+fn what_was_run_last_comes_first_and_only_once() {
+    use command::CommandId;
+    let mut app = app_with(two_nodes(), Vec::new());
+    send(&mut app, Message::RunCommand(CommandId::ChooseFont));
+    send(&mut app, Message::RunCommand(CommandId::FitBoard));
+    let (ids, sections) = browsed(&app);
+    assert_eq!(sections.first(), Some(&"Recent"));
+    assert_eq!(ids[..2], [CommandId::FitBoard, CommandId::ChooseFont], "latest first");
+    assert_eq!(ids.iter().filter(|&&id| id == CommandId::FitBoard).count(), 1, "not again under Board");
+
+    // A setting run from a search comes back too, though the menu lists none.
+    send(&mut app, Message::RunCommand(CommandId::Setting(settings::Field::SnapToGrid)));
+    assert_eq!(browsed(&app).0.first(), Some(&CommandId::Setting(settings::Field::SnapToGrid)));
+}
+
+#[test]
+fn enter_runs_the_row_highlighted_under_the_headers() {
+    // The headers take slots in the list but not in the selection: the first
+    // row is the first command, under the first heading.
+    let mut app = app_with(two_nodes(), Vec::new());
+    send(&mut app, Message::OpenCommandPalette);
+    send(&mut app, Message::PanelNav(picker::Panel::Command, picker::Nav::Step(1)));
+    let highlighted = command::filtered(&app, "")[1].id;
+    assert_eq!(highlighted, command::CommandId::FitBoard);
+    send(&mut app, Message::RunSelectedCommand);
+    assert_eq!(app.recent_commands.first(), Some(&highlighted));
+}
+
+#[test]
+fn a_search_lists_what_cant_run_last_and_says_why() {
+    let app = app_with(two_nodes(), Vec::new());
+    // "card" finds the selection's commands, which can't run with nothing
+    // selected, and "Add card", which can — first, whatever the ranking.
+    let found = command::filtered(&app, "card");
+    let first_waiting = found.iter().position(|entry| !entry.id.is_enabled(&app)).expect("one is waiting");
+    assert!(found[..first_waiting].iter().any(|entry| entry.id == command::CommandId::AddNode));
+    assert!(found[first_waiting..].iter().all(|entry| !entry.id.is_enabled(&app)));
+    assert!(command::listing(&app, "card").headers.is_empty(), "a search has no sections");
+}
+
 // --- Following the vault's Obsidian theme ---
 
 /// A throwaway vault whose `.obsidian` config names `theme` as the active one.

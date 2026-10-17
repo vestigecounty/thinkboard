@@ -807,7 +807,8 @@ impl App {
         // (the overlay window itself stays on Theme::Dark).
         let theme = &self.theme;
         let font = theme.ui_font();
-        let (text_c, muted, accent, surface) = (theme.text, theme.text_muted, theme.accent, theme.elevated());
+        let ct = self.theme;
+        let (text_c, muted, accent) = (theme.text, theme.text_muted, theme.accent);
 
         let count = if search.matches.is_empty() {
             if search.query.is_empty() { String::new() } else { "No results".to_owned() }
@@ -855,7 +856,7 @@ impl App {
             });
 
         let bar = row![
-            iced::widget::canvas(Magnifier { color: muted }).width(14).height(14),
+            iced::widget::canvas(chrome::Icon { glyph: chrome::Glyph::Magnifier, color: muted }).width(14).height(14),
             input,
             text(count).size(12).font(font).color(muted).wrapping(iced::widget::text::Wrapping::None),
             divider,
@@ -876,16 +877,7 @@ impl App {
             .height(Length::Fixed(38.0))
             .padding(Padding { top: 0.0, right: 6.0, bottom: 0.0, left: 12.0 })
             .center_y(Length::Fixed(38.0))
-            .style(move |_theme| container::Style {
-                background: Some(surface.into()),
-                border: iced::Border { color: iced::Color { a: 0.45, ..accent }, width: 1.0, radius: 10.0.into() },
-                shadow: iced::Shadow {
-                    color: iced::Color { a: 0.45, ..iced::Color::BLACK },
-                    offset: iced::Vector::new(0.0, 10.0),
-                    blur_radius: 28.0,
-                },
-                ..container::Style::default()
-            });
+            .style(move |_theme| chrome::accent_panel(&ct));
 
         container(panel)
             .width(Fill)
@@ -1118,27 +1110,3 @@ fn editor_key_binding(
     text_editor::Binding::from_key_press(key_press)
 }
 
-/// The find bar's magnifier: a lens and its handle.
-struct Magnifier {
-    color: iced::Color,
-}
-
-impl<Message> iced::widget::canvas::Program<Message> for Magnifier {
-    type State = ();
-
-    fn draw(
-        &self,
-        _state: &(),
-        renderer: &iced::Renderer,
-        _theme: &Theme,
-        bounds: iced::Rectangle,
-        _cursor: iced::mouse::Cursor,
-    ) -> Vec<iced::widget::canvas::Geometry> {
-        use iced::widget::canvas::{Frame, Path, Stroke};
-        let mut frame = Frame::new(renderer, bounds.size());
-        let stroke = Stroke::default().with_color(self.color).with_width(1.5);
-        frame.stroke(&Path::circle(Point::new(6.0, 6.0), 4.5), stroke);
-        frame.stroke(&Path::line(Point::new(9.5, 9.5), Point::new(13.0, 13.0)), stroke);
-        vec![frame.into_geometry()]
-    }
-}

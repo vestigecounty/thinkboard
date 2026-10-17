@@ -187,6 +187,7 @@ impl App {
                 // The id, not the display name: it's what gets sent, and seeing
                 // it is how you know the right one was chosen.
                 title: model.id.as_str().into(),
+                matched: thinkboard_core::fuzzy::matched(&picker.state.query, &model.id),
                 detail: match (model.id == picker.before, model.context) {
                     (true, _) => "current".into(),
                     // Otherwise the context window, which is usually what
@@ -194,6 +195,7 @@ impl App {
                     (false, Some(tokens)) => context(tokens).into(),
                     (false, None) => "".into(),
                 },
+                keys: Vec::new(),
                 enabled: true,
                 font: None,
                 press: Message::PickModel(model.id.clone()),
@@ -206,7 +208,10 @@ impl App {
             Shell {
                 panel: Panel::Model,
                 placeholder: "Model…",
+                glyph: super::chrome::Glyph::Magnifier,
                 on_submit: Message::CommitModel,
+                verb: "Choose",
+                headers: Vec::new(),
                 // The three reasons a list can be empty read differently, and
                 // only one of them is the user's to fix.
                 empty: match (&picker.error, picker.loading) {

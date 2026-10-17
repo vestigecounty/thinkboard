@@ -610,6 +610,9 @@ struct App {
     /// The command palette (Cmd/Ctrl+K or +P), when open. Mutually exclusive
     /// with the find bar.
     command_palette: Option<picker::State>,
+    /// The palette's commands as run, latest first, listed under Recent. For
+    /// the session: it's a convenience, not something to keep in the config.
+    recent_commands: Vec<command::CommandId>,
     /// The vault browser (Cmd/Ctrl+O), when open. Shares the palette's shell
     /// and is mutually exclusive with it.
     vault_browser: Option<picker::State>,
@@ -890,6 +893,7 @@ impl App {
             settings_custom_ai: false,
             search: None,
             command_palette: None,
+            recent_commands: Vec::new(),
             vault_browser: None,
             theme_picker: None,
             font_picker: None,
@@ -1298,8 +1302,9 @@ impl App {
                 // Resolved before the state is borrowed to move within it: the
                 // match count reads the rest of `self`.
                 let len = self.panel_len(panel);
+                let headers = self.panel_headers(panel);
                 let scroll = match self.panel_state(panel) {
-                    Some(state) => picker::navigate(state, nav, len, panel.list_id()),
+                    Some(state) => picker::navigate(state, nav, len, &headers, panel.list_id()),
                     None => return Task::none(),
                 };
                 return Task::batch([scroll, self.panel_preview(panel)]);
@@ -1591,6 +1596,17 @@ impl App {
             Panel::Model => {
                 self.model_matches(&query(self.model_picker.as_ref().map(|p| &p.state))).len()
             }
+        }
+    }
+
+    /// The rows the panel's section headers sit over — the palette's, with
+    /// nothing typed; none anywhere else.
+    fn panel_headers(&self, panel: picker::Panel) -> Vec<usize> {
+        match (panel, &self.command_palette) {
+            (picker::Panel::Command, Some(state)) => {
+                command::listing(self, &state.query).headers.into_iter().map(|(heads, _)| heads).collect()
+            }
+            _ => Vec::new(),
         }
     }
 
@@ -2133,6 +2149,11 @@ impl App {
     /// target the viewport center.
     fn run_command(&mut self, id: command::CommandId) -> Task<Message> {
         self.command_palette = None;
+        self.recent_commands.retain(|recent| *recent != id);
+        self.recent_commands.insert(0, id);
+        // A few more than are listed, so one that can't run now leaves room
+        // for the one before it.
+        self.recent_commands.truncate(2 * command::RECENT);
         self.command_message(id).map_or_else(Task::none, Task::done)
     }
 

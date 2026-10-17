@@ -30,6 +30,31 @@ pub fn score(query: &str, text: &str) -> Option<i32> {
     (qi == q.len()).then_some(score)
 }
 
+/// Where `query` matched in `text`: byte ranges of `text`, merged into runs —
+/// the letters a row shows in bold. The same greedy walk as [`score`], so what
+/// is bolded is what was scored. Empty when it doesn't match, and for an empty
+/// query, which matches without matching any letter.
+pub fn matched(query: &str, text: &str) -> Vec<std::ops::Range<usize>> {
+    let q: Vec<char> = query.chars().flat_map(char::to_lowercase).collect();
+    let mut qi = 0;
+    let mut runs: Vec<std::ops::Range<usize>> = Vec::new();
+    for (at, ch) in text.char_indices() {
+        let end = at + ch.len_utf8();
+        // `score` walks the text lowercased, where one char can become two;
+        // either matching marks the char it came from.
+        for lower in ch.to_lowercase() {
+            if qi < q.len() && lower == q[qi] {
+                qi += 1;
+                match runs.last_mut() {
+                    Some(run) if run.end >= at => run.end = end,
+                    _ => runs.push(at..end),
+                }
+            }
+        }
+    }
+    if qi == q.len() { runs } else { Vec::new() }
+}
+
 /// How far a hidden search term ranks below a visible one.
 ///
 /// Small on purpose: a keyword match is a real match, just a weaker signal than
@@ -76,6 +101,25 @@ mod tests {
         let prefix = score("new", "New board").unwrap();
         let scattered = score("new", "Rename widget").unwrap_or(i32::MIN);
         assert!(prefix > scattered);
+    }
+
+    #[test]
+    fn the_matched_letters_are_the_ones_scored() {
+        let runs = |query, text| -> Vec<(usize, usize)> {
+            matched(query, text).into_iter().map(|run| (run.start, run.end)).collect()
+        };
+        // A word-start run, then letters picked out across words.
+        assert_eq!(runs("add", "Add card"), [(0, 3)]);
+        assert_eq!(runs("nb", "New board"), [(0, 1), (4, 5)]);
+        assert_eq!(runs("CARD", "Add linked card"), [(11, 15)], "case doesn't matter");
+        // Only where the whole query matched, and never for an empty one.
+        assert!(matched("xyz", "New board").is_empty());
+        assert!(matched("", "New board").is_empty());
+        // Ranges are bytes of the text as written, past a multi-byte char.
+        assert_eq!(runs("e", "Café menu"), [(7, 8)]);
+        for (query, text) in [("nb", "New board"), ("zz", "Fuzzy"), ("qx", "Quick")] {
+            assert_eq!(score(query, text).is_some(), !matched(query, text).is_empty(), "{query} in {text}");
+        }
     }
 
     #[test]

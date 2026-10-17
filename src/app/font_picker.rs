@@ -175,9 +175,12 @@ impl App {
             .font_matches(&picker.state.query)
             .into_iter()
             .filter_map(|index| picker.entries.get(index))
-            .map(|entry| Row {
-                title: label(&entry.name).into(),
+            .map(|entry| (entry, label(&entry.name)))
+            .map(|(entry, title)| Row {
+                matched: thinkboard_core::fuzzy::matched(&picker.state.query, title),
+                title: title.into(),
                 detail: if entry.name == picker.before_font { "current".into() } else { "".into() },
+                keys: Vec::new(),
                 enabled: true,
                 // The point of the list: each name set in its own face — except
                 // where that face can't spell it, which would put an unreadable
@@ -199,8 +202,11 @@ impl App {
             Shell {
                 panel: Panel::Font,
                 placeholder: "Font…",
+                glyph: super::chrome::Glyph::Magnifier,
                 on_submit: Message::CommitFont,
+                verb: "Choose",
                 empty: "No matching font".into(),
+                headers: Vec::new(),
             },
             rows,
         )

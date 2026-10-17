@@ -1408,7 +1408,8 @@ fn overlapping() {
 /// The settings panel, opened from the palette and scrolled through.
 fn settings() {
     let mut tour = Tour::new("settings", first_launch(canvas_file::scratch_document));
-    tour.palette("settings");
+    // By its shortcut, through the board as a keypress reaches it.
+    tour.chord(Modifiers::COMMAND, ",");
     tour.shot("general");
     // A changed setting is marked, and a row says what it does once it's
     // focused — here by moving its slider, as a hand would.

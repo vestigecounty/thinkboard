@@ -281,6 +281,7 @@ impl App {
             .into_iter()
             .filter_map(|index| self.vault_canvases.get(index))
             .map(|entry| Row {
+                matched: thinkboard_core::fuzzy::matched(&state.query, entry.name()),
                 title: entry.name().into(),
                 // Where it lives, so two boards with the same name are
                 // distinguishable — and the board that's already open says so.
@@ -289,6 +290,7 @@ impl App {
                 } else {
                     entry.folder().into()
                 },
+                keys: Vec::new(),
                 enabled: true,
                 font: None,
                 press: Message::OpenVaultCanvas(entry.path.clone()),
@@ -309,8 +311,11 @@ impl App {
             Shell {
                 panel: Panel::Vault,
                 placeholder: "Switch board…",
+                glyph: super::chrome::Glyph::Magnifier,
                 on_submit: Message::OpenSelectedCanvas,
+                verb: "Open",
                 empty: empty.into(),
+                headers: Vec::new(),
             },
             rows,
         )

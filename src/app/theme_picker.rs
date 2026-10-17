@@ -199,8 +199,10 @@ impl App {
             .theme_matches(&picker.state.query)
             .into_iter()
             .filter_map(|index| picker.themes.get(index))
-            .map(|theme| Row {
-                title: self.theme_label(theme).into(),
+            .map(|theme| (theme, self.theme_label(theme)))
+            .map(|(theme, title)| Row {
+                matched: thinkboard_core::fuzzy::matched(&picker.state.query, title),
+                title: title.into(),
                 // Which one you're on, the way the vault browser marks the open
                 // canvas. *Not* the author: attribution belongs in the file, and
                 // no editor puts it in front of you every time you pick a theme.
@@ -209,6 +211,7 @@ impl App {
                 } else {
                     "".into()
                 },
+                keys: Vec::new(),
                 enabled: true,
                 font: None,
                 press: Message::PickTheme(theme.name.clone()),
@@ -221,8 +224,11 @@ impl App {
             Shell {
                 panel: Panel::Theme,
                 placeholder: "Theme…",
+                glyph: super::chrome::Glyph::Magnifier,
                 on_submit: Message::CommitTheme,
+                verb: "Choose",
                 empty: "No matching theme".into(),
+                headers: Vec::new(),
             },
             rows,
         )

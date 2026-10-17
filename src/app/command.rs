@@ -12,6 +12,13 @@
 //! option, applied as it's picked, the one in force marked; a switch flips;
 //! anything else opens the form at its row. They join a query only — the
 //! palette with nothing typed stays a list of commands.
+//!
+//! **With nothing typed it's a menu; with something typed, a search.** Empty,
+//! it lists what can run now in sections ([`Section`]) — the selection's own
+//! commands first when there is one, then the last few run, then the rest by
+//! topic — and leaves out what can't run, which a menu would only grey. Typed
+//! into, the sections fall away for one ranked list, and what can't run comes
+//! back, last, saying why: searched for by name, it should say what it needs.
 
 use std::borrow::Cow;
 use std::sync::LazyLock;
@@ -129,59 +136,155 @@ fn settings_unavailable(app: &App, field: Field) -> Option<&'static str> {
     }
 }
 
+/// Where a command is listed while nothing is typed, in this order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Section {
+    /// What acts on the selected cards — first, when anything is selected.
+    Selection,
+    Board,
+    Edit,
+    Appearance,
+    Ai,
+    App,
+    /// Found by typing only. The seven colours: listed, they were half the
+    /// selection's section, for something the card's own menu does in a click.
+    Unlisted,
+}
+
+impl Section {
+    /// The listed ones, in the order they're listed (the selection's comes
+    /// first, and is placed by hand).
+    const TOPICS: [Section; 5] = [Section::Board, Section::Edit, Section::Appearance, Section::Ai, Section::App];
+
+    fn label(self) -> &'static str {
+        match self {
+            Section::Selection => "Selection",
+            Section::Board => "Board",
+            Section::Edit => "Edit",
+            Section::Appearance => "Appearance",
+            Section::Ai => "AI",
+            Section::App => "App",
+            Section::Unlisted => "",
+        }
+    }
+}
+
+/// A command's shortcut, written once and drawn as this platform spells it.
+/// The chords are Cmd on macOS and Ctrl elsewhere (`modifiers.command()`), and
+/// a hint that said ⌘ on Windows named a key that isn't there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Keys {
+    command: bool,
+    shift: bool,
+    key: Key,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Key {
+    Letter(&'static str),
+    Tab,
+    Enter,
+    Delete,
+}
+
+impl Keys {
+    const fn command(letter: &'static str) -> Option<Keys> {
+        Some(Keys { command: true, shift: false, key: Key::Letter(letter) })
+    }
+
+    const fn command_shift(letter: &'static str) -> Option<Keys> {
+        Some(Keys { command: true, shift: true, key: Key::Letter(letter) })
+    }
+
+    const fn bare(key: Key) -> Option<Keys> {
+        Some(Keys { command: false, shift: false, key })
+    }
+
+    /// The caps to draw, in the platform's own order — ⇧⌘Z on a Mac, Ctrl
+    /// Shift Z elsewhere — and in its own words for keys it labels in words.
+    pub(crate) fn caps(self) -> Vec<&'static str> {
+        let mac = cfg!(target_os = "macos");
+        let mut caps = Vec::new();
+        if mac {
+            caps.extend(self.shift.then_some("⇧"));
+            caps.extend(self.command.then_some("⌘"));
+        } else {
+            caps.extend(self.command.then_some("Ctrl"));
+            caps.extend(self.shift.then_some("Shift"));
+        }
+        caps.push(match self.key {
+            Key::Letter(letter) => letter,
+            Key::Tab => if mac { "⇥" } else { "Tab" },
+            Key::Enter => picker::ENTER,
+            // The board takes Delete and Backspace alike; each platform's
+            // name for the key you'd reach for.
+            Key::Delete => if mac { "⌫" } else { "Del" },
+        });
+        caps
+    }
+}
+
 pub(crate) struct Command {
     pub id: CommandId,
     pub title: &'static str,
     /// Extra search terms (never shown), so e.g. "arrange" finds "Auto-layout".
     pub keywords: &'static str,
-    /// Display-only shortcut hint (right-aligned, greyed).
-    pub shortcut: &'static str,
+    /// The keys that do it on the board, drawn as caps beside the title.
+    pub shortcut: Option<Keys>,
+    pub section: Section,
 }
 
 const fn cmd(
     id: CommandId,
     title: &'static str,
     keywords: &'static str,
-    shortcut: &'static str,
+    shortcut: Option<Keys>,
+    section: Section,
 ) -> Command {
-    Command { id, title, keywords, shortcut }
+    Command { id, title, keywords, shortcut, section }
 }
 
+/// Every command, in the order each section lists them — which is also the
+/// order a query's ties fall in.
 static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
     use CommandId::*;
+    use Section::*;
     vec![
-        cmd(NewBoard, "New board", "create file", ""),
-        cmd(OpenBoard, "Open board", "file canvas load", ""),
-        cmd(SwitchCanvas, "Switch board", "vault browse canvas open recent switch", "⌘O"),
-        cmd(OpenVault, "Open vault…", "obsidian folder library", ""),
-        cmd(ChooseTheme, "Change theme…", "colours colors appearance scheme palette dark", ""),
-        cmd(ChooseFont, "Change font…", "typeface family typography text serif mono", ""),
-        cmd(ChooseModel, "Change AI model…", "llm gpt claude openrouter fireworks provider", ""),
-        cmd(AddNode, "Add card", "new note node", ""),
-        cmd(AddLinkedNode, "Add linked card", "new child connected note node link", "⇥"),
-        cmd(EditNode, "Edit card", "write text change note node", "↩"),
-        cmd(FitBoard, "Fit board to view", "zoom all overview everything", "⌘0"),
-        cmd(Colour(Some("1")), "Color: red", "colour color tint card", ""),
-        cmd(Colour(Some("2")), "Color: orange", "colour color tint card", ""),
-        cmd(Colour(Some("3")), "Color: yellow", "colour color tint card", ""),
-        cmd(Colour(Some("4")), "Color: green", "colour color tint card", ""),
-        cmd(Colour(Some("5")), "Color: cyan", "colour color tint card blue", ""),
-        cmd(Colour(Some("6")), "Color: purple", "colour color tint card violet", ""),
-        cmd(Colour(None), "Color: none", "colour color tint card clear default", ""),
-        cmd(AskAi, "Ask AI", "generate llm gpt", ""),
-        cmd(Distribute, "Auto-layout selection", "distribute arrange tidy", ""),
-        cmd(GroupSelection, "Group selection", "frame box enclose", ""),
-        cmd(FindOnBoard, "Find on board", "search text", "⌘F"),
-        cmd(Copy, "Copy", "clipboard", "⌘C"),
-        cmd(Paste, "Paste", "clipboard", "⌘V"),
-        cmd(DeleteSelected, "Delete selection", "remove", "⌫"),
-        cmd(Undo, "Undo", "", "⌘Z"),
-        cmd(Redo, "Redo", "", "⇧⌘Z"),
-        cmd(Settings, "Settings", "preferences config options", ""),
-        cmd(Dismiss, "Dismiss board", "hide close overlay", ""),
-        cmd(Quit, "Quit ThinkBoard", "exit", ""),
+        cmd(EditNode, "Edit card", "write text change note node", Keys::bare(Key::Enter), Selection),
+        cmd(AddLinkedNode, "Add linked card", "new child connected note node link", Keys::bare(Key::Tab), Selection),
+        cmd(AskAi, "Ask AI", "generate llm gpt", None, Selection),
+        cmd(Distribute, "Auto-layout selection", "distribute arrange tidy", None, Selection),
+        cmd(GroupSelection, "Group selection", "frame box enclose", None, Selection),
+        cmd(Copy, "Copy", "clipboard", Keys::command("C"), Selection),
+        cmd(DeleteSelected, "Delete selection", "remove", Keys::bare(Key::Delete), Selection),
+        cmd(AddNode, "Add card", "new note node", None, Board),
+        cmd(FitBoard, "Fit board to view", "zoom all overview everything", Keys::command("0"), Board),
+        cmd(SwitchCanvas, "Switch board…", "vault browse canvas open recent switch", Keys::command("O"), Board),
+        cmd(NewBoard, "New board", "create file", None, Board),
+        cmd(OpenBoard, "Open board from file…", "file canvas load", None, Board),
+        cmd(OpenVault, "Open vault…", "obsidian folder library", None, Board),
+        cmd(Undo, "Undo", "", Keys::command("Z"), Edit),
+        cmd(Redo, "Redo", "", Keys::command_shift("Z"), Edit),
+        cmd(Paste, "Paste", "clipboard", Keys::command("V"), Edit),
+        cmd(FindOnBoard, "Find on board", "search text", Keys::command("F"), Edit),
+        cmd(ChooseTheme, "Change theme…", "colours colors appearance scheme palette dark", None, Appearance),
+        cmd(ChooseFont, "Change font…", "typeface family typography text serif mono", None, Appearance),
+        cmd(ChooseModel, "Change AI model…", "llm gpt claude openrouter fireworks provider", None, Ai),
+        cmd(Settings, "Settings…", "preferences config options", Keys::command(","), App),
+        cmd(Dismiss, "Dismiss board", "hide close overlay", None, App),
+        cmd(Quit, "Quit ThinkBoard", "exit", None, App),
+        cmd(Colour(Some("1")), "Color: red", "colour color tint card", None, Unlisted),
+        cmd(Colour(Some("2")), "Color: orange", "colour color tint card", None, Unlisted),
+        cmd(Colour(Some("3")), "Color: yellow", "colour color tint card", None, Unlisted),
+        cmd(Colour(Some("4")), "Color: green", "colour color tint card", None, Unlisted),
+        cmd(Colour(Some("5")), "Color: cyan", "colour color tint card blue", None, Unlisted),
+        cmd(Colour(Some("6")), "Color: purple", "colour color tint card violet", None, Unlisted),
+        cmd(Colour(None), "Color: none", "colour color tint card clear default", None, Unlisted),
     ]
 });
+
+/// How many of the commands run last are listed first.
+pub(crate) const RECENT: usize = 3;
 
 /// One row of the palette: a command, or a setting from the index.
 pub(crate) struct Entry {
@@ -189,19 +292,28 @@ pub(crate) struct Entry {
     pub title: Cow<'static, str>,
     /// Terms it's found by but doesn't show.
     pub keywords: Cow<'static, str>,
-    /// What the right of the row says: a command's shortcut; a switch's state;
-    /// "current" on the choice in force; the tab a row opens on.
+    /// What the right of the row says: a switch's state; "current" on the
+    /// choice in force; the tab a row opens on.
     pub detail: Cow<'static, str>,
+    /// A command's shortcut, as caps.
+    pub keys: Vec<&'static str>,
+}
+
+impl Command {
+    fn entry(&self) -> Entry {
+        Entry {
+            id: self.id,
+            title: self.title.into(),
+            keywords: self.keywords.into(),
+            detail: "".into(),
+            keys: self.shortcut.map(Keys::caps).unwrap_or_default(),
+        }
+    }
 }
 
 /// The commands, as palette rows.
 fn command_entries() -> impl Iterator<Item = Entry> {
-    COMMANDS.iter().map(|command| Entry {
-        id: command.id,
-        title: command.title.into(),
-        keywords: command.keywords.into(),
-        detail: command.shortcut.into(),
-    })
+    COMMANDS.iter().map(Command::entry)
 }
 
 /// The settings index, as palette rows.
@@ -216,6 +328,7 @@ fn setting_entries(app: &App) -> Vec<Entry> {
                 title: field.name().into(),
                 keywords: keywords.into(),
                 detail: if app.setting_bool(field) { "On" } else { "Off" }.into(),
+                keys: Vec::new(),
             }),
             Kind::Choice => {
                 for (at, choice) in app.choices(field).into_iter().enumerate() {
@@ -224,6 +337,7 @@ fn setting_entries(app: &App) -> Vec<Entry> {
                         title: format!("{} › {}", field.name(), choice.label).into(),
                         keywords: format!("{keywords} {}", choice.keywords).into(),
                         detail: if choice.current { "current" } else { "" }.into(),
+                        keys: Vec::new(),
                     });
                 }
             }
@@ -234,6 +348,7 @@ fn setting_entries(app: &App) -> Vec<Entry> {
                 title: field.name().into(),
                 keywords: keywords.into(),
                 detail: tab.into(),
+                keys: Vec::new(),
             }),
         }
     }
@@ -251,15 +366,84 @@ fn rank(entries: Vec<Entry>, query: &str) -> Vec<Entry> {
     order.into_iter().filter_map(|at| entries.get_mut(at).and_then(Option::take)).collect()
 }
 
-/// The palette's rows for `query`, best first. With nothing typed, the
-/// commands in registry order: the settings join a search, not the list
-/// someone browses to see what the app does.
-pub(crate) fn filtered(app: &App, query: &str) -> Vec<Entry> {
-    let mut entries: Vec<Entry> = command_entries().collect();
-    if !query.trim().is_empty() {
-        entries.extend(setting_entries(app));
+/// What the palette lists for a query: its rows, in order, and the section
+/// headers among them, each with the row it heads. Navigating, Enter and the
+/// drawing all read this one list, so what's highlighted is what runs.
+#[derive(Default)]
+pub(crate) struct Listing {
+    pub entries: Vec<Entry>,
+    pub headers: Vec<(usize, &'static str)>,
+}
+
+impl Listing {
+    /// A section, if it has anything in it: an empty heading says nothing.
+    fn push(&mut self, label: &'static str, entries: Vec<Entry>) {
+        if !entries.is_empty() {
+            self.headers.push((self.entries.len(), label));
+            self.entries.extend(entries);
+        }
     }
-    rank(entries, query)
+
+    /// Whether `id` is listed already: no row appears twice.
+    fn has(&self, id: CommandId) -> bool {
+        self.entries.iter().any(|entry| entry.id == id)
+    }
+}
+
+/// The palette's rows for `query`: a menu with nothing typed, a search with
+/// something (see the module's notes).
+pub(crate) fn listing(app: &App, query: &str) -> Listing {
+    if query.trim().is_empty() { browse(app) } else { search(app, query) }
+}
+
+/// The rows alone, in the order they're listed.
+pub(crate) fn filtered(app: &App, query: &str) -> Vec<Entry> {
+    listing(app, query).entries
+}
+
+/// Nothing typed: what can run now, in sections. The settings join a search,
+/// not the list someone browses to see what the app does — except one run
+/// lately, which comes back under Recent.
+fn browse(app: &App) -> Listing {
+    let mut listing = Listing::default();
+    let runnable = |command: &&Command| command.id.is_enabled(app);
+    let of = |wanted: Section| COMMANDS.iter().filter(move |command| command.section == wanted);
+
+    if !app.selected.is_empty() {
+        let entries = of(Section::Selection).filter(runnable).map(Command::entry).collect();
+        listing.push(Section::Selection.label(), entries);
+    }
+    let recent = app
+        .recent_commands
+        .iter()
+        .filter(|&&id| !listing.has(id) && id.is_enabled(app))
+        .filter_map(|&id| entry_for(app, id))
+        .take(RECENT)
+        .collect();
+    listing.push("Recent", recent);
+    for topic in Section::TOPICS {
+        let entries = of(topic).filter(runnable).filter(|command| !listing.has(command.id)).map(Command::entry).collect();
+        listing.push(topic.label(), entries);
+    }
+    listing
+}
+
+/// Something typed: commands and settings ranked together, with what can't
+/// run now after what can — each keeping its rank — so it's found, and says
+/// why, but isn't the first thing Enter would do.
+fn search(app: &App, query: &str) -> Listing {
+    let mut entries: Vec<Entry> = command_entries().collect();
+    entries.extend(setting_entries(app));
+    let (ready, waiting): (Vec<Entry>, Vec<Entry>) = rank(entries, query).into_iter().partition(|entry| entry.id.is_enabled(app));
+    Listing { entries: ready.into_iter().chain(waiting).collect(), headers: Vec::new() }
+}
+
+/// The row a command or setting is listed as — for Recent, which holds ids.
+fn entry_for(app: &App, id: CommandId) -> Option<Entry> {
+    match id {
+        CommandId::Setting(_) | CommandId::Choice(..) => setting_entries(app).into_iter().find(|entry| entry.id == id),
+        _ => COMMANDS.iter().find(|command| command.id == id).map(Command::entry),
+    }
 }
 
 /// Keyboard nav while the palette is open (subscribed like `search_key_event`).
@@ -272,18 +456,21 @@ pub(crate) fn key_event(
     picker::panel_key(&event, Panel::Command)
 }
 
-/// The palette panel: a focused input over a scrollable, fuzzy-filtered command
-/// list. Rows are greyed and un-clickable when their command isn't applicable.
+/// The palette panel: a focused input over the listing. Rows are greyed and
+/// un-clickable when their command isn't applicable.
 pub(super) fn view<'a>(app: &'a App, state: &'a picker::State) -> Element<'a, Message> {
-    let rows = filtered(app, &state.query)
+    let Listing { entries, headers } = listing(app, &state.query);
+    let rows = entries
         .into_iter()
         .map(|entry| {
             let unavailable = entry.id.unavailable(app);
             Row {
+                matched: thinkboard_core::fuzzy::matched(&state.query, &entry.title),
                 title: entry.title,
                 // The reason replaces the shortcut: a chord for something that
                 // can't run is the one thing on the row with no use.
                 detail: unavailable.map_or(entry.detail, Cow::Borrowed),
+                keys: if unavailable.is_some() { Vec::new() } else { entry.keys },
                 enabled: unavailable.is_none(),
                 font: None,
                 press: Message::RunCommand(entry.id),
@@ -297,8 +484,11 @@ pub(super) fn view<'a>(app: &'a App, state: &'a picker::State) -> Element<'a, Me
         Shell {
             panel: Panel::Command,
             placeholder: "Run a command…",
+            glyph: super::chrome::Glyph::Prompt,
             on_submit: Message::RunSelectedCommand,
+            verb: "Run",
             empty: "No matching command".into(),
+            headers: headers.into_iter().map(|(heads, label)| (heads, label.into())).collect(),
         },
         rows,
     )
@@ -326,6 +516,18 @@ mod tests {
         assert!(commands("vault").contains(&CommandId::OpenVault));
         // "browse" is a keyword of Switch canvas, not of its title.
         assert!(commands("browse").contains(&CommandId::SwitchCanvas));
+    }
+
+    #[test]
+    fn a_shortcut_is_spelled_the_platforms_way() {
+        let redo = COMMANDS.iter().find(|command| command.id == CommandId::Redo).and_then(|command| command.shortcut);
+        let caps = redo.expect("redo has keys").caps();
+        // Each in its own order, too: Apple's modifiers lead with Shift.
+        if cfg!(target_os = "macos") {
+            assert_eq!(caps, ["⇧", "⌘", "Z"]);
+        } else {
+            assert_eq!(caps, ["Ctrl", "Shift", "Z"]);
+        }
     }
 
     #[test]
