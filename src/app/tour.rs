@@ -1425,7 +1425,7 @@ fn editing() {
 fn overlapping() {
     let mut tour = Tour::new("overlapping", first_launch(canvas_file::scratch_document));
     let dragged = tour.find("**Double-click**");
-    let target = tour.find("Hover a note");
+    let target = tour.find("Hover a card");
     let (from, to) = (tour.node_center(dragged), tour.node_center(target));
     tour.move_to(from);
     tour.press(mouse::Button::Left);
