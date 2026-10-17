@@ -55,6 +55,7 @@ pub struct Group {
 /// Group nodes take no part: they are frames the user draws *around* other
 /// nodes, so their boxes would swallow every member through the containment
 /// pass and collapse the whole board into one cluster.
+#[allow(clippy::needless_range_loop)] // `i` is the card and its union-find id; an iterator would hide the second
 pub fn group(nodes: &[CanvasNode], edges: &[CanvasEdge]) -> Grouping {
     let clustered: Vec<usize> = (0..nodes.len()).filter(|&i| !nodes[i].is_group()).collect();
     if clustered.len() < nodes.len() {
@@ -149,6 +150,7 @@ pub fn group(nodes: &[CanvasNode], edges: &[CanvasEdge]) -> Grouping {
 /// Unions any two cards whose rectangles are within [`PROXIMITY`], using a
 /// uniform grid (cell = `PROXIMITY`) so each card is compared only against ones
 /// in its own and adjacent cells — not the whole canvas.
+#[allow(clippy::needless_range_loop)] // `i` is the card and its union-find id; an iterator would hide the second
 fn union_by_proximity(nodes: &[CanvasNode], parent: &mut [usize]) {
     let n = nodes.len();
     let cell_of = |v: f32| (v / PROXIMITY).floor() as i64;
@@ -198,6 +200,7 @@ fn union_by_proximity(nodes: &[CanvasNode], parent: &mut [usize]) {
 /// in an interior gap wider than [`PROXIMITY`]). Absorbing grows the box, which
 /// can pull in more — so repeat until stable; the component count only shrinks,
 /// so this terminates.
+#[allow(clippy::needless_range_loop)] // `i` is the card and its union-find id; an iterator would hide the second
 fn absorb_contained(nodes: &[CanvasNode], parent: &mut [usize]) {
     let n = nodes.len();
     loop {

@@ -1681,7 +1681,7 @@ impl App {
         self.interacted = true;
         self.inertia = None;
         self.camera_focus = None;
-        self.camera.offset = self.camera.offset + delta;
+        self.camera.offset += delta;
         if track {
             let now = Instant::now();
             if let Some(last) = self.last_pan {
@@ -2404,7 +2404,7 @@ impl App {
 
         if let Some(inertia) = &mut self.inertia {
             match inertia.tick(now) {
-                Some(delta) => self.camera.offset = self.camera.offset + delta,
+                Some(delta) => self.camera.offset += delta,
                 None => self.inertia = None,
             }
             self.cache.clear();

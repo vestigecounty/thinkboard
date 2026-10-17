@@ -736,11 +736,11 @@ impl Config {
     /// Writes this config as pretty JSON, creating parent directories.
     /// Failures are reported but non-fatal.
     fn write(&self, path: &Path) {
-        if let Some(parent) = path.parent() {
-            if let Err(error) = std::fs::create_dir_all(parent) {
-                eprintln!("config: could not create {} ({error})", parent.display());
-                return;
-            }
+        if let Some(parent) = path.parent()
+            && let Err(error) = std::fs::create_dir_all(parent)
+        {
+            eprintln!("config: could not create {} ({error})", parent.display());
+            return;
         }
         match serde_json::to_string_pretty(self) {
             Ok(json) => {
@@ -889,8 +889,7 @@ mod tests {
 
     #[test]
     fn an_api_key_is_kept_per_endpoint() {
-        let mut config = Config::default();
-        config.ai_url = "https://api.openai.com/v1".to_owned();
+        let mut config = Config { ai_url: "https://api.openai.com/v1".to_owned(), ..Config::default() };
         config.set_ai_key("sk-openai");
         config.ai_url = "https://api.fireworks.ai/inference/v1".to_owned();
         config.set_ai_key("fw-key");
@@ -905,8 +904,7 @@ mod tests {
 
     #[test]
     fn an_endpoint_with_no_key_reports_none_rather_than_anothers() {
-        let mut config = Config::default();
-        config.ai_url = "https://api.openai.com/v1".to_owned();
+        let mut config = Config { ai_url: "https://api.openai.com/v1".to_owned(), ..Config::default() };
         config.set_ai_key("sk-openai");
 
         // A URL edited to point elsewhere must not carry the old host's key.
@@ -916,8 +914,7 @@ mod tests {
 
     #[test]
     fn a_trailing_slash_is_the_same_endpoint() {
-        let mut config = Config::default();
-        config.ai_url = "https://api.openai.com/v1".to_owned();
+        let mut config = Config { ai_url: "https://api.openai.com/v1".to_owned(), ..Config::default() };
         config.set_ai_key("sk-openai");
         config.ai_url = "https://api.openai.com/v1/".to_owned();
         assert_eq!(config.ai_key(), "sk-openai");
@@ -925,8 +922,7 @@ mod tests {
 
     #[test]
     fn clearing_a_key_drops_its_entry() {
-        let mut config = Config::default();
-        config.ai_url = "https://api.openai.com/v1".to_owned();
+        let mut config = Config { ai_url: "https://api.openai.com/v1".to_owned(), ..Config::default() };
         config.set_ai_key("sk-openai");
         config.set_ai_key("   ");
         assert_eq!(config.ai_key(), "");
@@ -972,13 +968,15 @@ mod tests {
 
     #[test]
     fn sanitize_clamps_out_of_range_values() {
-        let mut config = Config::default();
-        config.min_zoom = 5.0;
-        config.max_zoom = 1.0; // below min: must be pushed above it
-        config.zoom_smoothing = 0.0; // would divide by zero
-        config.pan_inertia = 2.0; // never stops
-        config.animation_scale = -3.0; // negative
-        config.overlay_blur = -1.0; // sharper than sharp
+        let mut config = Config {
+            min_zoom: 5.0,
+            max_zoom: 1.0, // below min: must be pushed above it
+            zoom_smoothing: 0.0, // would divide by zero
+            pan_inertia: 2.0, // never stops
+            animation_scale: -3.0, // negative
+            overlay_blur: -1.0, // sharper than sharp
+            ..Config::default()
+        };
 
         assert!(config.sanitize());
         assert!(config.max_zoom > config.min_zoom);
@@ -997,8 +995,7 @@ mod tests {
 
     #[test]
     fn zero_animation_scale_stays_finite() {
-        let mut config = Config::default();
-        config.animation_scale = 0.0;
+        let mut config = Config { animation_scale: 0.0, ..Config::default() };
         config.sanitize();
         // No divide-by-zero: a zero scale still yields a tiny positive base.
         assert!(config.anim_secs(0.4) > 0.0);
@@ -1071,9 +1068,7 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("config.json");
         // A complete config (all keys present) must not be rewritten.
-        let mut custom = Config::default();
-        custom.dismiss_on_background_click = false;
-        custom.persist_across_spaces = true;
+        let custom = Config { dismiss_on_background_click: false, persist_across_spaces: true, ..Config::default() };
         let original = format!("{}\n", serde_json::to_string_pretty(&custom).unwrap());
         std::fs::write(&path, &original).unwrap();
 

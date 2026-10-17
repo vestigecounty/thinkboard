@@ -136,7 +136,7 @@ impl App {
         if self.overlay && self.reveal < 1.0 {
             let scale = 1.0 + SCENE_ZOOM * (1.0 - camera::ease_out_cubic(self.reveal));
             camera.zoom *= scale;
-            camera.offset = camera.offset * scale;
+            camera.offset *= scale;
         }
         camera
     }

@@ -851,6 +851,7 @@ impl Board<'_> {
     /// shape, in `color` faded by `alpha`. As a `ring` — the opaque outline
     /// behind a hovered or selected link — a chevron is drawn as before but
     /// wider, and a triangle grows by its stroke on every side.
+    #[allow(clippy::too_many_arguments)] // where, which way, and how it's painted: each caller its own mix
     pub(super) fn draw_arrowhead(
         &self,
         frame: &mut Frame,

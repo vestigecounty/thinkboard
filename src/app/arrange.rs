@@ -30,9 +30,12 @@ const GROUP_HEAD_PAD: f32 = 44.0;
 /// An auto-layout animation: each node eases from its old to its new position.
 pub(super) struct LayoutAnim {
     pub(super) started: Instant,
-    /// `(node_index, from, to)` top-left positions.
-    pub(super) moves: Vec<(usize, (f32, f32), (f32, f32))>,
+    pub(super) moves: Vec<Move>,
 }
+
+/// One node's part in a layout animation: `(node_index, from, to)`, its
+/// top-left positions.
+pub(super) type Move = (usize, (f32, f32), (f32, f32));
 
 /// Whether two cards overlap — by more than touching, so a card placed flush
 /// against another isn't counted as covering it.

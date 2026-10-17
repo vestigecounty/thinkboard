@@ -653,29 +653,29 @@ impl Board<'_> {
             state.kind = Kind::Idle;
             // A right-click that didn't drag opens the context menu;
             // a drag was a pan and coasts on release.
-            if let Some(position) = position {
-                if start.distance(position) < 5.0 {
-                    // A right-click on a node or a link offers Delete;
-                    // on empty canvas it offers Add node / Paste.
-                    let world = self.camera.to_world(position);
-                    let message = if let Some(node) = self.hit_test(world) {
-                        Message::OpenNodeMenu {
-                            screen: position,
-                            node,
-                        }
-                    } else if let Some(edge) = self.edge_at(position) {
-                        Message::OpenLinkMenu {
-                            screen: position,
-                            edge,
-                        }
-                    } else {
-                        Message::OpenContextMenu {
-                            screen: position,
-                            world,
-                        }
-                    };
-                    return Some(canvas::Action::publish(message).and_capture());
-                }
+            if let Some(position) = position
+                && start.distance(position) < 5.0
+            {
+                // A right-click on a node or a link offers Delete;
+                // on empty canvas it offers Add node / Paste.
+                let world = self.camera.to_world(position);
+                let message = if let Some(node) = self.hit_test(world) {
+                    Message::OpenNodeMenu {
+                        screen: position,
+                        node,
+                    }
+                } else if let Some(edge) = self.edge_at(position) {
+                    Message::OpenLinkMenu {
+                        screen: position,
+                        edge,
+                    }
+                } else {
+                    Message::OpenContextMenu {
+                        screen: position,
+                        world,
+                    }
+                };
+                return Some(canvas::Action::publish(message).and_capture());
             }
             Some(canvas::Action::publish(Message::EndPan).and_capture())
         } else {

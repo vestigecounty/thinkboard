@@ -56,10 +56,10 @@ jobs:
         run: cargo build --locked --workspace --all-targets
 
       - name: Clippy
-        # The codebase carries a few intentional style lints (hand-formatted
-        # single-line literals, deliberate let-chains), so we don't pass
-        # `-D warnings` — this still fails the job on genuine clippy errors.
-        run: cargo clippy --locked --workspace --all-targets
+        # Warnings fail the job. The lints the code means to break are
+        # `#[allow]`ed where they're broken, each with its reason, so a new
+        # warning is news rather than one more in a count.
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
       - name: Test
         run: cargo test --locked --workspace

@@ -1006,6 +1006,7 @@ fn lay_out_table(
 /// the accent color, and heading sizes. Centered within the wrapped column,
 /// matching the plain-text look. Falls back to plain text for content with no
 /// Markdown.
+#[allow(clippy::too_many_arguments)] // one bitmap's inputs, as the other rasterizers take theirs
 pub fn snapshot_markdown(
     text: &str,
     width: f32,

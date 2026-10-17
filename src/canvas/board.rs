@@ -568,10 +568,10 @@ impl Stacked<Message> for Board<'_> {
                     self.draw_connection_preview(&mut overlay, from, side, cursor, state.snap);
                 }
                 Kind::Idle => {
-                    if let Some((index, side)) = state.hover {
-                        if self.editing != Some(index) {
-                            self.draw_port(&mut overlay, index, side);
-                        }
+                    if let Some((index, side)) = state.hover
+                        && self.editing != Some(index)
+                    {
+                        self.draw_port(&mut overlay, index, side);
                     }
                 }
                 _ => {}

@@ -8,7 +8,7 @@ driving the same core through UniFFI.
 
 ```sh
 cargo build --locked --workspace --all-targets
-cargo clippy --locked --workspace --all-targets
+cargo clippy --locked --workspace --all-targets -- -D warnings
 cargo test --locked --workspace
 cargo run                       # overlay mode; Pause (default) summons/dismisses
 cargo run -- --windowed --config /tmp/x.json   # a normal window + a throwaway config
@@ -28,10 +28,12 @@ real one — use it for any run that might write settings.
   literals in tables (e.g. `ai::PRESETS`), deliberate line breaks that group
   related arguments. `cargo fmt --check` reports diffs against most files by
   design. Match the surrounding style instead.
-- **Clippy runs without `-D warnings`.** A handful of style lints are
-  intentional (index loops in union-find, `&PathBuf` in a signature that mirrors
-  a callback). The job still fails on genuine clippy
-  *errors*. Don't "fix" the standing warnings; don't add new ones either.
+- **Clippy runs with `-D warnings`**, on every platform CI builds: a new
+  warning fails the job. The few lints that are intentional — index loops in
+  union-find, `&PathBuf` in a signature that mirrors a callback, a long
+  parameter list that is one call's inputs — are `#[allow]`ed on the item, with
+  the reason beside it. Do the same for a new one, or fix it; don't loosen the
+  flag.
 - **Comments carry the reasoning.** Most non-obvious lines have a comment
   explaining *why*, often referencing a platform bug or a rendering artifact.
   Preserve them verbatim when moving code, and write new ones in the same voice.
@@ -943,6 +945,14 @@ stylesheet, to see the app as a particular user has it.
 
 `resize` changes the window's size, as dragging its corner does — the
 `small_windows` scene walks the panels and menus down to 360 px wide.
+
+**The tour doubles as a check that a refactor changed nothing**: render every
+scene before and after, and compare the files. Two things to know first. Run
+it twice before, because a few shots differ between runs of the same code —
+streamed answers, zoom animations, the overlay's fade, a marquee by a few
+pixels. And compare runs made the same way: a scene run alone (`TOUR=…`)
+renders text a hair differently from the same scene in a full run, whose
+earlier scenes have warmed the font and shaping caches.
 
 For anything that changes frame to frame — editing above all — use a
 **strip** rather than shots: `strip` fixes a region, `frame` adds the very next

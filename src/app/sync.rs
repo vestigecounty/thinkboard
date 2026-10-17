@@ -85,6 +85,7 @@ pub(super) fn changed_since(current: Option<SystemTime>, known: Option<SystemTim
 /// Watches the canvas file for external changes via the OS (FSEvents on
 /// macOS) — no polling, so a large vault isn't touched. Watches the file's
 /// directory (non-recursive) to survive editors that save via rename.
+#[allow(clippy::ptr_arg)] // `Subscription::run_with` hands back the `PathBuf` it was given, by reference
 pub(super) fn watch_file(path: &PathBuf) -> iced::futures::stream::BoxStream<'static, Message> {
     use iced::futures::StreamExt;
     let path = path.clone();

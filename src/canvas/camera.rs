@@ -42,11 +42,11 @@ impl Camera {
         Vector::new(self.viewport.width / 2.0, self.viewport.height / 2.0)
     }
 
-    pub fn to_screen(&self, world: Point) -> Point {
+    pub fn to_screen(self, world: Point) -> Point {
         Point::ORIGIN + self.center() + self.offset + (world - Point::ORIGIN) * self.zoom
     }
 
-    pub fn to_world(&self, screen: Point) -> Point {
+    pub fn to_world(self, screen: Point) -> Point {
         Point::ORIGIN + ((screen - Point::ORIGIN) - self.center() - self.offset) * (1.0 / self.zoom)
     }
 
@@ -112,7 +112,7 @@ impl Inertia {
         self.last_tick = now;
 
         let delta = self.velocity * dt;
-        self.velocity = self.velocity * self.friction.powf(dt * 120.0);
+        self.velocity *= self.friction.powf(dt * 120.0);
 
         (speed(self.velocity) > MIN_INERTIA_SPEED).then_some(delta)
     }
