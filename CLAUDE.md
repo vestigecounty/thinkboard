@@ -210,13 +210,21 @@ No configured board means the embedded **welcome board** — a scratch canvas
 that never touches disk and comes back each launch. An image pasted onto it is
 held in memory as the board is (`clipboard::HeldImage`), and written out only
 if it's copied onto a board with a folder. `finish_welcome` completes
-it for the machine it's on, which is why the file has a `SUMMON` placeholder in
+it for the machine it's on, which is why the file has `SUMMON` placeholders in
 it rather than instructions.
+
+It's built from ordinary cards and links, laid out as a map: the welcome card,
+its buttons below, the Obsidian branch to the left (the `.canvas` note, the
+vault buttons), and the tips down the right in the order they're first needed —
+edit, connect, summon, palette, settings, right-click, AI. A tip is one idea:
+its aside (the hotkey, the AI provider) is a card of its own beside it. A
+button is a card with a `tb_action`; it ends in → and shows a pointer, and the
+one to do first (`tb_primary`) is ringed in its colour.
 
 **The default hotkey is a key most Macs haven't got.** `Pause` is what macOS
 reports as F15, which exists on a full-size external keyboard and no laptop —
 so on macOS `summon_gesture` (the four-finger swipe) defaults **on** and the
-welcome board leads with it, mentioning the key second. Changing the hotkey
+welcome board leads with it, the key in a card beside it. Changing the hotkey
 default instead would mean picking a chord that might already be claimed;
 this way nothing is taken and the overlay is still reachable.
 

@@ -57,10 +57,19 @@ fn fit_welcome(document: &mut CanvasDocument, theme: &crate::theme::Theme) {
 /// Takes the vaults rather than reading them, so the shaping can be tested
 /// without an Obsidian install.
 fn finish_welcome(document: &mut CanvasDocument, vaults: &[thinkboard_core::obsidian::Vault]) {
+    let (summon, hotkey) = summon_tip();
     for node in &mut document.nodes {
-        if node.id == "tip_summon" {
-            node.text = Some(summon_tip().to_owned());
+        match node.id.as_str() {
+            "tip_summon" => node.text = Some(summon.to_owned()),
+            "tip_summon_hotkey" => node.text = hotkey.map(str::to_owned),
+            _ => {}
         }
+    }
+    // Off macOS the hotkey *is* the way in, said in the one card; the second
+    // has nothing left to add.
+    if hotkey.is_none() {
+        document.nodes.retain(|node| node.id != "tip_summon_hotkey");
+        document.edges.retain(|edge| edge.from_node != "tip_summon_hotkey" && edge.to_node != "tip_summon_hotkey");
     }
 
     // A button per vault Obsidian knows about, beside the "Use an Obsidian
@@ -69,32 +78,38 @@ fn finish_welcome(document: &mut CanvasDocument, vaults: &[thinkboard_core::obsi
     // Capped, because the row is a row and a long tail of old vaults is not
     // what anyone came for.
     const SHOWN: usize = 3;
-    /// Narrower than the button they hang from, so three fit in the column
-    /// left of the tips.
-    const WIDTH: f32 = 240.0;
-    const GAP: f32 = 30.0;
+    const WIDTH: f32 = 220.0;
+    const HEIGHT: f32 = 72.0;
+    const GAP: f32 = 24.0;
+    /// How far below the button the row hangs: room for the links to fan,
+    /// and near enough that three of them still clear "Create your first
+    /// board" beside them.
+    const DROP: f32 = 80.0;
     let anchor = document
         .nodes
         .iter()
         .find(|node| node.id == "action_vault")
-        .map(|node| (node.x, node.y, node.height, node.color.clone()));
-    let Some((x, y, height, color)) = anchor else {
+        .map(|node| (node.x, node.y, node.width, node.height, node.color.clone()));
+    let Some((x, y, width, height, color)) = anchor else {
         return;
     };
+    let count = vaults.len().min(SHOWN);
+    let row = count as f32 * WIDTH + count.saturating_sub(1) as f32 * GAP;
     for (i, vault) in vaults.iter().take(SHOWN).enumerate() {
         let id = format!("action_vault_{i}");
         let mut node = CanvasNode {
-            // Above the button and fanning away from the board, not beside it
-            // or below it: side by side the link to the second vault runs
-            // straight through the first, and the row reads as a chain of one
-            // vault leading to the next rather than three offers from one.
-            x: x - i as f32 * (WIDTH + GAP),
-            y: y - height - 60.0,
+            // One row below the button and centred on it, so the links fan out
+            // from it as offers of equal standing — side by side with it, the
+            // link to the second vault ran through the first and the row read
+            // as a chain. Above it is the note on what a board is.
+            x: x + (width - row) / 2.0 + i as f32 * (WIDTH + GAP),
+            y: y + height + DROP,
             width: WIDTH,
-            height,
+            height: HEIGHT,
             id: id.clone(),
             kind: "text".to_owned(),
-            text: Some(format!("Open vault **{}**", vault.name)),
+            // The mark every button on the board carries, so it reads as one.
+            text: Some(format!("Open vault **{}** →", vault.name)),
             file: None,
             // The gold of the button they belong to, so the group reads as one.
             color: color.clone(),
@@ -105,14 +120,14 @@ fn finish_welcome(document: &mut CanvasDocument, vaults: &[thinkboard_core::obsi
             serde_json::Value::String(format!("use_vault:{}", vault.path.display())),
         );
         document.nodes.push(node);
-        // Each hangs off the button itself — every link leaving the same top
-        // port, so they fan out instead of threading through one another.
+        // Each hangs off the button itself — every link leaving the same
+        // bottom port, so they fan out instead of threading through one another.
         document.edges.push(CanvasEdge {
             id: format!("e_{id}"),
             from_node: "action_vault".to_owned(),
-            from_side: "top".to_owned(),
+            from_side: "bottom".to_owned(),
             to_node: id,
-            to_side: "bottom".to_owned(),
+            to_side: "top".to_owned(),
             extra: Default::default(),
         });
     }
@@ -121,28 +136,39 @@ fn finish_welcome(document: &mut CanvasDocument, vaults: &[thinkboard_core::obsi
     if vaults.is_empty() {
         for node in &mut document.nodes {
             if node.id == "action_vault" {
-                node.text = Some("Choose an Obsidian vault…".to_owned());
+                node.text = Some("Choose an Obsidian vault… →".to_owned());
             }
         }
     }
 }
 
-/// How to summon the overlay on this platform, for the welcome board.
+/// How to summon the overlay on this platform, for the welcome board: the way
+/// in, and where there's a second, the card beside it.
 ///
 /// macOS leads with the trackpad gesture because the default hotkey is the
 /// Pause key, which macOS reports as F15 — a key a laptop hasn't got. Telling a
-/// MacBook user to press it is telling them to do something impossible.
-fn summon_tip() -> &'static str {
+/// MacBook user to press it is telling them to do something impossible. The
+/// hotkey goes in a card of its own, smaller and to the side, as the AI tip's
+/// provider note does: one tip, one card.
+fn summon_tip() -> (&'static str, Option<&'static str>) {
     #[cfg(target_os = "macos")]
     {
-        "Swipe **four fingers down** on the trackpad to summon or dismiss the board over \
-         whatever you're doing.\n\nThere's a hotkey too — **Pause**, which needs a full-size \
-         keyboard. Set your own in Settings, or use the menu-bar icon."
+        (
+            "Swipe **four fingers down** on the trackpad to summon or dismiss the board over \
+             whatever you're doing.",
+            Some(
+                "There's a hotkey too — **Pause**, which needs a full-size keyboard. Set your own \
+                 in Settings, or use the menu-bar icon.",
+            ),
+        )
     }
     #[cfg(not(target_os = "macos"))]
     {
-        "Press **Pause** anytime to summon or dismiss the board over whatever you're doing. \
-         Set your own shortcut in Settings."
+        (
+            "Press **Pause** anytime to summon or dismiss the board over whatever you're doing. \
+             Set your own shortcut in Settings.",
+            None,
+        )
     }
 }
 
@@ -773,7 +799,7 @@ mod tests {
     }
 
     #[test]
-    fn the_vault_buttons_are_capped_linked_and_clear_of_the_tips() {
+    fn the_vault_buttons_are_capped_linked_and_clear_of_the_board() {
         let many: Vec<_> = ["A", "B", "C", "D", "E"].iter().map(|n| vault(n)).collect();
         let mut document = welcome();
         finish_welcome(&mut document, &many);
@@ -785,16 +811,17 @@ mod tests {
             })
             .collect();
         assert_eq!(buttons.len(), 3, "a long tail of old vaults is not what anyone came for");
-        // One row above the button, fanning away from the board: side by side,
-        // the link to the second vault runs through the first and the row reads
-        // as a chain of one vault leading to the next.
-        assert!(buttons.windows(2).all(|w| w[0].y == w[1].y && w[0].x > w[1].x));
+        // One row below the button and centred on it: side by side with it, the
+        // link to the second vault ran through the first and the row read as a
+        // chain of one vault leading to the next.
+        assert!(buttons.windows(2).all(|w| w[0].y == w[1].y && w[0].x < w[1].x));
         let anchor = document.nodes.iter().find(|n| n.id == "action_vault").expect("the button");
-        assert!(buttons.iter().all(|b| b.y + b.height < anchor.y), "above the root button");
-        assert!(buttons.iter().all(|b| b.x <= anchor.x), "and away from the rest of the board");
+        assert!(buttons.iter().all(|b| b.y > anchor.y + anchor.height), "below the root button");
+        let row_middle = (buttons[0].x + buttons[2].x + buttons[2].width) / 2.0;
+        assert!((row_middle - (anchor.x + anchor.width / 2.0)).abs() < 1.0, "centred under it");
 
-        // Each hangs off the button itself, from the same top port — so they fan
-        // out rather than threading through one another.
+        // Each hangs off the button itself, from the same bottom port — so they
+        // fan out rather than threading through one another.
         for button in &buttons {
             let edge = document
                 .edges
@@ -802,21 +829,22 @@ mod tests {
                 .find(|e| e.to_node == button.id)
                 .unwrap_or_else(|| panic!("{} is not connected to anything", button.id));
             assert_eq!(edge.from_node, "action_vault", "parented to the button, not to a sibling");
-            assert_eq!((edge.from_side.as_str(), edge.to_side.as_str()), ("top", "bottom"));
+            assert_eq!((edge.from_side.as_str(), edge.to_side.as_str()), ("bottom", "top"));
         }
 
         // And they wear its colour, so the group reads as one offer.
         assert!(buttons.iter().all(|b| b.color == anchor.color && b.color.is_some()));
 
-        // Clear of the tips, which run down the right of the board.
-        let tips = document.nodes.iter().filter(|n| n.id.starts_with("tip_"));
-        for tip in tips {
+        // Clear of every other card — the tips, and the buttons under the
+        // welcome card, which three of them come within a hair of.
+        let others = document.nodes.iter().filter(|n| !n.id.starts_with("action_vault_"));
+        for other in others {
             for button in &buttons {
-                let overlaps = button.x < tip.x + tip.width
-                    && tip.x < button.x + button.width
-                    && button.y < tip.y + tip.height
-                    && tip.y < button.y + button.height;
-                assert!(!overlaps, "{} overlaps {}", button.id, tip.id);
+                let overlaps = button.x < other.x + other.width
+                    && other.x < button.x + button.width
+                    && button.y < other.y + other.height
+                    && other.y < button.y + button.height;
+                assert!(!overlaps, "{} overlaps {}", button.id, other.id);
             }
         }
     }
@@ -832,16 +860,18 @@ mod tests {
             .and_then(|n| n.text.clone())
             .expect("a summon tip");
         assert_ne!(tip, "SUMMON", "the placeholder must be filled in");
+        let hotkey = document.nodes.iter().find(|n| n.id == "tip_summon_hotkey").and_then(|n| n.text.clone());
         if cfg!(target_os = "macos") {
             // The default hotkey is F15, which a MacBook hasn't got, so the
             // gesture has to lead — telling someone to press Pause is telling
-            // them to do something impossible.
-            assert!(tip.starts_with("Swipe"), "{tip}");
-            let (swipe, pause) = (tip.find("four fingers"), tip.find("Pause"));
-            assert!(swipe < pause, "the gesture must come first: {tip}");
+            // them to do something impossible. The hotkey is the aside.
+            assert!(tip.starts_with("Swipe") && tip.contains("four fingers"), "{tip}");
+            assert!(hotkey.is_some_and(|hotkey| hotkey.contains("Pause")), "the hotkey, beside it");
         } else {
             assert!(tip.contains("Pause"), "{tip}");
             assert!(!tip.contains("four fingers"), "no trackpad gesture off macOS: {tip}");
+            assert!(hotkey.is_none(), "and no second card with nothing to add");
+            assert!(document.edges.iter().all(|e| e.to_node != "tip_summon_hotkey"), "nor a link to it");
         }
     }
 

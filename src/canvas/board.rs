@@ -410,6 +410,13 @@ impl canvas::Program<Message> for Board<'_> {
                 {
                     // Over a link on a selected node: a click opens it.
                     mouse::Interaction::Pointer
+                } else if self
+                    .hit_test(self.camera.to_world(position))
+                    .is_some_and(|index| self.node_action(index).is_some())
+                {
+                    // A button card (the welcome board's): a click does what
+                    // it says, and the cursor says so before the click.
+                    mouse::Interaction::Pointer
                 } else if self.hit_test(self.camera.to_world(position)).is_some() {
                     mouse::Interaction::Grab
                 } else if self.edge_at(position).is_some() {

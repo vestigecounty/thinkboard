@@ -3,179 +3,228 @@
 		{
 			"id": "welcome",
 			"type": "text",
-			"text": "# Welcome to ThinkBoard\n\nThis is a **scratch board** \u2014 play with it freely. Nothing here is saved, and it comes back each time you launch without a board of your own.\n\nBoards are Obsidian `.canvas` files. ThinkBoard reads and writes them in place and keeps anything it doesn't use, so a board stays one Obsidian can open.",
+			"text": "# Welcome to ThinkBoard\n\nThis is a **scratch board** \u2014 play with it freely. Nothing here is saved, and it comes back each time you launch without a board of your own.",
 			"x": -825,
 			"y": -365,
-			"width": 575,
-			"height": 300
+			"width": 635,
+			"height": 215
+		},
+		{
+			"id": "action_new",
+			"type": "text",
+			"text": "**Create your first board** \u2192",
+			"x": -848,
+			"y": -48,
+			"width": 363,
+			"height": 109,
+			"color": "4",
+			"tb_action": "new_board",
+			"tb_primary": true
+		},
+		{
+			"id": "action_open",
+			"type": "text",
+			"text": "Open an existing board\u2026 \u2192",
+			"x": -451,
+			"y": -36,
+			"width": 272,
+			"height": 86,
+			"color": "5",
+			"tb_action": "open_board"
+		},
+		{
+			"id": "tip_canvas",
+			"type": "text",
+			"text": "Boards are Obsidian `.canvas` files. ThinkBoard reads and writes them in place and keeps anything it doesn't use, so a board stays one Obsidian can open.",
+			"x": -1278,
+			"y": -558,
+			"width": 363,
+			"height": 170
+		},
+		{
+			"id": "action_vault",
+			"type": "text",
+			"text": "Use an Obsidian vault\u2026 \u2192",
+			"x": -1256,
+			"y": -297,
+			"width": 317,
+			"height": 82,
+			"tb_action": "open_vault",
+			"color": "#c8a54b"
 		},
 		{
 			"id": "tip_edit",
 			"type": "text",
 			"text": "**Double-click** any card to edit. Press **Esc** or **Cmd/Ctrl+Enter** when you're done.",
-			"x": -12,
-			"y": -498,
-			"width": 389,
-			"height": 61
+			"x": 36,
+			"y": -637,
+			"width": 476,
+			"height": 82
 		},
 		{
 			"id": "tip_connect",
 			"type": "text",
 			"text": "Hover a card's edge to reveal a **dot**, then drag it onto another card to connect them.",
-			"x": -10,
-			"y": -375,
-			"width": 392,
-			"height": 61
-		},
-		{
-			"id": "tip_ai",
-			"type": "text",
-			"text": "**Ask AI** turns a chain of cards into a prompt and writes the reply back onto the board.\n\nIt needs a provider first \u2014 **Settings \u2192 AI**, pick one and paste a key. Until then the menu item stays hidden.",
-			"x": 12,
-			"y": -256,
-			"width": 361,
-			"height": 134
-		},
-		{
-			"id": "tip_settings",
-			"type": "text",
-			"text": "Open **Settings** from the menu-bar icon \u2014 themes, fonts, AI, and how the board behaves.",
-			"x": 26,
-			"y": -98,
-			"width": 320,
-			"height": 110
+			"x": 36,
+			"y": -524,
+			"width": 476,
+			"height": 82
 		},
 		{
 			"id": "tip_summon",
 			"type": "text",
 			"text": "SUMMON",
-			"x": 6,
-			"y": 141,
-			"width": 375,
-			"height": 115
-		},
-		{
-			"id": "action_new",
-			"type": "text",
-			"text": "Create your first board",
-			"x": -869,
-			"y": 80,
-			"width": 319,
-			"height": 119,
-			"color": "4",
-			"tb_action": "new_board"
-		},
-		{
-			"id": "action_open",
-			"type": "text",
-			"text": "Open an existing board\u2026",
-			"x": -520,
-			"y": 80,
-			"width": 310,
-			"height": 119,
-			"color": "5",
-			"tb_action": "open_board"
-		},
-		{
-			"id": "18c0fcb5b7290b88",
-			"type": "text",
-			"text": "Right-click empty space for board options like **Auto-layout** and **Snap to grid**.",
-			"x": 24,
-			"y": 36,
-			"width": 323,
-			"height": 81
+			"x": 36,
+			"y": -410,
+			"width": 476,
+			"height": 82
 		},
 		{
 			"id": "tip_palette",
 			"type": "text",
-			"x": -14,
-			"y": -625,
-			"width": 392,
-			"height": 90,
-			"text": "**Cmd/Ctrl+K** or **Cmd/Ctrl+P** opens the command palette \u2014 every action, searchable: switch board, change theme or font, auto-layout, group."
+			"text": "**Cmd/Ctrl+K** or **Cmd/Ctrl+P** opens the command palette \u2014 every action, searchable: switch board, change theme or font, auto-layout, group.",
+			"x": 36,
+			"y": -297,
+			"width": 476,
+			"height": 104
 		},
 		{
-			"id": "action_vault",
+			"id": "tip_settings",
 			"type": "text",
-			"x": -1250,
-			"y": -40,
-			"width": 319,
-			"height": 100,
-			"text": "Use an Obsidian vault\u2026",
-			"tb_action": "open_vault",
-			"color": "#c8a54b"
+			"text": "Open **Settings** from the menu-bar icon \u2014 themes, fonts, AI, and how the board behaves.",
+			"x": 36,
+			"y": -161,
+			"width": 476,
+			"height": 82
+		},
+		{
+			"id": "tip_right_click",
+			"type": "text",
+			"text": "Right-click empty space for board options like **Auto-layout** and **Snap to grid**.",
+			"x": 36,
+			"y": -48,
+			"width": 476,
+			"height": 82
+		},
+		{
+			"id": "tip_ai",
+			"type": "text",
+			"text": "**Ask AI** turns a chain of cards into a prompt and writes the reply back onto the board.",
+			"x": 36,
+			"y": 66,
+			"width": 476,
+			"height": 82
+		},
+		{
+			"id": "tip_summon_hotkey",
+			"type": "text",
+			"text": "SUMMON_HOTKEY",
+			"x": 592,
+			"y": -422,
+			"width": 351,
+			"height": 104
+		},
+		{
+			"id": "tip_ai_provider",
+			"type": "text",
+			"text": "It needs a provider first \u2014 **Settings \u2192 AI**, pick one and paste a key. Until then the menu item stays hidden.",
+			"x": 592,
+			"y": 54,
+			"width": 351,
+			"height": 104
 		}
 	],
 	"edges": [
 		{
-			"id": "e_edit",
+			"id": "e_welcome_tip_edit",
 			"fromNode": "welcome",
 			"fromSide": "right",
 			"toNode": "tip_edit",
 			"toSide": "left"
 		},
 		{
-			"id": "e_connect",
+			"id": "e_welcome_tip_connect",
 			"fromNode": "welcome",
 			"fromSide": "right",
 			"toNode": "tip_connect",
 			"toSide": "left"
 		},
 		{
-			"id": "e_ai",
-			"fromNode": "welcome",
-			"fromSide": "right",
-			"toNode": "tip_ai",
-			"toSide": "left"
-		},
-		{
-			"id": "e_settings",
-			"fromNode": "welcome",
-			"fromSide": "right",
-			"toNode": "tip_settings",
-			"toSide": "left"
-		},
-		{
-			"id": "e_summon",
+			"id": "e_welcome_tip_summon",
 			"fromNode": "welcome",
 			"fromSide": "right",
 			"toNode": "tip_summon",
 			"toSide": "left"
 		},
 		{
-			"id": "e_new",
-			"fromNode": "welcome",
-			"fromSide": "bottom",
-			"toNode": "action_new",
-			"toSide": "top"
-		},
-		{
-			"id": "e_open",
-			"fromNode": "welcome",
-			"fromSide": "bottom",
-			"toNode": "action_open",
-			"toSide": "top"
-		},
-		{
-			"id": "18c1fcb5b7292eb0",
-			"fromNode": "welcome",
-			"fromSide": "right",
-			"toNode": "18c0fcb5b7290b88",
-			"toSide": "left"
-		},
-		{
-			"id": "e_tip_palette",
+			"id": "e_welcome_tip_palette",
 			"fromNode": "welcome",
 			"fromSide": "right",
 			"toNode": "tip_palette",
 			"toSide": "left"
 		},
 		{
-			"id": "e_action_vault",
+			"id": "e_welcome_tip_settings",
+			"fromNode": "welcome",
+			"fromSide": "right",
+			"toNode": "tip_settings",
+			"toSide": "left"
+		},
+		{
+			"id": "e_welcome_tip_right_click",
+			"fromNode": "welcome",
+			"fromSide": "right",
+			"toNode": "tip_right_click",
+			"toSide": "left"
+		},
+		{
+			"id": "e_welcome_tip_ai",
+			"fromNode": "welcome",
+			"fromSide": "right",
+			"toNode": "tip_ai",
+			"toSide": "left"
+		},
+		{
+			"id": "e_welcome_action_new",
+			"fromNode": "welcome",
+			"fromSide": "bottom",
+			"toNode": "action_new",
+			"toSide": "top"
+		},
+		{
+			"id": "e_welcome_action_open",
+			"fromNode": "welcome",
+			"fromSide": "bottom",
+			"toNode": "action_open",
+			"toSide": "top"
+		},
+		{
+			"id": "e_welcome_action_vault",
 			"fromNode": "welcome",
 			"fromSide": "left",
 			"toNode": "action_vault",
 			"toSide": "right"
+		},
+		{
+			"id": "e_action_vault_tip_canvas",
+			"fromNode": "action_vault",
+			"fromSide": "top",
+			"toNode": "tip_canvas",
+			"toSide": "bottom"
+		},
+		{
+			"id": "e_tip_summon_tip_summon_hotkey",
+			"fromNode": "tip_summon",
+			"fromSide": "right",
+			"toNode": "tip_summon_hotkey",
+			"toSide": "left"
+		},
+		{
+			"id": "e_tip_ai_tip_ai_provider",
+			"fromNode": "tip_ai",
+			"fromSide": "right",
+			"toNode": "tip_ai_provider",
+			"toSide": "left"
 		}
 	]
 }

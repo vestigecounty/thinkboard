@@ -398,6 +398,19 @@ impl Board<'_> {
                 },
                 None => self.theme.card_fill,
             };
+            // The welcome board's primary button (`tb_primary`): a soft ring in
+            // its own colour, so the first thing to do reads as first. A band
+            // outside the card rather than a fill behind it — a coloured card
+            // is translucent, and a fill would tint it.
+            if node.extra.get("tb_primary").and_then(serde_json::Value::as_bool) == Some(true)
+                && let Some(color) = accent
+            {
+                let spread = 5.0 * zoom;
+                frame.stroke(
+                    &rounded_path(expand_rect(rect, spread / 2.0), self.card_radius() + spread / 2.0),
+                    Stroke::default().with_color(Color { a: 0.14 * alpha, ..color }).with_width(spread),
+                );
+            }
             frame.fill(&card, Color { a: fill.a * alpha, ..fill });
 
             // A note, attachment or link card shows content that isn't in the
