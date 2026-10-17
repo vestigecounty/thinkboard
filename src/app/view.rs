@@ -141,43 +141,10 @@ impl App {
         camera
     }
 
-    pub(super) fn view(&self) -> Element<'_, Message> {
-        let camera = self.display_camera();
-        let content_alpha = if self.overlay {
-            camera::ease_out_cubic(self.reveal).clamp(0.0, 1.0)
-        } else {
-            1.0
-        };
-
-        // Bottom layer: the dim (overlay) or the theme's background (windowed).
-        // A fixed dark fill here left every theme's cards on the same neutral
-        // grey — Solarized's teal on charcoal — whatever the theme said its
-        // background was.
-        let backdrop_color = if self.overlay {
-            iced::Color {
-                a: self.config.overlay_dim * content_alpha,
-                ..iced::Color::BLACK
-            }
-        } else {
-            self.theme.background
-        };
-        let backdrop = container(Space::new().width(Fill).height(Fill))
-            .width(Fill)
-            .height(Fill)
-            .style(move |_| container::Style {
-                background: Some(backdrop_color.into()),
-                ..container::Style::default()
-            });
-
-        let shadow_layer = shader(shadows::ShadowLayer {
-            instances: self.shadow_instances(camera, content_alpha),
-        })
-        .width(Fill)
-        .height(Fill);
-
-        // Layered rather than a plain canvas: its geometries have to stack, or
-        // a card's fill can't cover the text of a card beneath it.
-        let board = layered(Board {
+    /// The board as `camera` shows it — what `view` draws, and what the tour
+    /// asks where a marker landed.
+    pub(super) fn board(&self, camera: camera::Camera) -> Board<'_> {
+        Board {
             nodes: &self.nodes,
             node_index: self
                 .nodes
@@ -246,7 +213,46 @@ impl App {
             ghost_fade: self.ghost_fade(),
             ghost_fade_in: self.ghost_fade_in(),
             ghost_hovered: self.ghosts.hovered,
-        });
+        }
+    }
+
+    pub(super) fn view(&self) -> Element<'_, Message> {
+        let camera = self.display_camera();
+        let content_alpha = if self.overlay {
+            camera::ease_out_cubic(self.reveal).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+
+        // Bottom layer: the dim (overlay) or the theme's background (windowed).
+        // A fixed dark fill here left every theme's cards on the same neutral
+        // grey — Solarized's teal on charcoal — whatever the theme said its
+        // background was.
+        let backdrop_color = if self.overlay {
+            iced::Color {
+                a: self.config.overlay_dim * content_alpha,
+                ..iced::Color::BLACK
+            }
+        } else {
+            self.theme.background
+        };
+        let backdrop = container(Space::new().width(Fill).height(Fill))
+            .width(Fill)
+            .height(Fill)
+            .style(move |_| container::Style {
+                background: Some(backdrop_color.into()),
+                ..container::Style::default()
+            });
+
+        let shadow_layer = shader(shadows::ShadowLayer {
+            instances: self.shadow_instances(camera, content_alpha),
+        })
+        .width(Fill)
+        .height(Fill);
+
+        // Layered rather than a plain canvas: its geometries have to stack, or
+        // a card's fill can't cover the text of a card beneath it.
+        let board = layered(self.board(camera));
 
         let mut layers = stack![backdrop, shadow_layer, board];
 

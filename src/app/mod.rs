@@ -246,7 +246,8 @@ pub(crate) enum Message {
     EndPan,
     CancelInertia,
     ZoomBy { factor: f32, cursor: Point },
-    /// Smooth-scroll the camera to center a world point (the wayfinding arrow).
+    /// Smooth-scroll the camera to center a world point (an off-screen
+    /// group's marker).
     FocusWorld(Point),
     /// A trackpad pinch step (macOS native gesture): `magnification` is the
     /// incremental delta; `(x, y)` is the event's window-space location
@@ -565,8 +566,8 @@ struct App {
     /// Text bitmaps for the nodes, and the ones warming up to replace them.
     rasters: Rasters,
     camera: Camera,
-    /// Top safe-area inset (px), refreshed on resize; passed to the board so the
-    /// top wayfinding button clears the macOS notch.
+    /// Top safe-area inset (px), refreshed on resize; passed to the board so a
+    /// marker on the top edge clears the macOS notch.
     top_safe_inset: f32,
     cache: board::SceneCache,
     inertia: Option<Inertia>,
@@ -1723,7 +1724,7 @@ impl App {
     }
 
     /// Smooth camera fly-to that centers `world` at the *current* zoom (a pure
-    /// scroll, no zoom change) — the wayfinding arrow's action.
+    /// scroll, no zoom change) — what clicking an off-screen group's marker does.
     fn focus_on_world(&mut self, world: Point) {
         self.inertia = None;
         self.camera_focus = Some(CameraFocus {

@@ -28,6 +28,7 @@ use super::geometry::{
     EdgeGeometry, bezier_distance, covers_any, cubic_bezier, stacking_planes, within_reach,
 };
 use super::layered::Stacked;
+use super::markers;
 use crate::document::IntoColor;
 use crate::model::{CanvasEdge, CanvasNode, EdgeEnd, NodeKind};
 use crate::theme::Theme as ColorTheme;
@@ -120,6 +121,43 @@ impl SceneCache {
 const PALETTE_CHORDS: &str = "⌘K or ⌘P";
 #[cfg(not(target_os = "macos"))]
 const PALETTE_CHORDS: &str = "Ctrl+K or Ctrl+P";
+/// An off-screen group of cards, as its marker needs it.
+struct Offscreen<'a> {
+    /// In world space: the camera flies to its middle.
+    bounds: Rectangle,
+    /// Its main card's text, as Markdown — what names it.
+    text: std::borrow::Cow<'a, str>,
+    /// The image card that stands for it, when one does.
+    image: Option<&'a str>,
+    cards: usize,
+}
+
+/// What a marker says, laid out.
+struct MarkerLabel {
+    rect: Rectangle,
+    title: String,
+    title_width: f32,
+    /// "5 cards", in the chip a hovered marker shows; `None` for the plain
+    /// name the nearest one shows.
+    count: Option<String>,
+}
+
+/// A marker's name, and the count beside it in its chip.
+const MARKER_TITLE_SIZE: f32 = 12.0;
+const MARKER_COUNT_SIZE: f32 = 11.5;
+/// The chip a hovered marker's name sits in: the find bar's surface, small.
+const CHIP_HEIGHT: f32 = 26.0;
+const CHIP_PAD_X: f32 = 9.0;
+const CHIP_GAP: f32 = 6.0;
+const CHIP_RADIUS: f32 = 7.0;
+
+/// How far `point` is from `rect`: 0 inside it.
+fn distance_to(rect: Rectangle, point: Point) -> f32 {
+    let dx = (rect.x - point.x).max(point.x - (rect.x + rect.width)).max(0.0);
+    let dy = (rect.y - point.y).max(point.y - (rect.y + rect.height)).max(0.0);
+    dx.hypot(dy)
+}
+
 /// What a Cmd/Ctrl chord does. Separated from the event so the table can be
 /// read — and tested — without a live board: which chords take Shift, and which
 /// need something selected, is the part that is easy to get subtly wrong.
@@ -549,8 +587,8 @@ pub struct Board<'a> {
     /// Node/card colors, optionally themed from an Obsidian `theme.css`.
     pub theme: &'a ColorTheme,
     pub camera: Camera,
-    /// Top safe-area inset (px) — the macOS notch / menu-bar height, so the
-    /// top wayfinding button isn't clipped. 0 off macOS or where there's none.
+    /// Top safe-area inset (px) — the macOS notch / menu-bar height, so a
+    /// marker on the top edge isn't hidden. 0 off macOS or where there's none.
     pub top_safe_inset: f32,
     pub cache: &'a SceneCache,
     pub editing: Option<usize>,
@@ -681,6 +719,9 @@ pub struct Interaction {
     /// `String` kept off the `Copy` `Kind`.
     action: Option<String>,
     reported_viewport: Option<Size>,
+    /// The off-screen group whose marker the cursor is over, by index — what
+    /// shows its name; see [`Board::offscreen`].
+    marker: Option<usize>,
 }
 
 /// A rubber-band selection in progress.
@@ -1171,7 +1212,9 @@ impl canvas::Program<Message> for Board<'_> {
                 let Some(position) = cursor.position_in(bounds) else {
                     return mouse::Interaction::default();
                 };
-                if self.show_clusters() {
+                if self.marker_at(position, state.marker).is_some() {
+                    mouse::Interaction::Pointer
+                } else if self.show_clusters() {
                     if self.cluster_at(self.camera.to_world(position)).is_some() {
                         mouse::Interaction::Grab
                     } else {
@@ -1225,7 +1268,7 @@ impl Stacked<Message> for Board<'_> {
         renderer: &Renderer,
         _theme: &Theme,
         bounds: Rectangle,
-        _cursor: mouse::Cursor,
+        cursor: mouse::Cursor,
     ) -> Vec<(Geometry, bool)> {
         // The backdrop (dim or dark fill) and the node shadows live in
         // stack layers below this canvas; only edges and nodes are drawn
@@ -1387,13 +1430,29 @@ impl Stacked<Message> for Board<'_> {
             geometries.push((overlay.into_geometry(), self.overlay_covers_cards()));
         }
 
-        // Wayfinding button when the viewport has drifted off all content. Its
-        // own geometry (not the overlay above, which is suppressed in cluster
-        // mode) so it shows regardless of zoom.
-        if let Some(target) = self.wayfinding_target() {
-            let mut wf = Frame::new(renderer, bounds.size());
-            self.draw_wayfinding(&mut wf, target);
-            geometries.push((wf.into_geometry(), false));
+        // Where the cards are, when none of them is on screen. Its own
+        // geometry (not the overlay above, which is suppressed in cluster
+        // mode) so it shows at any zoom.
+        if let Some(offscreen) = self.offscreen() {
+            // Hovered is what's under the cursor *now*: the camera can fly
+            // off with the cursor holding still, and the hover it left
+            // behind belongs to a dot somewhere else.
+            let hovered = cursor
+                .position_in(bounds)
+                .and_then(|position| self.marker_at(position, state.marker))
+                .map(|(group, _)| group);
+            let mut frame = Frame::new(renderer, bounds.size());
+            let mut chip = Frame::new(renderer, bounds.size());
+            self.draw_markers(&mut frame, &mut chip, &offscreen, hovered);
+            geometries.push((frame.into_geometry(), false));
+            // A layer of its own: canvas text is drawn above every fill in its
+            // layer, so a chip sharing one with the nearest group's name
+            // couldn't cover it, and the two names were drawn through each
+            // other. Paid only while a marker is hovered — on a board with
+            // nothing on screen.
+            if hovered.is_some() {
+                geometries.push((chip.into_geometry(), true));
+            }
         }
 
         // Its counterpart for a board with nothing to find: how to start one.
@@ -1424,11 +1483,9 @@ impl Board<'_> {
             mouse::Event::ButtonPressed(Button::Left) => {
                 let position = position?;
 
-                // The wayfinding button (only shown when no node is on-screen):
-                // fly the camera to the nearest node.
-                if let Some(target) = self.wayfinding_target()
-                    && self.wayfinding_button(target).0.contains(position)
-                {
+                // A marker (only shown when no card is on screen): fly the
+                // camera to its group.
+                if let Some((_, target)) = self.marker_at(position, state.marker) {
                     return Some(
                         canvas::Action::publish(Message::FocusWorld(target)).and_capture(),
                     );
@@ -1774,7 +1831,10 @@ impl Board<'_> {
                 }
             }
             mouse::Event::CursorMoved { .. } => {
-                let position = position?;
+                // Off the board, no marker is under it any more.
+                let Some(position) = position else {
+                    return state.marker.take().map(|_| canvas::Action::request_redraw());
+                };
                 // A rubber-band drag updates the selection live from the nodes
                 // its rectangle covers (unioned with the additive base).
                 if let Some(marquee) = &mut state.marquee {
@@ -1903,6 +1963,13 @@ impl Board<'_> {
                         Some(canvas::Action::request_redraw().and_capture())
                     }
                     Kind::Idle => {
+                        // A marker's name shows while it's hovered: board
+                        // state, drawn only by this board.
+                        let marker = self.marker_at(position, state.marker).map(|(group, _)| group);
+                        if marker != state.marker {
+                            state.marker = marker;
+                            return Some(canvas::Action::request_redraw());
+                        }
                         let over_ghost = !self.show_clusters()
                             && self.ghost_at(self.camera.to_world(position)).is_some();
                         let (hover, edge) = if self.show_clusters() || over_ghost {
@@ -2164,12 +2231,12 @@ impl Board<'_> {
             .collect()
     }
 
-    /// When the viewport shows no node at all — panned off into empty space —
-    /// the world center of the node nearest the viewport center. This is the
-    /// target for the wayfinding button; `None` when any node is on-screen or
-    /// there are none. Independent of zoom (a node counts as "on-screen" by its
-    /// position, so clustered-but-in-view content still suppresses it).
-    fn wayfinding_target(&self) -> Option<Point> {
+    /// When no card is on screen — panned off into empty space — the groups
+    /// of cards off it, and a marker on the window's edge toward each
+    /// (`canvas::markers`). `None` while any card is in view, and on a board
+    /// with none. A card counts as in view by its position whatever the zoom,
+    /// so a board zoomed out to its clusters isn't given markers for them.
+    fn offscreen(&self) -> Option<(Vec<Offscreen<'_>>, Vec<markers::Marker>)> {
         if self.nodes.is_empty() {
             return None;
         }
@@ -2182,42 +2249,109 @@ impl Board<'_> {
         if any_visible {
             return None;
         }
-        let target = self.camera.to_world(Point::ORIGIN + self.camera.center());
-        self.nodes
+        // The groups semantic zoom draws. Until the first clustering lands —
+        // and on a board of frames alone, which never cluster — each card is
+        // a group of one.
+        let groups: Vec<Offscreen<'_>> = if self.clusters.is_empty() {
+            self.nodes
+                .iter()
+                .map(|node| Offscreen {
+                    bounds: Rectangle::new(Point::new(node.x, node.y), Size::new(node.width, node.height)),
+                    text: match node.label() {
+                        Some(label) if node.is_group() => label.into(),
+                        _ => crate::document::cluster::summary_text(node).into(),
+                    },
+                    image: None,
+                    cards: 1,
+                })
+                .collect()
+        } else {
+            self.clusters
+                .iter()
+                .map(|cluster| Offscreen {
+                    bounds: cluster.bounds,
+                    text: cluster.text.as_str().into(),
+                    image: cluster.image_id.as_deref(),
+                    cards: cluster.members.len(),
+                })
+                .collect()
+        };
+        let eye = self.camera.to_world(Point::ORIGIN + self.camera.center());
+        let toward: Vec<(Point, f32)> = groups
             .iter()
-            .map(|n| Point::new(n.x + n.width / 2.0, n.y + n.height / 2.0))
-            .min_by(|a, b| {
-                a.distance(target)
-                    .partial_cmp(&b.distance(target))
-                    .unwrap_or(std::cmp::Ordering::Equal)
-            })
+            .map(|group| (self.camera.to_screen(group.bounds.center()), distance_to(group.bounds, eye)))
+            .collect();
+        let placed = markers::place(self.marker_view(), &toward);
+        Some((groups, placed))
     }
 
-    /// The wayfinding button's screen rect and the cardinal direction its
-    /// chevrons point (unit vector, one of ±x / ±y): a full-edge bar pinned to
-    /// whichever screen edge is closest to `target_world`. The top edge starts
-    /// below the safe-area inset so the macOS notch doesn't clip it.
-    fn wayfinding_button(&self, target_world: Point) -> (Rectangle, Vector) {
-        let origin = self.camera.to_world(Point::ORIGIN + self.camera.center());
-        let (dx, dy) = (target_world.x - origin.x, target_world.y - origin.y);
-        let dir = if dx.abs() >= dy.abs() {
-            Vector::new(dx.signum(), 0.0)
-        } else {
-            Vector::new(0.0, dy.signum())
-        };
-        let (w, h) = (self.camera.viewport.width, self.camera.viewport.height);
+    /// Where the markers are on screen, nearest first — for the tour, which
+    /// points at one as a hand would.
+    #[cfg(test)]
+    pub(crate) fn marker_points(&self) -> Vec<Point> {
+        self.offscreen().map(|(_, placed)| placed.iter().map(|marker| marker.at).collect()).unwrap_or_default()
+    }
+
+    /// The window as the markers see it: below the notch, which would hide a
+    /// dot on the top edge.
+    fn marker_view(&self) -> Rectangle {
         let top = self.top_safe_inset;
-        const THICK: f32 = 40.0;
-        let rect = if dir.x > 0.0 {
-            Rectangle::new(Point::new(w - THICK, top), Size::new(THICK, h - top))
-        } else if dir.x < 0.0 {
-            Rectangle::new(Point::new(0.0, top), Size::new(THICK, h - top))
-        } else if dir.y > 0.0 {
-            Rectangle::new(Point::new(0.0, h - THICK), Size::new(w, THICK))
-        } else {
-            Rectangle::new(Point::new(0.0, top), Size::new(w, THICK))
+        Rectangle::new(
+            Point::new(0.0, top),
+            Size::new(self.camera.viewport.width, (self.camera.viewport.height - top).max(0.0)),
+        )
+    }
+
+    /// The marker at `position`, as its group's index and the world point to
+    /// fly to: its dot, generously, or the label it's showing — the nearest
+    /// group's name, and the chip of the one `hovered`.
+    fn marker_at(&self, position: Point, hovered: Option<usize>) -> Option<(usize, Point)> {
+        let (groups, placed) = self.offscreen()?;
+        let hit = placed.iter().find(|marker| {
+            // A dot is small; the target around it isn't.
+            marker.at.distance(position) <= (marker.radius + markers::HALO).max(12.0)
+                || self
+                    .marker_label(marker, &groups[marker.group], hovered)
+                    .is_some_and(|label| label.rect.contains(position))
+        })?;
+        Some((hit.group, groups[hit.group].bounds.center()))
+    }
+
+    /// What a marker says, and where: while it's the one `hovered`, a chip
+    /// with its group's name and how many cards — the find bar's surface,
+    /// small; otherwise, for the nearest group, its name in plain text; and
+    /// nothing for the rest. The nearest's name stays while another is
+    /// hovered: hidden then, it blinked on and off with every dot the cursor
+    /// crossed on its way along the edge.
+    fn marker_label(&self, marker: &markers::Marker, group: &Offscreen<'_>, hovered: Option<usize>) -> Option<MarkerLabel> {
+        let chip = hovered == Some(marker.group);
+        if !chip && !marker.nearest {
+            return None;
+        }
+        let title = match (group.image, markers::title(&group.text)) {
+            (_, title) if !title.is_empty() => title,
+            // A group summed up by an image is named by its file.
+            (Some(id), _) => self
+                .nodes
+                .iter()
+                .find(|node| node.id == id)
+                .and_then(|node| node.file_title())
+                .unwrap_or_else(|| "Image".to_owned()),
+            (None, _) => "Untitled".to_owned(),
         };
-        (rect, dir)
+        let width = |text: &str, size: f32| {
+            crate::text_raster::measure(text, 100_000.0, size, 1.0, self.theme.font_text, self.theme.font_features).0
+        };
+        let title_width = width(&title, MARKER_TITLE_SIZE);
+        let (size, count) = if chip {
+            let count = format!("{} card{}", group.cards, if group.cards == 1 { "" } else { "s" });
+            let count_width = width(&count, MARKER_COUNT_SIZE);
+            let chip = CHIP_PAD_X + title_width + CHIP_GAP + count_width + CHIP_PAD_X;
+            (Size::new(chip, CHIP_HEIGHT), Some(count))
+        } else {
+            (Size::new(title_width, MARKER_TITLE_SIZE * crate::text_raster::LINE_HEIGHT), None)
+        };
+        Some(MarkerLabel { rect: markers::label_box(self.marker_view(), marker, size), title, title_width, count })
     }
 
     /// What a new, empty board says in its middle: how to put the first card on
@@ -2257,59 +2391,70 @@ impl Board<'_> {
         });
     }
 
-    /// The wayfinding button: a soft, theme-colored edge bar (node card color,
-    /// node corner radius on the inner corners, no border) with a double chevron
-    /// (`<<` / `>>` / `^^` / `vv`) pointing toward the nearest node.
-    fn draw_wayfinding(&self, frame: &mut Frame, target_world: Point) {
-        let (rect, dir) = self.wayfinding_button(target_world);
+    /// The markers: a dot per off-screen group in the accent, the nearest
+    /// ringed and named, and in `chips`, drawn over them, the one `hovered`
+    /// named in a chip.
+    fn draw_markers(
+        &self,
+        frame: &mut Frame,
+        chips: &mut Frame,
+        (groups, placed): &(Vec<Offscreen<'_>>, Vec<markers::Marker>),
+        hovered: Option<usize>,
+    ) {
         let a = self.reveal;
-        let card = self.theme.card_fill;
-        let center = rect.center();
-        let perp = Vector::new(-dir.y, dir.x);
-
-        // Soft gradient across the bar in the theme's card color: transparent at
-        // the inner edge, solid at the screen edge it hugs.
-        let half = (rect.width * dir.x.abs() + rect.height * dir.y.abs()) / 2.0;
-        let fill = gradient::Linear::new(center - dir * half, center + dir * half)
-            .add_stop(0.0, Color { a: 0.0, ..card })
-            .add_stop(1.0, Color { a: 0.92 * a, ..card });
-
-        // Node corner radius (12px), rounded only on the two inner corners so the
-        // bar sits flush against its screen edge.
-        const R: f32 = 12.0;
-        let radius = if dir.x > 0.0 {
-            Radius { top_left: R, bottom_left: R, top_right: 0.0, bottom_right: 0.0 }
-        } else if dir.x < 0.0 {
-            Radius { top_right: R, bottom_right: R, top_left: 0.0, bottom_left: 0.0 }
-        } else if dir.y > 0.0 {
-            Radius { top_left: R, top_right: R, bottom_left: 0.0, bottom_right: 0.0 }
-        } else {
-            Radius { bottom_left: R, bottom_right: R, top_left: 0.0, top_right: 0.0 }
-        };
-        frame.fill(
-            &Path::rounded_rectangle(rect.position(), rect.size(), radius),
-            fill,
-        );
-
-        // Two chevrons in the theme text color, toward the solid (edge) side.
-        let base = center + dir * (half * 0.3);
-        let chevron = |frame: &mut Frame, c: Point| {
-            let path = Path::new(|p| {
-                p.move_to(c - dir * 3.0 + perp * 7.0);
-                p.line_to(c + dir * 5.0);
-                p.line_to(c - dir * 3.0 - perp * 7.0);
-            });
-            frame.stroke(
-                &path,
-                Stroke::default()
-                    .with_color(Color { a: 0.9 * a, ..self.theme.text })
-                    .with_width(2.2)
-                    .with_line_cap(stroke::LineCap::Round)
-                    .with_line_join(stroke::LineJoin::Round),
-            );
-        };
-        chevron(frame, base - dir * 4.5);
-        chevron(frame, base + dir * 4.5);
+        let accent = self.theme.accent;
+        // Farthest first, so a nearer dot — and the nearest's ring — is drawn
+        // over any it touches.
+        for marker in placed.iter().rev() {
+            if marker.nearest {
+                frame.fill(&Path::circle(marker.at, marker.radius + markers::HALO), Color { a: 0.18 * a, ..accent });
+            }
+            let alpha = if hovered == Some(marker.group) { 1.0 } else { marker.alpha };
+            frame.fill(&Path::circle(marker.at, marker.radius), Color { a: alpha * a, ..accent });
+        }
+        for marker in placed {
+            let Some(label) = self.marker_label(marker, &groups[marker.group], hovered) else {
+                continue;
+            };
+            let text = |frame: &mut Frame, content: String, x: f32, size: f32, color: Color| {
+                frame.fill_text(canvas::Text {
+                    content,
+                    position: Point::new(x, label.rect.center_y()),
+                    color,
+                    size: size.into(),
+                    font: self.theme.ui_font(),
+                    align_x: TextAlignment::Left,
+                    align_y: Vertical::Center,
+                    ..canvas::Text::default()
+                });
+            };
+            let Some(count) = label.count else {
+                // Plain, a step back from the cards' own text: it labels the
+                // edge, not the board.
+                text(frame, label.title, label.rect.x, MARKER_TITLE_SIZE, Color { a: 0.85 * a, ..self.theme.text });
+                continue;
+            };
+            let frame = &mut *chips;
+            let rect = label.rect;
+            let radius: Radius = CHIP_RADIUS.into();
+            // A soft shadow in two steps — a canvas fill has none of its own.
+            for (spread, alpha) in [(4.0, 0.12), (2.0, 0.22)] {
+                frame.fill(
+                    &Path::rounded_rectangle(
+                        Point::new(rect.x - spread, rect.y - spread + 4.0),
+                        Size::new(rect.width + 2.0 * spread, rect.height + 2.0 * spread),
+                        (CHIP_RADIUS + spread).into(),
+                    ),
+                    Color { a: alpha * a, ..Color::BLACK },
+                );
+            }
+            let chip = Path::rounded_rectangle(rect.position(), rect.size(), radius);
+            frame.fill(&chip, Color { a, ..self.theme.elevated() });
+            frame.stroke(&chip, Stroke::default().with_color(Color { a: 0.10 * a, ..self.theme.text }).with_width(1.0));
+            let x = rect.x + CHIP_PAD_X;
+            text(frame, label.title, x, MARKER_TITLE_SIZE, Color { a, ..self.theme.text });
+            text(frame, count, x + label.title_width + CHIP_GAP, MARKER_COUNT_SIZE, Color { a, ..self.theme.text_muted });
+        }
     }
 
     /// Topmost cluster whose box contains the given world point.

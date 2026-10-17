@@ -621,6 +621,25 @@ tab is now kept for the session.
 The tour's `settings_window` renders the window host instead of the board's;
 the `settings` scene visits every tab in both.
 
+## When nothing is on screen
+
+**Panned off every card, the window's edge points back** (`canvas::markers`):
+a dot toward each group of cards — the groups semantic zoom draws, so the two
+agree on what a group is — larger and more solid the nearer it is, the nearest
+ringed and named in plain text, any other named in a chip while it's hovered.
+The chip takes a renderer layer of its own (only while one is up), because text
+is drawn above every fill in its layer and the two names showed through each
+other; hiding the nearest's name instead made it blink with every dot the
+cursor crossed. A click flies there (`FocusWorld`) at the zoom you're at. It replaced a bar along
+one edge that said only *that way* — not what was there, nor that anything was
+anywhere else.
+
+Dots closer than two click targets are dropped for the nearer group's, and
+there are at most sixteen: past that the edge is a dotted line. Which marker is
+hovered is checked against the cursor when it's drawn, not taken from the last
+mouse move — a fly-to moves the camera under a cursor that's holding still, and
+the hover it left behind belongs to a dot somewhere else.
+
 ## The board by keyboard
 
 Without the mouse, a card can be reached, edited, linked, moved, coloured and

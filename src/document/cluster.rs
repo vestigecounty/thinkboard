@@ -89,7 +89,7 @@ pub fn compute(nodes: &[CanvasNode], edges: &[CanvasEdge], theme: &Theme) -> Clu
 /// The text a cluster card shows for its main card: the card's own text for a
 /// text card, and the file title / URL for the kinds whose content isn't in
 /// the document.
-fn summary_text(node: &CanvasNode) -> String {
+pub(crate) fn summary_text(node: &CanvasNode) -> String {
     match node.node_kind() {
         NodeKind::Note | NodeKind::Attachment => node.file_title().unwrap_or_default(),
         NodeKind::Link => node.url().unwrap_or_default().to_owned(),

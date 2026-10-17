@@ -1113,6 +1113,40 @@ fn empty_document(_: &ColorTheme) -> CanvasDocument {
     CanvasDocument { nodes: Vec::new(), edges: Vec::new(), extra: serde_json::Map::new() }
 }
 
+/// Panned off into empty space: a marker on the window's edge toward each
+/// group of cards — the nearest named, the rest smaller and fainter — the
+/// name of another while it's hovered, and a click on it that flies there.
+fn offscreen() {
+    let mut tour = Tour::new("offscreen", first_launch(sample_board));
+    // Past the board's top-right corner — far enough at the fitted zoom the
+    // board opens at that none of it is in view: groups to the left and
+    // below, near and far.
+    tour.send(Message::FocusWorld(Point::new(4600.0, -2000.0)));
+    tour.shot("past-the-corner");
+    let points = tour.app.board(tour.app.camera).marker_points();
+    assert!(points.len() > 1, "a marker for more than one group");
+    // The farthest's name, on hover.
+    let far = *points.last().expect("markers");
+    tour.move_to(far);
+    tour.shot("hovering-a-far-one");
+    // A sweep along the edge, across dots and the gaps between them: a chip
+    // comes and goes with each dot, and the nearest group's name holds still
+    // under it — hidden while any dot was hovered, it blinked with each.
+    let region = Rectangle::new(Point::new(0.0, 760.0), Size::new(560.0, 140.0));
+    let mut sweep = tour.strip("sweep", region);
+    let start = points[0];
+    for step in 0..10 {
+        tour.move_to(Point::new(start.x + step as f32 * 8.0, start.y));
+        tour.frame(&mut sweep, &format!("x + {}", step * 8));
+    }
+    tour.save(sweep, 2);
+    tour.click(far);
+    tour.shot("flown-there");
+    // Below the board, looking up at all of it.
+    tour.send(Message::FocusWorld(Point::new(900.0, 5200.0)));
+    tour.shot("below");
+}
+
 /// A board with some life in it: eight topics, each a card linked to a
 /// handful of its own, laid out in blocks — enough to cluster when zoomed out
 /// and to have something on every side when panned.
@@ -2710,6 +2744,7 @@ const SCENES: &[(&str, fn())] = &[
     ("undo_and_clipboard", undo_and_clipboard),
     ("long_cards", long_cards),
     ("keyboard_only", keyboard_only),
+    ("offscreen", offscreen),
     ("small_windows", small_windows),
 ];
 
