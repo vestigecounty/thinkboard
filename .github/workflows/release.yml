@@ -79,6 +79,10 @@ jobs:
           cp assets/thinkboard.svg assets/thinkboard.png "$STAGE/"
           cp README* LICENSE* "$STAGE/" 2>/dev/null || true
           tar -C "$PWD" -czf "dist/${STAGE}.tar.gz" "$STAGE"
+          # And under a name that's the same every release, which
+          # `releases/latest/download/<name>` always finds: the website's
+          # download links, which then never need the version.
+          cp "dist/${STAGE}.tar.gz" dist/thinkboard-linux-x86_64.tar.gz
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -91,6 +95,8 @@ jobs:
           cp README* LICENSE* "$STAGE/" 2>/dev/null || true
           # 7-Zip ships on the Windows runners.
           7z a "dist/${STAGE}.zip" "./${STAGE}" >/dev/null
+          # A name that's the same every release — see the Linux step.
+          cp "dist/${STAGE}.zip" dist/thinkboard-windows-x86_64.zip
 
       - name: Package (macOS universal .app)
         if: runner.os == 'macOS'
@@ -128,6 +134,8 @@ jobs:
           mkdir -p dist
           # `ditto` produces a Finder-friendly zip that preserves the bundle.
           ditto -c -k --sequesterRsrc --keepParent "$APP" "dist/thinkboard-${VERSION}-macos-universal.zip"
+          # A name that's the same every release — see the Linux step.
+          cp "dist/thinkboard-${VERSION}-macos-universal.zip" dist/thinkboard-macos-universal.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
