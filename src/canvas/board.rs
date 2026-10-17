@@ -113,11 +113,13 @@ impl SceneCache {
     }
 }
 
-/// The command palette's chord, as the empty board's hint prints it.
+/// The command palette's chords, as the empty board's hint prints them —
+/// Cmd on macOS and Ctrl elsewhere, as [`chord`] reads them. ⌘⇧P works too,
+/// for VS Code's habit, but two is as many as a hint should name.
 #[cfg(target_os = "macos")]
-const PALETTE_CHORD: &str = "⌘⇧P";
+const PALETTE_CHORDS: &str = "⌘K or ⌘P";
 #[cfg(not(target_os = "macos"))]
-const PALETTE_CHORD: &str = "Ctrl+Shift+P";
+const PALETTE_CHORDS: &str = "Ctrl+K or Ctrl+P";
 /// What a Cmd/Ctrl chord does. Separated from the event so the table can be
 /// read — and tested — without a live board: which chords take Shift, and which
 /// need something selected, is the part that is easy to get subtly wrong.
@@ -149,8 +151,11 @@ fn chord(letter: char, shift: bool, has_selection: bool) -> Option<Chord> {
         ('c', _) if has_selection => Chord::Copy,
         ('v', _) => Chord::Paste,
         ('f', _) => Chord::Find,
-        // The command palette, on the Sublime/Zed chord.
-        ('p', true) => Chord::Palette,
+        // The command palette, on every chord someone arrives with: ⌘P from
+        // Obsidian, ⌘K from the web's command menus, ⌘⇧P from Sublime and VS
+        // Code. Board only, as every chord here is — in a note, ⌘K is the
+        // editor's to make a link with, as it is in Obsidian.
+        ('p', _) | ('k', false) => Chord::Palette,
         // Switch boards: the vault browser where a vault is configured, the
         // ordinary open dialog where one isn't.
         ('o', false) => Chord::SwitchCanvas,
@@ -2206,7 +2211,7 @@ impl Board<'_> {
             ..canvas::Text::default()
         });
         frame.fill_text(canvas::Text {
-            content: format!("{PALETTE_CHORD} for every command"),
+            content: format!("{PALETTE_CHORDS} to show commands"),
             position: Point::new(center.x, center.y + 14.0),
             color: Color { a: 0.7 * a, ..self.theme.text_muted },
             size: 13.0.into(),
@@ -4868,9 +4873,12 @@ mod chord_tests {
         assert_eq!(chord('z', false, false), Some(Chord::Undo));
         assert_eq!(chord('z', true, false), Some(Chord::Redo));
 
-        // The palette wants Shift; plain Cmd+P is not ours to take.
+        // The palette on Cmd+P and Cmd+K, and on Cmd+Shift+P as before; only
+        // Cmd+Shift+K is left alone.
+        assert_eq!(chord('p', false, false), Some(Chord::Palette));
+        assert_eq!(chord('k', false, false), Some(Chord::Palette));
         assert_eq!(chord('p', true, false), Some(Chord::Palette));
-        assert_eq!(chord('p', false, false), None);
+        assert_eq!(chord('k', true, false), None);
 
         // Cmd+O switches boards, and Cmd+Shift+O is left alone.
         assert_eq!(chord('o', false, false), Some(Chord::SwitchCanvas));

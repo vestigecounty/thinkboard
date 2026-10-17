@@ -376,7 +376,7 @@ pub(crate) enum Message {
     SearchPrev,
     /// Close the find bar (Esc / ×).
     CloseSearch,
-    /// Command palette (Cmd/Ctrl+Shift+P): open it, run a clicked command, or
+    /// Command palette (Cmd/Ctrl+K or +P): open it, run a clicked command, or
     /// run the highlighted one (Enter). Filtering and moving the selection are
     /// [`Message::PanelInput`] and [`Message::PanelNav`], as in every panel.
     OpenCommandPalette,
@@ -607,7 +607,7 @@ struct App {
     settings_custom_ai: bool,
     /// The in-board find (Cmd/Ctrl+F), while its bar is open. `None` = closed.
     search: Option<Search>,
-    /// The command palette (Cmd/Ctrl+Shift+P), when open. Mutually exclusive
+    /// The command palette (Cmd/Ctrl+K or +P), when open. Mutually exclusive
     /// with the find bar.
     command_palette: Option<picker::State>,
     /// The vault browser (Cmd/Ctrl+O), when open. Shares the palette's shell

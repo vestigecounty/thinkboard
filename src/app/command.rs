@@ -1,4 +1,4 @@
-//! The command palette (Cmd/Ctrl+Shift+P): a fuzzy text search over every
+//! The command palette (Cmd/Ctrl+K or +P): a fuzzy text search over every
 //! action, modeled on the find bar. Actions are modeled as a [`CommandId`]
 //! (not a stored `Message`) so dispatch — and the few commands that need a
 //! target position — live in one place (`App::run_command`).

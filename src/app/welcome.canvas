@@ -92,7 +92,7 @@
 			"y": -625,
 			"width": 392,
 			"height": 90,
-			"text": "Press **Cmd/Ctrl+Shift+P** for the command palette \u2014 every action, searchable: switch board, change theme or font, auto-layout, group."
+			"text": "**Cmd/Ctrl+K** or **Cmd/Ctrl+P** opens the command palette \u2014 every action, searchable: switch board, change theme or font, auto-layout, group."
 		},
 		{
 			"id": "action_vault",

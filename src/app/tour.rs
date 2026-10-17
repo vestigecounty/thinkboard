@@ -1204,7 +1204,8 @@ fn first_run() {
     tour.shot("context-menu-empty");
     tour.named(key::Named::Escape);
 
-    tour.chord(Modifiers::COMMAND | Modifiers::SHIFT, "p");
+    // The chord the welcome board names first.
+    tour.chord(Modifiers::COMMAND, "k");
     tour.shot("command-palette");
     tour.type_text("theme");
     tour.shot("command-palette-filtered");

@@ -32,7 +32,7 @@ in your vault.
 - **Drag from a note's edge** (the little dot) onto another note to connect them.
 - **Right-click** a note for actions (Ask AI, color…), or right-click empty space for canvas options like Auto-layout.
 - **Cmd/Ctrl+O** switches boards: pick your vault once (**Settings → Vault**, or "Open vault…" in the command palette) and it lists every canvas in it. Without a vault it's the ordinary open dialog.
-- **Cmd/Ctrl+Shift+P** opens the command palette; **Cmd/Ctrl+F** finds text on the board.
+- **Cmd/Ctrl+K** or **Cmd/Ctrl+P** opens the command palette; **Cmd/Ctrl+F** finds text on the board.
 - **"Change theme"** in the palette lists every theme — arrow through them and the board changes under the panel; Enter keeps one, Esc puts back what you had.
 - Open or create boards — and reach **Settings** — from the tray icon.
 
