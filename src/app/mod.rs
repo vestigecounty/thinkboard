@@ -431,6 +431,9 @@ pub(crate) enum Message {
     VaultChosen(Option<PathBuf>),
     /// Settings as an in-board modal (from the command palette): open / close.
     OpenSettingsOverlay,
+    /// The in-board settings, on `field`'s tab with its row focused — a
+    /// setting found in the palette that's set in the form.
+    OpenSettingsAt(settings::Field),
     CloseSettingsOverlay,
     /// Swallow a click (e.g. on the settings modal panel) so it doesn't fall
     /// through to the backdrop.
@@ -443,6 +446,8 @@ pub(crate) enum Message {
     Settings(settings::Msg),
     /// A "Browse…" file dialog resolved (a path, or `None` if cancelled).
     SettingsBrowsed(settings::Field, Option<PathBuf>),
+    /// The settings' file dialog, once the overlay is out of its way.
+    SettingsBrowseDialog(settings::Field),
     /// An overlay background tile's picture, prepared (PNG), or `None` if it
     /// couldn't be read.
     BackdropPreview(platform::BackdropPicture, Option<Vec<u8>>),
@@ -594,6 +599,9 @@ struct App {
     settings_focus: Option<settings::Field>,
     /// The overlay background tiles' pictures, asked for once per launch.
     backdrop_previews: Vec<(platform::BackdropPicture, settings::Preview)>,
+    /// The overlay was put away for a settings file dialog, and comes back
+    /// with its answer.
+    settings_dialog_hid_overlay: bool,
     /// "Custom" was picked as the AI provider and no URL typed yet — which the
     /// config alone can't say, an empty URL being "Off".
     settings_custom_ai: bool,
@@ -878,6 +886,7 @@ impl App {
             settings_tab: settings::Tab::default(),
             settings_focus: None,
             backdrop_previews: Vec::new(),
+            settings_dialog_hid_overlay: false,
             settings_custom_ai: false,
             search: None,
             command_palette: None,
@@ -1307,7 +1316,7 @@ impl App {
                 let id = self
                     .command_palette
                     .as_ref()
-                    .and_then(|p| command::filtered(&p.query).get(p.selected).map(|c| c.id));
+                    .and_then(|p| command::filtered(self, &p.query).get(p.selected).map(|entry| entry.id));
                 if let Some(id) = id
                     && id.is_enabled(self)
                 {
@@ -1350,6 +1359,7 @@ impl App {
                 self.cache.clear();
                 return self.open_settings_form();
             }
+            Message::OpenSettingsAt(field) => return self.open_settings_at(field),
             Message::CloseSettingsOverlay => {
                 // Whatever was typed and not yet submitted, as closing the
                 // window keeps it.
@@ -1371,6 +1381,7 @@ impl App {
             Message::Settings(msg) => return self.apply_setting(msg),
             Message::BackdropPreview(picture, png) => self.backdrop_previewed(picture, png),
             Message::SettingsBrowsed(field, path) => return self.settings_browsed(field, path),
+            Message::SettingsBrowseDialog(field) => return self.browse_dialog(field),
             Message::RecordHotkey => self.hotkey_recording = true,
             Message::HotkeyCaptured(key, physical, modifiers) => {
                 self.capture_hotkey(key, physical, modifiers);
@@ -1568,7 +1579,7 @@ impl App {
         use picker::Panel;
         let query = |state: Option<&picker::State>| state.map(|s| s.query.clone()).unwrap_or_default();
         match panel {
-            Panel::Command => command::filtered(&query(self.command_palette.as_ref())).len(),
+            Panel::Command => command::filtered(self, &query(self.command_palette.as_ref())).len(),
             Panel::Vault => self.vault_matches(&query(self.vault_browser.as_ref())).len(),
             Panel::Theme => {
                 self.theme_matches(&query(self.theme_picker.as_ref().map(|p| &p.state))).len()
@@ -2120,8 +2131,14 @@ impl App {
     /// action as its `Message`. Position-needing commands (paste, add node)
     /// target the viewport center.
     fn run_command(&mut self, id: command::CommandId) -> Task<Message> {
-        use command::CommandId;
         self.command_palette = None;
+        self.command_message(id).map_or_else(Task::none, Task::done)
+    }
+
+    /// What running command `id` sends — apart from `run_command` so a test
+    /// can apply it, where a returned task would be dropped.
+    pub(super) fn command_message(&self, id: command::CommandId) -> Option<Message> {
+        use command::CommandId;
         let center = self.camera.to_world(Point::ORIGIN + self.camera.center());
         let message = match id {
             CommandId::NewBoard => Message::CanvasAction("new_board".to_owned()),
@@ -2146,20 +2163,17 @@ impl App {
             CommandId::AskAi => Message::AskAi,
             CommandId::Distribute => Message::AutoLayout(self.config_layout_dir()),
             CommandId::GroupSelection => Message::GroupSelection,
-            CommandId::ToggleAutoLayout => Message::ToggleAutoLayout,
-            CommandId::ToggleSetting(field) => {
+            CommandId::Setting(field) if field.kind() == settings::Kind::Switch => {
                 Message::Settings(settings::Msg::Toggle(field, !self.setting_bool(field)))
             }
+            CommandId::Setting(field) => Message::OpenSettingsAt(field),
+            CommandId::Choice(field, at) => Message::Settings(self.choices(field).into_iter().nth(usize::from(at))?.msg),
             CommandId::FitBoard => Message::FitBoard,
             CommandId::EditNote => Message::EditSelected,
             CommandId::AddLinkedNote => Message::AddLinkedNote,
             CommandId::Colour(code) => Message::SetNodeColor(code.map(str::to_owned)),
-            CommandId::NextOverlayBackdrop => {
-                let next = config::OverlayBackdrop::of(&self.config).next();
-                Message::Settings(settings::Msg::Pick(settings::Field::OverlayBackdrop, next.label().to_owned()))
-            }
         };
-        Task::done(message)
+        Some(message)
     }
 
     // --- Overlay lifecycle ---

@@ -1998,6 +1998,99 @@ fn a_theme_picked_from_the_form_is_drawn_over_it_and_closes_with_it() {
     assert!(app.font_picker.is_none());
 }
 
+/// Runs a palette command as choosing it does — what it sends, sent.
+fn run(app: &mut App, id: command::CommandId) {
+    let message = app.command_message(id).expect("a command that runs");
+    send(app, message);
+}
+
+#[test]
+fn the_palette_finds_a_settings_choice_and_applies_it() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    let hits = command::filtered(&app, "mermaid");
+    let first = hits.first().expect("a hit");
+    assert_eq!(first.title, "Link style › Mermaid");
+    assert_eq!(first.detail, "", "not the one in force yet");
+    run(&mut app, first.id);
+    assert_eq!(crate::config::LinkStyle::of(&app.config), crate::config::LinkStyle::Mermaid);
+
+    // Searched by the setting, every choice is there, the one in force marked.
+    let hits = command::filtered(&app, "link style");
+    let marked: Vec<&str> =
+        hits.iter().filter(|entry| entry.detail == "current").map(|entry| entry.title.as_ref()).collect();
+    assert_eq!(marked, ["Link style › Mermaid"]);
+}
+
+#[test]
+fn the_palette_flips_a_switch_and_opens_the_form_at_anything_else() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    // A switch says its state, and flips.
+    let scrollbars = command::filtered(&app, "card scrollbars").into_iter().next().expect("a hit");
+    assert_eq!((scrollbars.title.as_ref(), scrollbars.detail.as_ref()), ("Card scrollbars", "Off"));
+    run(&mut app, scrollbars.id);
+    assert!(app.config.node_scrollbars);
+
+    // A number is set in the form: it opens there, on its tab, its row focused.
+    let inertia = command::filtered(&app, "pan inertia").into_iter().next().expect("a hit");
+    assert_eq!(inertia.detail, "Canvas");
+    run(&mut app, inertia.id);
+    assert!(app.settings_overlay);
+    assert_eq!(app.settings_tab, settings::Tab::Canvas);
+    assert_eq!(app.settings_focus, Some(settings::Field::PanInertia));
+}
+
+#[test]
+fn settings_join_a_search_not_the_bare_palette() {
+    let app = app_with(two_nodes(), Vec::new());
+    // Nothing typed: the commands, as a list to browse.
+    assert!(command::filtered(&app, "").iter().all(|entry| !matches!(
+        entry.id,
+        command::CommandId::Setting(_) | command::CommandId::Choice(..)
+    )));
+    // A setting that can't act yet says what would let it.
+    let mut app = app;
+    app.config.ai_url.clear();
+    let thinking = command::filtered(&app, "think first").into_iter().next().expect("a hit");
+    assert!(thinking.id.unavailable(&app).is_some_and(|why| why.contains("AI provider")));
+}
+
+#[test]
+fn a_settings_file_dialog_puts_the_overlay_away_and_brings_it_back() {
+    // The overlay floats above every window: a dialog opened over it came up
+    // behind the board, out of reach.
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.overlay = true;
+    app.phase = Phase::Running;
+    send(&mut app, Message::OpenSettingsOverlay);
+    send(&mut app, Message::Settings(settings::Msg::Browse(settings::Field::OverlayImage)));
+    assert!(matches!(app.phase, Phase::Hidden), "put away for the dialog");
+    assert!(app.settings_overlay, "the form is still there to come back to");
+    // The answer — a cancel, here — is what brings it back.
+    send(&mut app, Message::SettingsBrowsed(settings::Field::OverlayImage, None));
+    assert!(!app.settings_dialog_hid_overlay, "and only once");
+}
+
+#[test]
+fn the_image_background_is_chosen_by_its_picture() {
+    use crate::config::OverlayBackdrop;
+    // With the overlay up, so asking puts it away rather than opening a real
+    // dialog under the test.
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.overlay = true;
+    app.phase = Phase::Running;
+    // No picture yet: the tile asks for one, and changes nothing until it has it.
+    send(&mut app, Message::Settings(settings::Msg::Backdrop(OverlayBackdrop::Image)));
+    assert_eq!(OverlayBackdrop::of(&app.config), OverlayBackdrop::Transparent);
+    send(&mut app, Message::SettingsBrowsed(settings::Field::OverlayImage, None));
+    assert_eq!(OverlayBackdrop::of(&app.config), OverlayBackdrop::Transparent, "a cancel keeps what was there");
+    // A picture chosen chooses the image background.
+    app.phase = Phase::Running;
+    send(&mut app, Message::Settings(settings::Msg::Backdrop(OverlayBackdrop::Image)));
+    send(&mut app, Message::SettingsBrowsed(settings::Field::OverlayImage, Some(PathBuf::from("/pictures/dunes.jpg"))));
+    assert_eq!(OverlayBackdrop::of(&app.config), OverlayBackdrop::Image);
+    assert_eq!(app.config.overlay_image, "/pictures/dunes.jpg");
+}
+
 #[test]
 fn a_greyed_command_says_what_would_let_it_run() {
     use command::CommandId::AskAi;

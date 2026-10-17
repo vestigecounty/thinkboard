@@ -200,6 +200,253 @@ pub(crate) enum Preview {
     Missing,
 }
 
+/// What kind of control a setting is — which is what its palette entries do.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Kind {
+    /// On or off: one entry, which flips it.
+    Switch,
+    /// One of a few: an entry per choice, `Setting › Choice`, applied as it's
+    /// picked.
+    Choice,
+    /// Its own picker — the theme, the font, the model — opened by a command of
+    /// its own, so not indexed again.
+    Picker,
+    /// Set in the form itself — a number, a path, a key: one entry, which
+    /// opens the form at its row.
+    Row,
+}
+
+/// One choice of a [`Kind::Choice`] setting, as the palette offers it.
+pub(crate) struct Choice {
+    pub label: String,
+    /// What choosing it sends.
+    pub msg: Msg,
+    /// Whether it's the one in force.
+    pub current: bool,
+    /// Terms it's found by but doesn't show.
+    pub keywords: &'static str,
+}
+
+/// The settings index: every row the form draws, tab by tab, in the order it
+/// draws them. **The form takes its labels from here too** ([`Field::label`]),
+/// and the palette searches it — one list, so the two can't drift apart, as
+/// the palette's own "Toggle center node text" had from the form's "Center
+/// plain text".
+pub(crate) fn index() -> Vec<Field> {
+    use Field::*;
+    let mut fields = vec![SummonHotkey];
+    if cfg!(target_os = "macos") {
+        fields.push(SummonGesture);
+    }
+    fields.extend([Vault, DismissOnBackgroundClick, DoubleClickAddsNote]);
+    if cfg!(target_os = "macos") {
+        fields.push(PersistAcrossSpaces);
+    }
+    fields.extend([OverlayDim, Windowed, Theme, Font, OverlayBackdrop]);
+    if cfg!(target_os = "macos") {
+        fields.push(TrayIconMonochrome);
+    }
+    fields.extend([
+        LinkStyle, ArrowTip, CenterNodeText, NodeScrollbars, ColoredCardOpacity, MaxNodeWidth,
+        SnapToGrid, AutoLayout, AutoLayoutDirection, ZoomSpeed, PanInertia,
+        AiProvider, AiUrl, AiModel, AiApiKey, AiNodeColor, AiThinking,
+        RasterizeText, ClusterZoom, AnimationScale, ThemeCss, Canvas,
+    ]);
+    fields
+}
+
+impl Field {
+    /// What the form's row says.
+    pub(crate) fn label(self) -> &'static str {
+        match self {
+            Field::SummonHotkey => "Summon hotkey",
+            Field::SummonGesture => "Four-finger swipe down",
+            Field::Vault => "Obsidian vault",
+            Field::DismissOnBackgroundClick => "Click empty space to dismiss",
+            Field::DoubleClickAddsNote => "Double-click to add a note",
+            Field::PersistAcrossSpaces => "Stay up across Spaces",
+            Field::OverlayDim => "Dim behind board",
+            Field::Windowed => "Run as a normal window",
+            Field::Theme => "Theme",
+            Field::Font => "Font",
+            Field::OverlayBackdrop => "Overlay background",
+            Field::OverlayImage => "Overlay image",
+            Field::TrayIconMonochrome => "Monochrome menu bar icon",
+            Field::LinkStyle => "Link style",
+            Field::ArrowTip => "Arrow tips",
+            Field::CenterNodeText => "Center plain text",
+            Field::NodeScrollbars => "Card scrollbars",
+            Field::ColoredCardOpacity => "Colored card opacity",
+            Field::MaxNodeWidth => "Card grows to",
+            Field::SnapToGrid => "Snap to grid",
+            Field::SnapGridSize => "Grid spacing",
+            Field::AutoLayout => "Auto-layout when adding a linked card",
+            Field::AutoLayoutDirection => "Layout direction",
+            Field::ZoomSpeed => "Zoom speed",
+            Field::PanInertia => "Pan inertia",
+            Field::AiProvider => "Provider",
+            Field::AiUrl => "API URL",
+            Field::AiModel => "Model",
+            Field::AiApiKey => "API key",
+            Field::AiNodeColor => "Answer card color",
+            Field::AiThinking => "Let the model think first",
+            Field::RasterizeText => "Rasterize text",
+            Field::ClusterZoom => "Cluster below zoom",
+            Field::AnimationScale => "Animation speed",
+            Field::ThemeCss => "Theme CSS",
+            Field::Canvas => "Launch board",
+        }
+    }
+
+    /// What the palette calls it: the label, where the label leans on the tab
+    /// it sits in — "Provider" is plain under AI and nothing at all in a list
+    /// of commands.
+    pub(crate) fn name(self) -> &'static str {
+        match self {
+            Field::AiProvider => "AI provider",
+            Field::AiModel => "AI model",
+            _ => self.label(),
+        }
+    }
+
+    /// The tab its row is on.
+    pub(crate) fn tab(self) -> Tab {
+        use Field::*;
+        match self {
+            SummonHotkey | SummonGesture | Vault | DismissOnBackgroundClick | DoubleClickAddsNote
+            | PersistAcrossSpaces | OverlayDim | Windowed => Tab::General,
+            Theme | Font | OverlayBackdrop | OverlayImage | TrayIconMonochrome | LinkStyle | ArrowTip
+            | CenterNodeText | NodeScrollbars | ColoredCardOpacity | MaxNodeWidth => Tab::Appearance,
+            SnapToGrid | SnapGridSize | AutoLayout | AutoLayoutDirection | ZoomSpeed | PanInertia => Tab::Canvas,
+            AiProvider | AiUrl | AiModel | AiApiKey | AiNodeColor | AiThinking => Tab::Ai,
+            RasterizeText | ClusterZoom | AnimationScale | ThemeCss | Canvas => Tab::Advanced,
+        }
+    }
+
+    pub(crate) fn kind(self) -> Kind {
+        use Field::*;
+        match self {
+            SummonGesture | DismissOnBackgroundClick | DoubleClickAddsNote | PersistAcrossSpaces | Windowed
+            | TrayIconMonochrome | CenterNodeText | NodeScrollbars | SnapToGrid | AutoLayout | AiThinking
+            | RasterizeText => Kind::Switch,
+            OverlayBackdrop | LinkStyle | ArrowTip | AutoLayoutDirection | AiProvider | AiNodeColor => Kind::Choice,
+            Theme | Font | AiModel => Kind::Picker,
+            SummonHotkey | Vault | OverlayDim | OverlayImage | ColoredCardOpacity | MaxNodeWidth | SnapGridSize
+            | ZoomSpeed | PanInertia | AiUrl | AiApiKey | ClusterZoom | AnimationScale | ThemeCss | Canvas => Kind::Row,
+        }
+    }
+
+    /// Terms it's found by in the palette without showing them — the words
+    /// someone might reach for that aren't the label's.
+    pub(crate) fn keywords(self) -> &'static str {
+        match self {
+            Field::SummonHotkey => "shortcut key keyboard",
+            Field::SummonGesture => "macos trackpad swipe gesture summon",
+            Field::Vault => "obsidian folder",
+            Field::DismissOnBackgroundClick => "dismiss hide close click",
+            Field::DoubleClickAddsNote => "create new card obsidian",
+            Field::PersistAcrossSpaces => "macos desktop workspace persist",
+            Field::OverlayDim => "darken dim opacity",
+            Field::Windowed => "window mode overlay",
+            Field::OverlayBackdrop => "transparent see-through wallpaper blur opaque background backdrop",
+            Field::TrayIconMonochrome => "macos tray menu bar icon template",
+            Field::LinkStyle => "links edges curve routing",
+            Field::ArrowTip => "arrowhead arrow head link edge",
+            Field::CenterNodeText => "align centre text",
+            Field::NodeScrollbars => "scroll resize overflow",
+            Field::ColoredCardOpacity => "colour color transparency",
+            Field::MaxNodeWidth => "card width size",
+            Field::SnapToGrid => "grid align",
+            Field::AutoLayout => "layout arrange",
+            Field::AutoLayoutDirection => "layout direction flow",
+            Field::ZoomSpeed => "zoom wheel pinch sensitivity",
+            Field::PanInertia => "pan scroll coast momentum",
+            Field::AiProvider => "ai llm endpoint",
+            Field::AiUrl => "ai endpoint url",
+            Field::AiApiKey => "ai key token",
+            Field::AiNodeColor => "ai answer colour color",
+            Field::AiThinking => "ai reasoning",
+            Field::RasterizeText => "bitmap performance gpu",
+            Field::ClusterZoom => "cluster semantic zoom",
+            Field::AnimationScale => "animation motion",
+            Field::ThemeCss => "obsidian css stylesheet",
+            Field::Canvas => "launch board startup open",
+            _ => "",
+        }
+    }
+}
+
+impl App {
+    /// A choice setting's choices, as the palette offers them: what each is
+    /// called, what picking it sends, and which is in force — from the very
+    /// lists the form draws its tiles and lists from.
+    pub(super) fn choices(&self, field: Field) -> Vec<Choice> {
+        let c = &self.config;
+        let choice = |label: &str, msg: Msg, current: bool, keywords: &'static str| Choice {
+            label: label.to_owned(),
+            msg,
+            current,
+            keywords,
+        };
+        match field {
+            Field::LinkStyle => LinkStyle::ALL
+                .into_iter()
+                .map(|style| {
+                    let keywords = match style {
+                        LinkStyle::Obsidian => "curve bezier",
+                        LinkStyle::Mermaid => "routed flowchart",
+                        LinkStyle::Square => "orthogonal right angle",
+                    };
+                    let pick = Msg::Pick(field, style.label().to_owned());
+                    choice(style.label(), pick, LinkStyle::of(c) == style, keywords)
+                })
+                .collect(),
+            Field::ArrowTip => ArrowTip::ALL
+                .into_iter()
+                .map(|tip| {
+                    let keywords = match tip {
+                        ArrowTip::Chevron => "open",
+                        ArrowTip::Triangle => "filled",
+                    };
+                    choice(tip.label(), Msg::Pick(field, tip.label().to_owned()), ArrowTip::of(c) == tip, keywords)
+                })
+                .collect(),
+            Field::OverlayBackdrop => OverlayBackdrop::offered()
+                .into_iter()
+                .map(|backdrop| choice(backdrop.label(), Msg::Backdrop(backdrop), OverlayBackdrop::of(c) == backdrop, ""))
+                .collect(),
+            Field::AutoLayoutDirection => [("LR", "Left to right", "horizontal"), ("TD", "Top down", "vertical")]
+                .into_iter()
+                .map(|(value, label, keywords)| {
+                    choice(label, Msg::Pick(field, value.to_owned()), c.auto_layout_direction == value, keywords)
+                })
+                .collect(),
+            Field::AiProvider => {
+                let custom = self.settings_custom_ai && !c.ai_enabled();
+                let current = if custom { "Custom".to_owned() } else { current_preset(&c.ai_url) };
+                std::iter::once(PROVIDER_OFF)
+                    .chain(crate::ai::PRESETS.iter().map(|preset| preset.name))
+                    .chain(std::iter::once("Custom"))
+                    .map(|name| choice(name, Msg::PickPreset(name.to_owned()), current == name, ""))
+                    .collect()
+            }
+            Field::AiNodeColor => [
+                ("0", "None"),
+                ("1", "Red"),
+                ("2", "Orange"),
+                ("3", "Yellow"),
+                ("4", "Green"),
+                ("5", "Cyan"),
+                ("6", "Purple"),
+            ]
+            .into_iter()
+            .map(|(code, label)| choice(label, Msg::Pick(field, code.to_owned()), c.ai_node_color == code, ""))
+            .collect(),
+            _ => Vec::new(),
+        }
+    }
+}
+
 /// A normalized value handed to [`apply`] — the form's editors are lowered to one
 /// of these before touching the config.
 pub(crate) enum Value {
@@ -386,6 +633,11 @@ fn is_local(url: &str) -> bool {
 /// The "no endpoint" provider — AI disabled. Represented by an empty `ai_url`.
 pub(super) const PROVIDER_OFF: &str = "Off";
 
+/// Whether the AI endpoint is one of the user's own: set, and no preset's.
+pub(crate) fn is_custom(config: &Config) -> bool {
+    config.ai_enabled() && current_preset(&config.ai_url) == "Custom"
+}
+
 /// The preset name for `url`: "Off" when empty, else the matching provider
 /// (ignoring a trailing slash), else "Custom".
 fn current_preset(url: &str) -> String {
@@ -436,6 +688,13 @@ impl App {
                 self.config.sanitize();
                 self.persist_config();
                 self.after_setting_change(field)
+            }
+            // The background's list (Advanced) chooses as its tiles do.
+            Msg::Pick(Field::OverlayBackdrop, label) => {
+                match OverlayBackdrop::offered().into_iter().find(|backdrop| backdrop.label() == label) {
+                    Some(backdrop) => self.apply_setting(Msg::Backdrop(backdrop)),
+                    None => Task::none(),
+                }
             }
             Msg::Pick(field, choice) => {
                 apply(&mut self.config, field, Value::Text(choice));
@@ -516,16 +775,19 @@ impl App {
             Msg::ChooseTheme => self.open_theme_picker_over_settings(),
             Msg::ChooseFont => self.open_font_picker_over_settings(),
             Msg::Backdrop(backdrop) => {
+                // The image tile is also where the picture is chosen: the first
+                // time it's picked, or when it's picked again to change it. And
+                // then the picture is the choice — it's taken when one is
+                // (`take_browsed`). Taken first, a cancelled dialog left the
+                // board on the theme's colour, which is what an image with no
+                // picture shows, rather than on what it had before.
                 let again = OverlayBackdrop::of(&self.config) == backdrop;
+                if backdrop == OverlayBackdrop::Image && (again || self.config.overlay_image.trim().is_empty()) {
+                    return self.browse_for(Field::OverlayImage);
+                }
                 backdrop.set(&mut self.config);
                 self.persist_config();
-                let changed = self.after_setting_change(Field::OverlayBackdrop);
-                // The image tile is also where the picture is chosen: the first
-                // time it's picked, or when it's picked again to change it.
-                if backdrop == OverlayBackdrop::Image && (again || self.config.overlay_image.trim().is_empty()) {
-                    return Task::batch([changed, self.browse_for(Field::OverlayImage)]);
-                }
-                changed
+                self.after_setting_change(Field::OverlayBackdrop)
             }
             Msg::Tab(tab) => {
                 // What was typed on the last tab is kept, as leaving the form
@@ -672,10 +934,28 @@ impl App {
         Task::batch([previews, effect])
     }
 
+    /// Asks for a path for `field` with a file dialog — clearing the overlay
+    /// out of its way first, when it's up.
+    ///
+    /// **The overlay floats above every window, a file dialog included.**
+    /// Opened from the in-board form, the dialog came up behind the board,
+    /// where nothing could reach it. So, as the open-board dialog does, the
+    /// overlay steps aside, the dialog opens once it's gone, and the answer —
+    /// a path or a cancel — brings it back (`settings_browsed`), the form
+    /// still open on it. Only if it was this that hid it: from the settings
+    /// window, the overlay is usually away already, and must stay so.
+    fn browse_for(&mut self, field: Field) -> Task<Message> {
+        if self.overlay && !matches!(self.phase, super::Phase::Hidden) {
+            self.settings_dialog_hid_overlay = true;
+            return self.hide_window().chain(Task::done(Message::SettingsBrowseDialog(field)));
+        }
+        self.browse_dialog(field)
+    }
+
     /// Opens a file dialog for a path setting. macOS/Windows use the blocking
     /// dialog on the (main) update thread; Linux runs the async portal dialog on
     /// iced's runtime (its zbus backend needs one — iced is built with tokio).
-    fn browse_for(&mut self, field: Field) -> Task<Message> {
+    pub(super) fn browse_dialog(&mut self, field: Field) -> Task<Message> {
         // The vault is a folder; every other browsable setting names a file.
         let folder = field == Field::Vault;
         #[cfg(not(target_os = "linux"))]
@@ -714,12 +994,24 @@ impl App {
             Field::RasterizeText => c.rasterize_text,
             Field::NodeScrollbars => c.node_scrollbars,
             Field::AiThinking => c.ai_thinking,
+            Field::Windowed => c.windowed,
+            Field::SnapToGrid => c.snap_to_grid,
+            Field::AutoLayout => c.auto_layout,
             _ => false,
         }
     }
 
-    /// Applies a resolved "Browse…" dialog result to its field.
+    /// Applies a resolved "Browse…" dialog result to its field, and brings
+    /// back the overlay if it was hidden for the dialog (see `browse_for`).
     pub(super) fn settings_browsed(&mut self, field: Field, path: Option<std::path::PathBuf>) -> Task<Message> {
+        let task = self.take_browsed(field, path);
+        if std::mem::take(&mut self.settings_dialog_hid_overlay) {
+            return self.resummon_after_dialog(task);
+        }
+        task
+    }
+
+    fn take_browsed(&mut self, field: Field, path: Option<std::path::PathBuf>) -> Task<Message> {
         let Some(path) = path else {
             return Task::none();
         };
@@ -731,11 +1023,38 @@ impl App {
         }
         let text = path.to_string_lossy().into_owned();
         apply(&mut self.config, field, Value::Text(text));
+        // A picture chosen is the image background chosen — see `Msg::Backdrop`.
+        if field == Field::OverlayImage {
+            OverlayBackdrop::Image.set(&mut self.config);
+        }
         self.config.sanitize();
         self.persist_config();
         // As a typed path is, once committed: a stylesheet chosen here used
         // to wait for a restart to be applied.
         self.after_setting_change(field)
+    }
+
+    /// The in-board form on `field`'s tab, its row focused and scrolled into
+    /// view — a setting found in the palette that's set in the form. Rows are
+    /// a known order but not a known height, so the scroll is the row's place
+    /// in its tab as a fraction: near enough to bring it on screen.
+    pub(super) fn open_settings_at(&mut self, field: Field) -> Task<Message> {
+        use iced::advanced::widget::operation::scrollable::{RelativeOffset, snap_to};
+        self.search = None;
+        self.command_palette = None;
+        self.settings_overlay = true;
+        self.settings_tab = field.tab();
+        let opened = self.open_settings_form();
+        self.settings_focus = Some(field);
+        self.cache.clear();
+        let rows: Vec<Field> = index().into_iter().filter(|row| row.tab() == field.tab()).collect();
+        let at = rows.iter().position(|row| *row == field).unwrap_or(0);
+        let fraction = if rows.len() > 1 { at as f32 / (rows.len() - 1) as f32 } else { 0.0 };
+        let scroll = iced::advanced::widget::operate(snap_to(
+            form::SCROLL.clone(),
+            RelativeOffset { x: None, y: Some(fraction) },
+        ));
+        Task::batch([opened, scroll])
     }
 
     /// Opens the form: drafts from the config, nothing focused, on the tab it

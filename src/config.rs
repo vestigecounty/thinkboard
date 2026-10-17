@@ -505,14 +505,6 @@ impl OverlayBackdrop {
         }
     }
 
-    /// The one after this among those offered, coming round again — what the
-    /// palette's "Change overlay background" steps to.
-    pub fn next(self) -> OverlayBackdrop {
-        let offered = OverlayBackdrop::offered();
-        let at = offered.iter().position(|backdrop| *backdrop == self).unwrap_or(0);
-        offered[(at + 1) % offered.len()]
-    }
-
     /// Writes this into `config`, the transparency toggle with it.
     pub fn set(self, config: &mut Config) {
         config.overlay_backdrop = self.as_str().to_owned();
@@ -1105,12 +1097,6 @@ mod tests {
         assert_eq!(OverlayBackdrop::of(&c), OverlayBackdrop::Theme);
         c.overlay_transparent = true;
         assert_eq!(OverlayBackdrop::of(&c), OverlayBackdrop::Transparent);
-        // Stepped through from the palette, each comes once and then round.
-        let offered = OverlayBackdrop::offered();
-        let mut at = OverlayBackdrop::Transparent;
-        let stepped: Vec<_> = (0..offered.len()).map(|_| { at = at.next(); at }).collect();
-        assert_eq!(stepped.last(), Some(&OverlayBackdrop::Transparent));
-        assert!(offered.iter().all(|backdrop| stepped.contains(backdrop)), "{stepped:?}");
         // Chosen, the name wins, and the toggle follows it for older builds.
         for backdrop in OverlayBackdrop::offered() {
             backdrop.set(&mut c);

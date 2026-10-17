@@ -5,14 +5,22 @@
 //!
 //! The panel itself is [`super::picker`], shared with the vault browser; this
 //! module supplies the rows.
+//!
+//! **Settings are searched alongside the commands**, from the settings index
+//! (`settings::index`) the form draws its rows from: "mermaid" finds "Link
+//! style › Mermaid", "inertia" finds "Pan inertia". A choice is an entry per
+//! option, applied as it's picked, the one in force marked; a switch flips;
+//! anything else opens the form at its row. They join a query only — the
+//! palette with nothing typed stays a list of commands.
 
+use std::borrow::Cow;
 use std::sync::LazyLock;
 
 use iced::Element;
 
 use super::App;
 use super::picker::{self, Panel, Row, Shell};
-use super::settings::Field;
+use super::settings::{self, Field, Kind};
 use crate::Message;
 
 /// Every action reachable from the palette. Dispatch is in `App::run_command`;
@@ -39,11 +47,11 @@ pub(crate) enum CommandId {
     AskAi,
     Distribute,
     GroupSelection,
-    ToggleAutoLayout,
-    ToggleSetting(Field),
-    /// Steps the overlay's background to the next one offered — a choice of
-    /// four, which a toggle can't be.
-    NextOverlayBackdrop,
+    /// A setting from the index: a switch flips, anything else opens the form
+    /// at its row.
+    Setting(Field),
+    /// One choice of a choice setting, by its place in `App::choices`.
+    Choice(Field, u8),
     /// The board-by-keyboard actions (see `app::navigate`), here so they can
     /// be found — and their keys learned from the hint beside them.
     FitBoard,
@@ -92,17 +100,32 @@ impl CommandId {
             // Nothing to browse until a vault has been picked — "Open vault…"
             // sits right above it.
             CommandId::SwitchCanvas if !app.has_vault() => Some("Open a vault first"),
-            CommandId::ToggleSetting(
-                Field::DismissOnBackgroundClick | Field::PersistAcrossSpaces | Field::SummonGesture,
-            ) if !app.overlay => Some("Overlay only"),
-            CommandId::NextOverlayBackdrop if !app.overlay => Some("Overlay only"),
-            CommandId::ToggleSetting(Field::DoubleClickAddsNote)
-                if app.config.click_dismisses(app.overlay) =>
-            {
-                Some("Needs dismiss on background click off")
-            }
+            CommandId::Setting(field) | CommandId::Choice(field, _) => settings_unavailable(app, field),
             _ => None,
         }
+    }
+}
+
+/// Why a setting's entry can't act now — the form greys or hides its row in
+/// the same states.
+fn settings_unavailable(app: &App, field: Field) -> Option<&'static str> {
+    match field {
+        Field::DismissOnBackgroundClick | Field::PersistAcrossSpaces | Field::SummonGesture | Field::OverlayBackdrop
+            if !app.overlay =>
+        {
+            Some("Overlay only")
+        }
+        Field::DoubleClickAddsNote if app.config.click_dismisses(app.overlay) => {
+            Some("Needs click-to-dismiss off")
+        }
+        Field::AiApiKey | Field::AiNodeColor | Field::AiThinking if !app.config.ai_enabled() => {
+            Some("Needs an AI provider — Settings → AI")
+        }
+        // Only a custom endpoint has a URL to type: a preset fills its own.
+        Field::AiUrl if !(app.settings_custom_ai || settings::is_custom(&app.config)) => {
+            Some("Pick Custom as the AI provider")
+        }
+        _ => None,
     }
 }
 
@@ -126,9 +149,7 @@ const fn cmd(
 
 static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
     use CommandId::*;
-    // `mut` is only exercised by the macOS-only pushes below.
-    #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
-    let mut list = vec![
+    vec![
         cmd(NewBoard, "New board", "create file", ""),
         cmd(OpenBoard, "Open board", "file canvas load", ""),
         cmd(SwitchCanvas, "Switch board", "vault browse canvas open recent switch", "⌘O"),
@@ -159,59 +180,86 @@ static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
         cmd(Settings, "Settings", "preferences config options", ""),
         cmd(Dismiss, "Dismiss board", "hide close overlay", ""),
         cmd(Quit, "Quit ThinkBoard", "exit", ""),
-        // Setting toggles (flip the current value):
-        cmd(ToggleAutoLayout, "Toggle auto-layout on edit", "setting layout", ""),
-        cmd(ToggleSetting(Field::CenterNodeText), "Toggle center node text", "setting", ""),
-        cmd(ToggleSetting(Field::NodeScrollbars), "Toggle node scrollbars", "setting scroll resize", ""),
-        cmd(ToggleSetting(Field::RasterizeText), "Toggle rasterize text", "setting", ""),
-        cmd(NextOverlayBackdrop, "Change overlay background", "setting transparent see-through wallpaper blur opaque", ""),
-        cmd(ToggleSetting(Field::AiThinking), "Toggle AI thinking", "setting reasoning", ""),
-        cmd(
-            ToggleSetting(Field::DismissOnBackgroundClick),
-            "Toggle dismiss on background click",
-            "setting",
-            "",
-        ),
-        cmd(
-            ToggleSetting(Field::DoubleClickAddsNote),
-            "Toggle double-click to add a note",
-            "setting create new card obsidian",
-            "",
-        ),
-    ];
-    #[cfg(target_os = "macos")]
-    {
-        list.push(cmd(
-            ToggleSetting(Field::PersistAcrossSpaces),
-            "Toggle persist across Spaces",
-            "setting macos",
-            "",
-        ));
-        list.push(cmd(
-            ToggleSetting(Field::SummonGesture),
-            "Toggle four-finger summon gesture",
-            "setting macos trackpad",
-            "",
-        ));
-        list.push(cmd(
-            ToggleSetting(Field::TrayIconMonochrome),
-            "Toggle monochrome menu bar icon",
-            "setting macos tray menu bar icon",
-            "",
-        ));
-    }
-    list
+    ]
 });
 
-/// Commands matching `query`, best first (empty query = registry order).
-pub(crate) fn filtered(query: &str) -> Vec<&'static Command> {
-    // Title first, keywords behind it — the shape every panel here ranks by.
-    thinkboard_core::fuzzy::rank(&COMMANDS, |c| {
-        thinkboard_core::fuzzy::score_alias(query, c.title, Some(c.keywords))
+/// One row of the palette: a command, or a setting from the index.
+pub(crate) struct Entry {
+    pub id: CommandId,
+    pub title: Cow<'static, str>,
+    /// Terms it's found by but doesn't show.
+    pub keywords: Cow<'static, str>,
+    /// What the right of the row says: a command's shortcut; a switch's state;
+    /// "current" on the choice in force; the tab a row opens on.
+    pub detail: Cow<'static, str>,
+}
+
+/// The commands, as palette rows.
+fn command_entries() -> impl Iterator<Item = Entry> {
+    COMMANDS.iter().map(|command| Entry {
+        id: command.id,
+        title: command.title.into(),
+        keywords: command.keywords.into(),
+        detail: command.shortcut.into(),
     })
-    .into_iter()
-    .filter_map(|i| COMMANDS.get(i))
-    .collect()
+}
+
+/// The settings index, as palette rows.
+fn setting_entries(app: &App) -> Vec<Entry> {
+    let mut entries = Vec::new();
+    for field in settings::index() {
+        let tab = field.tab().label();
+        let keywords = format!("setting settings {tab} {}", field.keywords());
+        match field.kind() {
+            Kind::Switch => entries.push(Entry {
+                id: CommandId::Setting(field),
+                title: field.name().into(),
+                keywords: keywords.into(),
+                detail: if app.setting_bool(field) { "On" } else { "Off" }.into(),
+            }),
+            Kind::Choice => {
+                for (at, choice) in app.choices(field).into_iter().enumerate() {
+                    entries.push(Entry {
+                        id: CommandId::Choice(field, at as u8),
+                        title: format!("{} › {}", field.name(), choice.label).into(),
+                        keywords: format!("{keywords} {}", choice.keywords).into(),
+                        detail: if choice.current { "current" } else { "" }.into(),
+                    });
+                }
+            }
+            // Each has its own command ("Change theme…"), which opens it.
+            Kind::Picker => {}
+            Kind::Row => entries.push(Entry {
+                id: CommandId::Setting(field),
+                title: field.name().into(),
+                keywords: keywords.into(),
+                detail: tab.into(),
+            }),
+        }
+    }
+    entries
+}
+
+/// `entries` matching `query`, best first. Title first, keywords behind it —
+/// the shape every panel here ranks by — and a stable sort, so the order
+/// they're given in breaks ties.
+fn rank(entries: Vec<Entry>, query: &str) -> Vec<Entry> {
+    let order = thinkboard_core::fuzzy::rank(&entries, |entry| {
+        thinkboard_core::fuzzy::score_alias(query, &entry.title, Some(&entry.keywords))
+    });
+    let mut entries: Vec<Option<Entry>> = entries.into_iter().map(Some).collect();
+    order.into_iter().filter_map(|at| entries.get_mut(at).and_then(Option::take)).collect()
+}
+
+/// The palette's rows for `query`, best first. With nothing typed, the
+/// commands in registry order: the settings join a search, not the list
+/// someone browses to see what the app does.
+pub(crate) fn filtered(app: &App, query: &str) -> Vec<Entry> {
+    let mut entries: Vec<Entry> = command_entries().collect();
+    if !query.trim().is_empty() {
+        entries.extend(setting_entries(app));
+    }
+    rank(entries, query)
 }
 
 /// Keyboard nav while the palette is open (subscribed like `search_key_event`).
@@ -227,18 +275,18 @@ pub(crate) fn key_event(
 /// The palette panel: a focused input over a scrollable, fuzzy-filtered command
 /// list. Rows are greyed and un-clickable when their command isn't applicable.
 pub(super) fn view<'a>(app: &'a App, state: &'a picker::State) -> Element<'a, Message> {
-    let rows = filtered(&state.query)
+    let rows = filtered(app, &state.query)
         .into_iter()
-        .map(|command| {
-            let unavailable = command.id.unavailable(app);
+        .map(|entry| {
+            let unavailable = entry.id.unavailable(app);
             Row {
-                title: command.title.into(),
+                title: entry.title,
                 // The reason replaces the shortcut: a chord for something that
                 // can't run is the one thing on the row with no use.
-                detail: unavailable.unwrap_or(command.shortcut).into(),
+                detail: unavailable.map_or(entry.detail, Cow::Borrowed),
                 enabled: unavailable.is_none(),
                 font: None,
-                press: Message::RunCommand(command.id),
+                press: Message::RunCommand(entry.id),
             }
         })
         .collect();
@@ -260,20 +308,23 @@ pub(super) fn view<'a>(app: &'a App, state: &'a picker::State) -> Element<'a, Me
 mod tests {
     use super::*;
 
+    fn commands(query: &str) -> Vec<CommandId> {
+        rank(command_entries().collect(), query).into_iter().map(|entry| entry.id).collect()
+    }
+
     #[test]
     fn filtered_ranks_the_obvious_match_first() {
-        let hits = filtered("settings");
-        assert_eq!(hits.first().map(|c| c.id), Some(CommandId::Settings));
+        assert_eq!(commands("settings").first(), Some(&CommandId::Settings));
         // Empty query lists everything in registry order.
-        assert_eq!(filtered("").len(), COMMANDS.len());
+        assert_eq!(commands("").len(), COMMANDS.len());
         // A keyword-only term still finds its command.
-        assert!(filtered("arrange").iter().any(|c| c.id == CommandId::Distribute));
+        assert!(commands("arrange").contains(&CommandId::Distribute));
     }
 
     #[test]
     fn the_vault_commands_are_reachable_by_their_keywords() {
-        assert!(filtered("vault").iter().any(|c| c.id == CommandId::OpenVault));
+        assert!(commands("vault").contains(&CommandId::OpenVault));
         // "browse" is a keyword of Switch canvas, not of its title.
-        assert!(filtered("browse").iter().any(|c| c.id == CommandId::SwitchCanvas));
+        assert!(commands("browse").contains(&CommandId::SwitchCanvas));
     }
 }

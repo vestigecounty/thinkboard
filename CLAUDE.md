@@ -569,6 +569,14 @@ tab is now kept for the session.
 - **Colours are roles from the theme** (`form::Look`): a field's well a step
   below the panel, a button's face a step above, hairlines in the text colour
   at low alpha. iced's palette has one colour where the form needs those.
+- **The settings index is one list** (`settings::index`, with each field's
+  `label`, `tab` and `kind`): the form takes its row labels from it and the
+  command palette searches it. A choice is an entry per option ("Link style ›
+  Mermaid"), applied as it's picked, the one in force marked "current"; a
+  switch flips and says its state; anything else opens the form at its row
+  (`App::open_settings_at`). Settings join a *search* only — the bare palette
+  stays a list of commands. Written out by hand, the palette's toggles had
+  drifted from the form's labels.
 - The modal hangs from a fixed top rather than centring: each tab is its own
   height, and centred, the tab bar moved under the pointer from tab to tab.
 - **One control height, one type scale.** Fields, buttons, lists and keycaps

@@ -1467,6 +1467,24 @@ fn pickers() {
     tour.named(key::Named::Escape);
 }
 
+/// Settings from the palette: a choice found by its name and applied, a
+/// setting's choices listed with the one in force marked, and a setting set
+/// in the form opened at its row.
+fn palette_settings() {
+    let mut tour = Tour::new("palette_settings", first_launch(sample_board));
+    tour.chord(Modifiers::COMMAND | Modifiers::SHIFT, "p");
+    tour.type_text("mermaid");
+    tour.shot("mermaid");
+    tour.named(key::Named::Enter);
+    tour.shot("mermaid-applied");
+    tour.chord(Modifiers::COMMAND | Modifiers::SHIFT, "p");
+    tour.type_text("link");
+    tour.shot("link-choices");
+    tour.named(key::Named::Escape);
+    tour.palette("pan inertia");
+    tour.shot("opened-at-its-row");
+}
+
 /// Find on board: a query, the next hit, and the way out.
 fn find() {
     let mut tour = Tour::new("find", first_launch(sample_board));
@@ -2673,6 +2691,7 @@ const SCENES: &[(&str, fn())] = &[
     ("overlapping", overlapping),
     ("settings", settings),
     ("pickers", pickers),
+    ("palette_settings", palette_settings),
     ("find", find),
     ("links", links),
     ("groups", groups),

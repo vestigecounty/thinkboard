@@ -41,6 +41,11 @@ use crate::model;
 const STACK_BELOW: f32 = 440.0;
 /// How wide the window's form grows before it centres instead.
 const CONTENT_WIDTH: f32 = 760.0;
+/// The form's scrolling body, so a setting opened from the palette can be
+/// scrolled to.
+pub(in crate::app) static SCROLL: std::sync::LazyLock<iced::advanced::widget::Id> =
+    std::sync::LazyLock::new(|| iced::advanced::widget::Id::new("settings-form"));
+
 /// The shortcut that lists a vault's boards, as this platform writes it.
 const OPEN_KEYS: &str = if cfg!(target_os = "macos") { "⌘O" } else { "Ctrl+O" };
 /// How tall every control is — field, button, list, keycap — so that two
@@ -104,7 +109,7 @@ pub(in crate::app) fn modal(app: &App, width: f32) -> Element<'_, Message> {
     let title = row![say("Settings", Type::Title, look.strong, look.text).width(Fill), close]
         .align_y(Alignment::Center);
     let head = column![title, tabs(app, look)].spacing(6).padding(pad(16.0, 18.0, 0.0, 24.0));
-    column![head, hairline(look), scrollable(body(app, look)).height(Shrink)].into()
+    column![head, hairline(look), scrollable(body(app, look)).id(SCROLL.clone()).height(Shrink)].into()
 }
 
 /// The form in a window of its own, which has a title already: the tabs, and
@@ -118,7 +123,7 @@ pub(in crate::app) fn window(app: &App) -> Element<'_, Message> {
         )
         .center_x(Fill);
         let rows = container(container(body(app, look)).max_width(CONTENT_WIDTH)).center_x(Fill);
-        let sheet = column![head, hairline(look), scrollable(rows).height(Fill)];
+        let sheet = column![head, hairline(look), scrollable(rows).id(SCROLL.clone()).height(Fill)];
         container(sheet)
             .width(Fill)
             .height(Fill)
@@ -279,7 +284,7 @@ fn general(app: &App, look: Look) -> Vec<Element<'_, Message>> {
 
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut summon = vec![
-        setting(Field::SummonHotkey, "Summon hotkey")
+        setting(Field::SummonHotkey)
             .control(hotkey(app, look))
             .desc("Shows and hides the board from any app.")
             .build(app, look),
@@ -288,7 +293,7 @@ fn general(app: &App, look: Look) -> Vec<Element<'_, Message>> {
     #[cfg(target_os = "macos")]
     summon.push(
         overlay_only(
-            setting(Field::SummonGesture, "Four-finger swipe down")
+            setting(Field::SummonGesture)
                 .chip(Chip::Mac)
                 .control(switch(look, Field::SummonGesture, c.summon_gesture, overlay))
                 .desc("Works on a laptop without a Pause key."),
@@ -298,7 +303,7 @@ fn general(app: &App, look: Look) -> Vec<Element<'_, Message>> {
 
     let vault = if c.vault.trim().is_empty() { "None".to_owned() } else { shown_path(&c.vault, 26) };
     let boards = vec![
-        setting(Field::Vault, "Obsidian vault")
+        setting(Field::Vault)
             .control(path_box(look, vault, Field::Vault))
             .desc(format!("{OPEN_KEYS} lists every board in it, and the board follows its Obsidian theme."))
             .build(app, look),
@@ -307,7 +312,7 @@ fn general(app: &App, look: Look) -> Vec<Element<'_, Message>> {
     // Greyed while a click dismisses, which is when it couldn't work: the
     // board is gone before the second click lands.
     let dismisses = c.click_dismisses(overlay);
-    let mut double = setting(Field::DoubleClickAddsNote, "Double-click to add a note")
+    let mut double = setting(Field::DoubleClickAddsNote)
         .control(switch(look, Field::DoubleClickAddsNote, c.double_click_adds_note, !dismisses))
         .desc("Double-clicking empty space adds a note there, as Obsidian's canvas does.");
     if dismisses {
@@ -320,7 +325,7 @@ fn general(app: &App, look: Look) -> Vec<Element<'_, Message>> {
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut behind = vec![
         overlay_only(
-            setting(Field::DismissOnBackgroundClick, "Click empty space to dismiss")
+            setting(Field::DismissOnBackgroundClick)
                 .control(switch(look, Field::DismissOnBackgroundClick, c.dismiss_on_background_click, overlay))
                 .desc("A click that lands on no card puts the board away."),
         )
@@ -333,7 +338,7 @@ fn general(app: &App, look: Look) -> Vec<Element<'_, Message>> {
     #[cfg(target_os = "macos")]
     behind.push(
         overlay_only(
-            setting(Field::PersistAcrossSpaces, "Stay up across Spaces")
+            setting(Field::PersistAcrossSpaces)
                 .chip(Chip::Mac)
                 .control(switch(look, Field::PersistAcrossSpaces, c.persist_across_spaces, overlay))
                 .desc("Otherwise switching Spaces dismisses it."),
@@ -341,13 +346,13 @@ fn general(app: &App, look: Look) -> Vec<Element<'_, Message>> {
         .build(app, look),
     );
     behind.push(
-        setting(Field::OverlayDim, "Dim behind board")
+        setting(Field::OverlayDim)
             .control(dial(look, Field::OverlayDim, c.overlay_dim, 0.0..=1.0, default_dim, percent(c.overlay_dim)))
             .desc(format!("How much the desktop darkens behind the board. Default {}.", percent(default_dim)))
             .build(app, look),
     );
     behind.push(
-        setting(Field::Windowed, "Run as a normal window")
+        setting(Field::Windowed)
             .chip(Chip::Restart)
             .control(switch(look, Field::Windowed, c.windowed, true))
             .desc("No overlay, hotkey or tray. Greys the overlay rows above.")
@@ -367,7 +372,7 @@ fn appearance(app: &App, look: Look) -> Vec<Element<'_, Message>> {
     if OverlayBackdrop::of(c) == OverlayBackdrop::Transparent {
         tiles = tiles.push(aside(look, "Transparent uses a bit more of the GPU than the other options."));
     }
-    let mut backdrop = setting(Field::OverlayBackdrop, "Overlay background")
+    let mut backdrop = setting(Field::OverlayBackdrop)
         .wide(tiles)
         .desc("What's behind the board in overlay mode.");
     // Where the window's see-through flag can't be switched live.
@@ -376,13 +381,13 @@ fn appearance(app: &App, look: Look) -> Vec<Element<'_, Message>> {
     }
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
     let mut looks = vec![
-        setting(Field::Theme, "Theme")
+        setting(Field::Theme)
             // A theme by its accent, the colour that most tells one from another.
             .control(chooser(look, Some(app.theme.accent), theme_name(c), Message::Settings(Msg::ChooseTheme)))
             .note(theme_chain(c, look))
             .desc("A built-in theme, one of your own, or your vault's Obsidian theme.")
             .build(app, look),
-        setting(Field::Font, "Font")
+        setting(Field::Font)
             .control(chooser(look, None, font, Message::Settings(Msg::ChooseFont)))
             .desc("Body text only. Code keeps the theme's monospace.")
             .build(app, look),
@@ -391,7 +396,7 @@ fn appearance(app: &App, look: Look) -> Vec<Element<'_, Message>> {
     // Template-image menu-bar icon, macOS-only (the template concept is AppKit's).
     #[cfg(target_os = "macos")]
     looks.push(
-        setting(Field::TrayIconMonochrome, "Monochrome menu bar icon")
+        setting(Field::TrayIconMonochrome)
             .chip(Chip::Mac)
             .control(switch(look, Field::TrayIconMonochrome, c.tray_icon_monochrome, true))
             .desc("Follows the menu bar's light or dark appearance.")
@@ -400,23 +405,23 @@ fn appearance(app: &App, look: Look) -> Vec<Element<'_, Message>> {
 
     let default_opacity = Config::default().colored_card_opacity;
     let cards = vec![
-        setting(Field::LinkStyle, "Link style")
+        setting(Field::LinkStyle)
             .control(link_styles(app, look))
             .desc("Obsidian curves with the distance spanned; Mermaid routes; Square turns at right angles.")
             .build(app, look),
-        setting(Field::ArrowTip, "Arrow tips")
+        setting(Field::ArrowTip)
             .control(arrow_tips(app, look))
             .desc("The shape at a link's arrowed end. Which ends have one is the link's own, set from its right-click menu.")
             .build(app, look),
-        setting(Field::CenterNodeText, "Center plain text")
+        setting(Field::CenterNodeText)
             .control(switch(look, Field::CenterNodeText, c.center_node_text, true))
             .desc("Headings, code and lists stay left-aligned.")
             .build(app, look),
-        setting(Field::NodeScrollbars, "Card scrollbars")
+        setting(Field::NodeScrollbars)
             .control(switch(look, Field::NodeScrollbars, c.node_scrollbars, true))
             .desc("Resize a card below its text; the rest scrolls.")
             .build(app, look),
-        setting(Field::ColoredCardOpacity, "Colored card opacity")
+        setting(Field::ColoredCardOpacity)
             .control(dial(
                 look,
                 Field::ColoredCardOpacity,
@@ -427,7 +432,7 @@ fn appearance(app: &App, look: Look) -> Vec<Element<'_, Message>> {
             ))
             .desc("Below 100%, what is underneath shows through.")
             .build(app, look),
-        setting(Field::MaxNodeWidth, "Card grows to")
+        setting(Field::MaxNodeWidth)
             .control(number(look, Field::MaxNodeWidth, app.draft(Field::MaxNodeWidth), "px", true))
             .desc("How wide a card gets by itself as you type.")
             .build(app, look),
@@ -447,15 +452,15 @@ fn canvas_tab(app: &App, look: Look) -> Vec<Element<'_, Message>> {
     .spacing(10)
     .align_y(Alignment::Center);
     let layout = vec![
-        setting(Field::SnapToGrid, "Snap to grid")
+        setting(Field::SnapToGrid)
             .control(grid)
             .desc("Also on the canvas right-click menu.")
             .build(app, look),
-        setting(Field::AutoLayout, "Auto-layout when adding a linked card")
+        setting(Field::AutoLayout)
             .control(switch(look, Field::AutoLayout, c.auto_layout, true))
             .desc("Lays the linked cards out again each time one is added.")
             .build(app, look),
-        setting(Field::AutoLayoutDirection, "Layout direction")
+        setting(Field::AutoLayoutDirection)
             .control(segments(
                 look,
                 Field::AutoLayoutDirection,
@@ -468,11 +473,11 @@ fn canvas_tab(app: &App, look: Look) -> Vec<Element<'_, Message>> {
 
     let fresh = Config::default();
     let navigation = vec![
-        setting(Field::ZoomSpeed, "Zoom speed")
+        setting(Field::ZoomSpeed)
             .control(dial(look, Field::ZoomSpeed, c.zoom_speed, 0.2..=1.8, fresh.zoom_speed, format!("{:.1}×", c.zoom_speed)))
             .desc("Mouse wheel and trackpad pinch together.")
             .build(app, look),
-        setting(Field::PanInertia, "Pan inertia")
+        setting(Field::PanInertia)
             .control(dial(look, Field::PanInertia, c.pan_inertia, 0.0..=0.999, fresh.pan_inertia, format!("{:.2}", c.pan_inertia)))
             .desc("Coasting after a flick; 0 turns it off.")
             .build(app, look),
@@ -491,7 +496,7 @@ fn ai(app: &App, look: Look) -> Vec<Element<'_, Message>> {
     let preset = if custom { "Custom".to_owned() } else { current_preset(&c.ai_url) };
 
     let mut ask = vec![
-        setting(Field::AiProvider, "Provider")
+        setting(Field::AiProvider)
             .control(providers(look, preset.clone()))
             .note(quiet(look, provider_words(&preset, &c.ai_url)))
             .build(app, look),
@@ -499,7 +504,7 @@ fn ai(app: &App, look: Look) -> Vec<Element<'_, Message>> {
     if provided {
         if preset == "Custom" {
             ask.push(
-                setting(Field::AiUrl, "API URL")
+                setting(Field::AiUrl)
                     .control(wide_line(look, Field::AiUrl, app.draft(Field::AiUrl), "http://localhost:1234/v1"))
                     .desc("An OpenAI-compatible base URL; /chat/completions is appended.")
                     .build(app, look),
@@ -512,7 +517,7 @@ fn ai(app: &App, look: Look) -> Vec<Element<'_, Message>> {
         .spacing(8)
         .align_y(Alignment::Center);
         ask.push(
-            setting(Field::AiModel, "Model")
+            setting(Field::AiModel)
                 .control(model)
                 .desc("Lists what the endpoint serves, so you needn't type a name exactly.")
                 .build(app, look),
@@ -521,7 +526,7 @@ fn ai(app: &App, look: Look) -> Vec<Element<'_, Message>> {
         // a local proxy can still want one.
         let local = is_local(&c.ai_url);
         ask.push(
-            setting(Field::AiApiKey, "API key")
+            setting(Field::AiApiKey)
                 .control(key(look, app.draft(Field::AiApiKey), local))
                 .enabled(!local)
                 .desc("Sent as a Bearer token. Hosted providers need one; it's kept per provider.")
@@ -536,11 +541,11 @@ fn ai(app: &App, look: Look) -> Vec<Element<'_, Message>> {
             "Answers",
             "",
             vec![
-                setting(Field::AiNodeColor, "Answer card color")
+                setting(Field::AiNodeColor)
                     .control(swatches(app, look))
                     .desc("The color a new answer card takes. The struck-through one leaves it uncolored.")
                     .build(app, look),
-                setting(Field::AiThinking, "Let the model think first")
+                setting(Field::AiThinking)
                     .control(switch(look, Field::AiThinking, c.ai_thinking, true))
                     .desc("Slower and more tokens; rarely worth it for short answers.")
                     .build(app, look),
@@ -563,22 +568,22 @@ fn advanced(app: &App, look: Look) -> Vec<Element<'_, Message>> {
     .style(list(look));
 
     let performance = vec![
-        setting(Field::RasterizeText, "Rasterize text")
+        setting(Field::RasterizeText)
             .control(switch(look, Field::RasterizeText, c.rasterize_text, true))
             .note(impact(look, 3, "Largest effect · trades memory for drawing time"))
             .desc("Draws card text once into bitmaps. Smoother, about 50 MB more memory on a large board.")
             .build(app, look),
-        setting(Field::OverlayBackdrop, "Overlay background")
+        setting(Field::OverlayBackdrop)
             .control(backdrop)
             .note(impact(look, 2, "Medium · Transparent uses more GPU"))
             .desc("What's behind the board in overlay mode.")
             .build(app, look),
-        setting(Field::ClusterZoom, "Cluster below zoom")
+        setting(Field::ClusterZoom)
             .control(number(look, Field::ClusterZoom, app.draft(Field::ClusterZoom), "×", true))
             .note(impact(look, 1, "Small · large boards only"))
             .desc("Zoomed out past this, nearby cards merge into clusters. 0 never clusters.")
             .build(app, look),
-        setting(Field::AnimationScale, "Animation speed")
+        setting(Field::AnimationScale)
             .control(dial(
                 look,
                 Field::AnimationScale,
@@ -596,11 +601,11 @@ fn advanced(app: &App, look: Look) -> Vec<Element<'_, Message>> {
         .file_name()
         .map_or_else(|| "Welcome board".to_owned(), |name| name.to_string_lossy().into_owned());
     let files = vec![
-        setting(Field::ThemeCss, "Theme CSS")
+        setting(Field::ThemeCss)
             .control(path_box(look, css_shown(c), Field::ThemeCss))
             .desc("Picked automatically from the vault. A file chosen here is kept.")
             .build(app, look),
-        setting(Field::Canvas, "Launch board")
+        setting(Field::Canvas)
             .control(path_box(look, launch, Field::Canvas))
             .desc("Follows the last board you opened. Choosing one here opens it.")
             .build(app, look),
@@ -692,8 +697,19 @@ struct Setting<'a> {
     enabled: bool,
 }
 
-fn setting<'a>(field: Field, label: &'static str) -> Setting<'a> {
-    Setting { field, label, chips: Vec::new(), control: None, notes: Vec::new(), wide: None, desc: Cow::Borrowed(""), enabled: true }
+/// A row for `field`, labelled as the settings index labels it — the form and
+/// the palette say the same thing.
+fn setting<'a>(field: Field) -> Setting<'a> {
+    Setting {
+        field,
+        label: field.label(),
+        chips: Vec::new(),
+        control: None,
+        notes: Vec::new(),
+        wide: None,
+        desc: Cow::Borrowed(""),
+        enabled: true,
+    }
 }
 
 impl<'a> Setting<'a> {
