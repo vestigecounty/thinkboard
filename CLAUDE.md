@@ -65,6 +65,8 @@ real one — use it for any run that might write settings.
 src/            the desktop app (iced, wgpu, winit)
   app/          state, the update loop, and one module per feature (below)
   canvas/       the board canvas widget, text rasterizer, camera, shaders
+    board/      the board split by concern: input, links, cards, search,
+                clusters, offscreen markers, AI marks, the frame meter
   document/     desktop-side document glue (cluster cards, colour bridging)
   platform/     per-OS window/gesture/tray shims
 crates/core/    thinkboard-core — UI-agnostic document logic
@@ -679,9 +681,9 @@ drawn, and the preview and shimmer built their own — all four disagreed with t
 routing under them until they were brought across. Anything new that draws a
 link goes through here.
 
-**An arrow stops short of its card** (`board::ARROW_GAP`, 2 world units,
-measured from the tip's round cap): on the card's edge the tip sat on its
-border and was lost in a border of its own colour. In world units so it
+**An arrow stops short of its card** (`board::links::ARROW_GAP`, 2 world
+units, measured from the tip's round cap): on the card's edge the tip sat on
+its border and was lost in a border of its own colour. In world units so it
 scales with zoom rather than leaving zoomed-out links looking detached. The
 gap is taken in `edge_geometry`, *before* routing, so all seven consumers get
 the same ends; an end without an arrow stays on its port. The drag preview,
