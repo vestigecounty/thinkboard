@@ -194,9 +194,10 @@ impl App {
         Task::batch([self.refresh_snapshots(), self.schedule_recluster()])
     }
 
-    pub(super) fn theme_picker_view<'a>(&'a self, picker: &'a ThemePicker) -> Element<'a, Message> {
-        let rows: Vec<Row<'a>> = self
-            .theme_matches(&picker.state.query)
+    /// The picker's rows, as the query has them: what [`App::theme_picker_view`]
+    /// draws, and what the tour records of it.
+    pub(super) fn theme_rows<'a>(&'a self, picker: &'a ThemePicker) -> Vec<Row<'a>> {
+        self.theme_matches(&picker.state.query)
             .into_iter()
             .filter_map(|index| picker.themes.get(index))
             .map(|theme| (theme, self.theme_label(theme)))
@@ -216,8 +217,11 @@ impl App {
                 font: None,
                 press: Message::PickTheme(theme.name.clone()),
             })
-            .collect();
+            .collect()
+    }
 
+    pub(super) fn theme_picker_view<'a>(&'a self, picker: &'a ThemePicker) -> Element<'a, Message> {
+        let rows = self.theme_rows(picker);
         picker::view(
             self,
             &picker.state,

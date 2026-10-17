@@ -709,6 +709,12 @@ impl Tour {
     /// moves whenever it gains an item. The last match wins, since what's
     /// drawn last is what's on top.
     fn label(&mut self, label: &str) -> Point {
+        self.label_bounds(label).center()
+    }
+
+    /// Where the text `label` is laid out now: the bounds [`Tour::label`]
+    /// gives the middle of.
+    fn label_bounds(&mut self, label: &str) -> Rectangle {
         struct Find<'a> {
             label: &'a str,
             found: Option<Rectangle>,
@@ -748,7 +754,7 @@ impl Tour {
         let mut ui = UserInterface::build(root(app, *settings), *viewport, cache.take().unwrap_or_default(), renderer);
         ui.operate(renderer, &mut find);
         *cache = Some(ui.into_cache());
-        find.found.unwrap_or_else(|| panic!("nothing on screen reads {label:?}")).center()
+        find.found.unwrap_or_else(|| panic!("nothing on screen reads {label:?}"))
     }
 
     /// Clicks whatever reads `label`.
@@ -2719,6 +2725,652 @@ fn small_windows() {
     tour.shot("welcome-360x600");
 }
 
+/// A board from a file, driven by a script — what something drawn to look
+/// like the app (the promo site's demo) is checked against, and replays.
+/// Skipped unless `TOUR_CANVAS` names the `.canvas` and `TOUR_SCRIPT` the
+/// script: a step a line, `#` starting a comment line. A place is a world
+/// point (`x,y`), or a card by id — its middle, or with `:side` its port.
+///
+/// - `overlay` — the app as the overlay, over a desktop, rather than in a
+///   window (it's launched that way, wherever the line is); `summon`,
+///   `dismiss` — its hotkey and Esc.
+/// - `size WxH` — the window; `look x,y zoom` — the world point at its centre
+///   and the zoom; `fit` — framed as ⌘0 frames it. `shot NAME` — a PNG.
+/// - `clear` — an empty board, the file's cards kept back to `plop`;
+///   `plop ID` — the file's card lands, with its links to what's there.
+/// - `answer FILE` — AI set up to answer every question with FILE's text
+///   (`---` between cards), FILE beside the script.
+/// - `record` — record every frame from here (see [`Recording`]);
+///   `save NAME` — write them beside the shots as `NAME.json`.
+/// - `wait SECS`; `settle` — until whatever is under way has finished.
+/// - `point PLACE [SECS]` — the pointer glides there; `click`, `dblclick`,
+///   `rightclick` — at the pointer; `drag PLACE… [SECS]` — press, glide
+///   through each place, release; `pick LABEL` — glide to what reads LABEL, and click it;
+///   `swatch N` — the open card menu's Nth swatch (0 the default), likewise.
+/// - `type TEXT` — a key at a time, at a person's pace (`\n` is Return);
+///   `key NAME` — `escape`, `enter`, `tab`, `up` or `down`; `chord MODS KEY` — a shortcut,
+///   `cmd 0`. `pan DX,DY [SECS]` — the board panned that far, as by two
+///   fingers; `zoom FACTOR [SECS]` — pinched, about the pointer.
+/// - `board FILE` — the board to open, beside the script, instead of
+///   `TOUR_CANVAS` (read before launch, wherever the line is).
+/// - `name ID` — the card made last is called ID from here on.
+///
+/// Nothing is written back: the board is opened as a scratch one, with its
+/// folder for the images and notes on it. Everything runs in real time, a
+/// frame at a time, so what's recorded moves as the app moves.
+fn canvas() {
+    let (Some(path), Some(script)) = (std::env::var_os("TOUR_CANVAS"), std::env::var_os("TOUR_SCRIPT")) else {
+        return;
+    };
+    let script = PathBuf::from(script);
+    // Files a script names are beside it.
+    let beside = script.parent().expect("its folder").to_owned();
+    let script = std::fs::read_to_string(&script).expect("the script");
+    // A script can name a board of its own, read before launch as `overlay` is.
+    let path = script
+        .lines()
+        .find_map(|line| line.trim().strip_prefix("board "))
+        .map_or_else(|| PathBuf::from(path), |board| beside.join(board.trim()));
+    let file = CanvasDocument::load(&path).expect("the board");
+    let document = file.clone();
+    // The overlay or a window is decided at launch, as the app decides it.
+    let overlay = script.lines().any(|line| line.trim() == "overlay");
+    let mut app = launch(|_| document, !overlay, path.parent().expect("its folder").to_owned());
+    // As `overlay_launch` marks it: set up, its window restyled and its
+    // menu-bar icon made, which want a real window and show in no frame.
+    app.overlay_configured = overlay;
+    app.canvas_path = path.clone();
+    let mut tour = Tour::new("canvas", app);
+    let mut rec = Recording::default();
+
+    for (number, line) in script.lines().enumerate() {
+        let line = line.trim();
+        if line.is_empty() || line.starts_with('#') {
+            continue;
+        }
+        let (step, rest) = line.split_once(' ').map_or((line, ""), |(step, rest)| (step, rest.trim()));
+        let args: Vec<&str> = rest.split_whitespace().collect();
+        let secs = |at: usize, default: f32| args.get(at).map_or(default, |s| s.parse().expect("seconds"));
+        match step {
+            "size" => {
+                let (width, height) = rest.split_once('x').expect("WxH");
+                tour.resize(Size::new(width.parse().expect("a width"), height.parse().expect("a height")));
+            }
+            "look" => {
+                let (x, y) = rest.split_whitespace().next().and_then(|at| at.split_once(',')).expect("x,y zoom");
+                let zoom: f32 = secs(1, 1.0);
+                let center = Point::new(tour.viewport.width / 2.0, tour.viewport.height / 2.0);
+                tour.send(Message::ZoomBy { factor: zoom / tour.app.camera.zoom, cursor: center });
+                tour.settle();
+                let delta = center - tour.app.camera.to_screen(Point::new(x.parse().expect("x"), y.parse().expect("y")));
+                tour.send(Message::Pan { delta, track: false });
+                tour.settle();
+            }
+            "fit" => {
+                tour.send(Message::FitBoard);
+                tour.settle();
+            }
+            "shot" => tour.shot(rest),
+            // Read before launch; see above.
+            "overlay" | "board" => {}
+            // The overlay's hotkey, and Esc: `toggle_overlay` and `begin_exit`,
+            // each animating in or out over the frames that follow.
+            "summon" => tour.send(Message::ToggleOverlay),
+            "dismiss" => tour.send(Message::Exit),
+            "clear" => {
+                tour.app.nodes.clear();
+                tour.app.edges.clear();
+                tour.app.selected.clear();
+                tour.app.cache.clear();
+                tour.redraw();
+            }
+            "plop" => {
+                let node = file.nodes.iter().find(|node| node.id == rest).unwrap_or_else(|| panic!("no card {rest:?} in the file")).clone();
+                let app = &mut tour.app;
+                let images = app.load_images(std::slice::from_ref(&node));
+                let notes = app.load_notes(std::slice::from_ref(&node));
+                app.images.extend(images);
+                app.notes.extend(notes);
+                app.nodes.push(node);
+                app.spawning.insert(app.nodes.len() - 1, Instant::now());
+                let here: std::collections::HashSet<&str> = app.nodes.iter().map(|node| node.id.as_str()).collect();
+                let links: Vec<CanvasEdge> = file
+                    .edges
+                    .iter()
+                    .filter(|edge| (edge.from_node == rest || edge.to_node == rest) && here.contains(edge.from_node.as_str()) && here.contains(edge.to_node.as_str()))
+                    .cloned()
+                    .collect();
+                app.edges.extend(links);
+                app.cache.clear();
+                rec.frame(&mut tour);
+            }
+            "answer" => {
+                let answer = std::fs::read_to_string(beside.join(rest)).expect("the answer");
+                // A provider serves a script that lives as long as the process;
+                // this one is read at run time, so it's leaked to.
+                let script: &'static Script = Box::leak(Box::new(Script {
+                    models: &[("qwen/qwen3-30b-a3b", None, None)],
+                    answers: Box::leak(vec![("", &*Box::leak(answer.into_boxed_str()))].into_boxed_slice()),
+                    reject_key: false,
+                }));
+                configure(&mut tour, &Provider::start(script).url);
+            }
+            "record" => rec.start(),
+            "save" => rec.save(&tour, rest),
+            "wait" => rec.wait(&mut tour, secs(0, 1.0)),
+            "settle" => {
+                while !tour.app.ai.streams.is_empty() || tour.app.transitioning() {
+                    rec.frame(&mut tour);
+                }
+                rec.wait(&mut tour, 0.1);
+            }
+            "point" => {
+                let to = place(&tour, args[0]);
+                rec.glide(&mut tour, to, secs(1, 0.6));
+            }
+            "drag" => {
+                // Out of a port, it's a link being drawn: said so in the
+                // recording, since the board's gesture isn't app state.
+                rec.connecting = card_at_port(&tour);
+                rec.button(&mut tour, mouse::Button::Left, true);
+                // Through each place in turn, the time shared by distance; a
+                // bare number last is how long it all takes.
+                let (places, secs) = match args.last().and_then(|last| last.parse::<f32>().ok()) {
+                    Some(secs) => (&args[..args.len() - 1], secs),
+                    None => (&args[..], 0.7),
+                };
+                let mut from = tour.cursor;
+                let stops: Vec<Point> = places.iter().map(|at| place(&tour, at)).collect();
+                let total: f32 = stops.iter().fold((0.0, from), |(sum, at), &to| (sum + at.distance(to), to)).0;
+                for to in stops {
+                    let share = if total > 0.0 { from.distance(to) / total } else { 1.0 };
+                    rec.glide(&mut tour, to, secs * share);
+                    from = to;
+                }
+                rec.button(&mut tour, mouse::Button::Left, false);
+                rec.connecting = None;
+                rec.wait(&mut tour, 0.05);
+            }
+            "click" | "rightclick" => {
+                let button = if step == "click" { mouse::Button::Left } else { mouse::Button::Right };
+                rec.button(&mut tour, button, true);
+                rec.button(&mut tour, button, false);
+                rec.wait(&mut tour, 0.05);
+            }
+            "dblclick" => {
+                for _ in 0..2 {
+                    rec.button(&mut tour, mouse::Button::Left, true);
+                    rec.button(&mut tour, mouse::Button::Left, false);
+                    rec.frame(&mut tour);
+                }
+            }
+            "pick" => {
+                let to = tour.label(rest);
+                rec.glide(&mut tour, Point::new(to.x - 10.0, to.y), 0.45);
+                rec.wait(&mut tour, 0.25);
+                rec.button(&mut tour, mouse::Button::Left, true);
+                rec.button(&mut tour, mouse::Button::Left, false);
+            }
+            "swatch" => {
+                // Where `App::color_row` puts it, found from Delete, the row
+                // at the menu's foot — the menu is moved in from the window's
+                // edges, so where it was opened isn't where it is. A swatch
+                // has no text to find. A row's text starts where the swatches
+                // do, 16 px into the panel; the swatch row's middle is 42.1 px
+                // above the first row's (half a 30.2 px row, a 1 px rule with
+                // 4 px either side, half the 36 px swatch row), and each row
+                // between — Ask AI — adds a row, a rule and its gaps.
+                let row = tour.label_bounds("Delete");
+                let between = if tour.app.config.ai_enabled() { 1.0 } else { 0.0 };
+                let n: f32 = rest.parse().expect("a swatch number");
+                let to = Point::new(row.x + n * 30.0 + 12.0, row.center_y() - 42.1 - between * 39.2);
+                rec.glide(&mut tour, to, 0.45);
+                rec.wait(&mut tour, 0.25);
+                rec.button(&mut tour, mouse::Button::Left, true);
+                rec.button(&mut tour, mouse::Button::Left, false);
+            }
+            "zoom" => {
+                // A pinch: the board zoomed by FACTOR about the pointer over
+                // SECS, a little a frame, the app's own easing following it.
+                let factor: f32 = args[0].parse().expect("a factor");
+                rec.zoom(&mut tour, factor, secs(1, 1.2));
+            }
+            "pan" => {
+                // A two-finger pan, eased: by (dx, dy) screen px over SECS.
+                let (dx, dy) = args[0].split_once(',').expect("dx,dy");
+                let by = Vector::new(dx.parse().expect("dx"), dy.parse().expect("dy"));
+                rec.pan(&mut tour, by, secs(1, 0.8));
+            }
+            "chord" => {
+                // `cmd 0`, `cmd shift p`: the modifiers held, the key pressed.
+                let (key, held) = args.split_last().expect("a key");
+                let mut modifiers = Modifiers::empty();
+                for held in held {
+                    modifiers |= match *held {
+                        "cmd" => Modifiers::COMMAND,
+                        "shift" => Modifiers::SHIFT,
+                        "alt" => Modifiers::ALT,
+                        _ => panic!("no such modifier {held:?}"),
+                    };
+                }
+                rec.chord(&mut tour, modifiers, key);
+            }
+            "type" => {
+                let text = rest.replace("\\n", "\n");
+                rec.type_text(&mut tour, &text);
+            }
+            "key" => {
+                let named = match rest {
+                    "escape" => key::Named::Escape,
+                    "enter" => key::Named::Enter,
+                    "tab" => key::Named::Tab,
+                    "down" => key::Named::ArrowDown,
+                    "up" => key::Named::ArrowUp,
+                    _ => panic!("no such key {rest:?}"),
+                };
+                rec.key(&mut tour, Key::Named(named), None);
+                rec.wait(&mut tour, 0.1);
+            }
+            "name" => {
+                let app = &mut tour.app;
+                let node = app.nodes.last_mut().expect("a card made");
+                let old = std::mem::replace(&mut node.id, rest.to_owned());
+                for edge in &mut app.edges {
+                    for end in [&mut edge.from_node, &mut edge.to_node] {
+                        if *end == old {
+                            *end = rest.to_owned();
+                        }
+                    }
+                }
+                rec.rename(&old, rest);
+            }
+            _ => panic!("line {}: no such step {step:?}", number + 1),
+        }
+    }
+}
+
+/// Where a script's place is on screen: a world point `x,y`, or a card by id
+/// — its middle, or with `:side` the port on that side.
+fn place(tour: &Tour, place: &str) -> Point {
+    if let Some((x, y)) = place.split_once(',')
+        && let (Ok(x), Ok(y)) = (x.parse(), y.parse())
+    {
+        return tour.app.camera.to_screen(Point::new(x, y));
+    }
+    let (id, side) = place.split_once(':').map_or((place, None), |(id, side)| (id, Some(side)));
+    let node = tour.app.nodes.iter().find(|node| node.id == id).unwrap_or_else(|| panic!("no card {id:?}"));
+    let rect = tour.app.camera.rect_to_screen(arrange::node_world_rect(node));
+    match side {
+        Some("left") => Point::new(rect.x, rect.center_y()),
+        Some("right") => Point::new(rect.x + rect.width, rect.center_y()),
+        Some("top") => Point::new(rect.center_x(), rect.y),
+        Some("bottom") => Point::new(rect.center_x(), rect.y + rect.height),
+        Some(side) => panic!("no side {side:?}"),
+        None => rect.center(),
+    }
+}
+
+/// The card and side whose port the pointer is on, if it's on one.
+fn card_at_port(tour: &Tour) -> Option<(String, &'static str)> {
+    tour.app.nodes.iter().find_map(|node| {
+        let rect = tour.app.camera.rect_to_screen(arrange::node_world_rect(node));
+        let ports = [
+            ("left", Point::new(rect.x, rect.center_y())),
+            ("right", Point::new(rect.x + rect.width, rect.center_y())),
+            ("top", Point::new(rect.center_x(), rect.y)),
+            ("bottom", Point::new(rect.center_x(), rect.y + rect.height)),
+        ];
+        ports.into_iter().find(|(_, at)| at.distance(tour.cursor) < 2.0).map(|(side, _)| (node.id.clone(), side))
+    })
+}
+
+/// A scene played a frame at a time and, from `record` on, written down: each
+/// frame's time, the window, how far the overlay is summoned, the pointer, the
+/// camera, every card's place, size and text, the links, which cards are
+/// springing into place, the shimmer over what a question read, what's
+/// selected, the clusters zooming out shows, the open panel and the theme on
+/// the board, the card being edited — its text, its caret and the editor's box
+/// — and the open menu; and what the board's own gestures don't leave in the
+/// app's state, which the scene knows instead: a button or a shortcut
+/// pressed, a link being drawn out of a port. What a gesture *does* is the app's to decide — where a
+/// card lands, how it grows, when an answer's cards restack — so a replay of
+/// it elsewhere is taken from here rather than worked out again.
+#[derive(Default)]
+struct Recording {
+    started: Option<Instant>,
+    frames: Vec<serde_json::Value>,
+    /// The button pressed since the last frame, for the frame to say so.
+    pressed: Option<&'static str>,
+    /// The shortcut pressed since the last frame, as its keys are written.
+    keys: Option<String>,
+    connecting: Option<(String, &'static str)>,
+}
+
+/// How long a frame is: a 60 Hz display's.
+const FRAME: Duration = Duration::from_millis(16);
+
+impl Recording {
+    fn start(&mut self) {
+        self.started = Some(Instant::now());
+        self.frames.clear();
+    }
+
+    /// One frame: the runtime's work for it — tasks, timers, animation ticks,
+    /// a caret waiting on layout — a draw (the editor highlights in its draw),
+    /// and, recording, a note of it all. Then the rest of the frame passes.
+    fn frame(&mut self, tour: &mut Tour) {
+        let began = Instant::now();
+        tour.pump();
+        tour.timers();
+        if tour.app.transitioning() {
+            tour.send(Message::Tick(Instant::now()));
+        }
+        if tour.app.editing.as_ref().is_some_and(|e| e.pending_caret.is_some()) {
+            tour.operate(Box::new(Noop));
+            tour.send(Message::PlaceEditorCaret);
+        }
+        tour.draw();
+        if let Some(started) = self.started {
+            let frame = self.note(tour, started.elapsed().as_secs_f32());
+            self.frames.push(frame);
+        }
+        std::thread::sleep(FRAME.saturating_sub(began.elapsed()));
+    }
+
+    fn wait(&mut self, tour: &mut Tour, secs: f32) {
+        let until = Instant::now() + Duration::from_secs_f32(secs);
+        while Instant::now() < until {
+            self.frame(tour);
+        }
+    }
+
+    /// The pointer moved to `to` over `secs`, easing in and out, a move a frame.
+    fn glide(&mut self, tour: &mut Tour, to: Point, secs: f32) {
+        let from = tour.cursor;
+        let frames = (secs / FRAME.as_secs_f32()).round().max(1.0) as usize;
+        for i in 1..=frames {
+            let t = i as f32 / frames as f32;
+            let e = if t < 0.5 { 4.0 * t * t * t } else { 1.0 - (-2.0 * t + 2.0).powi(3) / 2.0 };
+            let at = Point::new(from.x + (to.x - from.x) * e, from.y + (to.y - from.y) * e);
+            tour.cursor = at;
+            tour.deliver(vec![Event::Mouse(mouse::Event::CursorMoved { position: at })]);
+            self.frame(tour);
+        }
+    }
+
+    fn button(&mut self, tour: &mut Tour, button: mouse::Button, down: bool) {
+        if down {
+            self.pressed = Some(if button == mouse::Button::Right { "right" } else { "left" });
+        }
+        let event = if down { mouse::Event::ButtonPressed(button) } else { mouse::Event::ButtonReleased(button) };
+        tour.deliver(vec![Event::Mouse(event)]);
+        tour.draw();
+    }
+
+    /// One key, delivered without settling — a settle would play whatever's
+    /// moving to its end between two frames — and drawn.
+    fn key(&mut self, tour: &mut Tour, key: Key, text: Option<&str>) {
+        let physical = key::Physical::Unidentified(key::NativeCode::Unidentified);
+        let modifiers = tour.modifiers;
+        tour.deliver(vec![
+            Event::Keyboard(keyboard::Event::KeyPressed {
+                key: key.clone(),
+                modified_key: key.clone(),
+                physical_key: physical,
+                location: keyboard::Location::Standard,
+                modifiers,
+                text: text.map(Into::into),
+                repeat: false,
+            }),
+            Event::Keyboard(keyboard::Event::KeyReleased {
+                key: key.clone(),
+                modified_key: key,
+                physical_key: physical,
+                location: keyboard::Location::Standard,
+                modifiers,
+            }),
+        ]);
+        tour.draw();
+    }
+
+    /// The board panned by `by` (screen px) over `secs`, eased, a part a frame.
+    fn pan(&mut self, tour: &mut Tour, by: Vector, secs: f32) {
+        let frames = (secs / FRAME.as_secs_f32()).round().max(1.0) as usize;
+        let ease = |t: f32| if t < 0.5 { 4.0 * t * t * t } else { 1.0 - (-2.0 * t + 2.0).powi(3) / 2.0 };
+        for i in 1..=frames {
+            let step = ease(i as f32 / frames as f32) - ease((i - 1) as f32 / frames as f32);
+            tour.send(Message::Pan { delta: by * step, track: false });
+            self.frame(tour);
+        }
+    }
+
+    /// The board zoomed by `factor` about the pointer over `secs`: an equal
+    /// share a frame, as a pinch reports it.
+    fn zoom(&mut self, tour: &mut Tour, factor: f32, secs: f32) {
+        let frames = (secs / FRAME.as_secs_f32()).round().max(1.0) as usize;
+        let step = factor.powf(1.0 / frames as f32);
+        for _ in 0..frames {
+            tour.send(Message::ZoomBy { factor: step, cursor: tour.cursor });
+            self.frame(tour);
+        }
+    }
+
+    /// A shortcut: `modifiers` held and `key` pressed, delivered without
+    /// settling; the frame says which keys, written as the app writes them.
+    fn chord(&mut self, tour: &mut Tour, modifiers: Modifiers, key: &str) {
+        let mut written = String::new();
+        for (held, glyph) in [(Modifiers::CTRL, "⌃"), (Modifiers::ALT, "⌥"), (Modifiers::SHIFT, "⇧"), (Modifiers::COMMAND, "⌘")] {
+            if modifiers.contains(held) {
+                written.push_str(glyph);
+            }
+        }
+        written.push_str(&key.to_uppercase());
+        self.keys = Some(written);
+        tour.modifiers = modifiers;
+        tour.deliver(vec![Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers))]);
+        self.key(tour, Key::Character(key.into()), None);
+        tour.modifiers = Modifiers::empty();
+        tour.deliver(vec![Event::Keyboard(keyboard::Event::ModifiersChanged(Modifiers::empty()))]);
+        self.frame(tour);
+    }
+
+    /// `text` typed a key at a time at a person's pace: a little longer after
+    /// a space, longer after a line, never quite even.
+    fn type_text(&mut self, tour: &mut Tour, text: &str) {
+        let mut seed: u32 = 7;
+        for c in text.chars() {
+            if c == '\n' {
+                self.key(tour, Key::Named(key::Named::Enter), Some("\n"));
+            } else {
+                let s = c.to_string();
+                self.key(tour, Key::Character(s.as_str().into()), Some(&s));
+            }
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12_345);
+            let jitter = (seed >> 16) % 40;
+            let pause = match c {
+                '\n' => 170,
+                ' ' => 60,
+                _ => 30,
+            } + jitter * 3 / 4;
+            self.wait(tour, pause as f32 / 1000.0);
+        }
+    }
+
+    /// What one frame shows, as JSON.
+    fn note(&mut self, tour: &Tour, t: f32) -> serde_json::Value {
+        let app = &tour.app;
+        let world = app.camera.to_world(Point::new(tour.viewport.width / 2.0, tour.viewport.height / 2.0));
+        let end = |end: crate::model::EdgeEnd| if end == crate::model::EdgeEnd::Arrow { "arrow" } else { "none" };
+        let nodes: Vec<serde_json::Value> = app
+            .nodes
+            .iter()
+            .enumerate()
+            .map(|(index, node)| {
+                serde_json::json!({
+                    "id": node.id,
+                    "type": node.kind,
+                    "x": node.x,
+                    "y": node.y,
+                    "width": node.width,
+                    "height": node.height,
+                    "text": node.text,
+                    "file": node.file,
+                    "url": node.url(),
+                    "color": node.color,
+                    "spawn": app.spawning.get(&index).map(|since| since.elapsed().as_secs_f32()),
+                })
+            })
+            .collect();
+        let edges: Vec<serde_json::Value> = app
+            .edges
+            .iter()
+            .map(|edge| {
+                serde_json::json!({
+                    "id": edge.id,
+                    "fromNode": edge.from_node,
+                    "fromSide": edge.from_side,
+                    "toNode": edge.to_node,
+                    "toSide": edge.to_side,
+                    "fromEnd": end(edge.from_end()),
+                    "toEnd": end(edge.to_end()),
+                    "color": edge.extra.get("color"),
+                })
+            })
+            .collect();
+        let flows: Vec<serde_json::Value> = app
+            .ai
+            .flows
+            .iter()
+            .map(|flow| {
+                serde_json::json!({
+                    "nodes": flow.nodes,
+                    "edges": flow.edges,
+                    "target": flow.target,
+                    "age": flow.since.elapsed().as_secs_f32(),
+                })
+            })
+            .collect();
+        let selected: Vec<&str> = app.selected.iter().filter_map(|&i| app.nodes.get(i)).map(|node| node.id.as_str()).collect();
+        let clusters: Vec<serde_json::Value> = app
+            .clusters
+            .list
+            .iter()
+            .map(|cluster| {
+                let b = cluster.bounds;
+                serde_json::json!({
+                    "bounds": [b.x, b.y, b.width, b.height],
+                    "text": cluster.text,
+                    "fontSize": cluster.font_size,
+                    "image": cluster.image_id,
+                })
+            })
+            .collect();
+        let cluster_links: Vec<[usize; 2]> = app.clusters.links.iter().map(|link| [link.from, link.to]).collect();
+        let editing = app.editing.as_ref().and_then(|editing| {
+            let node = app.nodes.get(editing.index)?;
+            let editor = app.editor_box(editing.index)?;
+            let caret = editing.content.cursor().position;
+            Some(serde_json::json!({
+                "id": node.id,
+                "text": editing.content.text(),
+                "caret": [caret.line, caret.column],
+                "box": [editor.origin.x, editor.origin.y, editor.width, editor.height],
+                "centered": editor.centered,
+            }))
+        });
+        // The open panel, as its view draws it — the palette's or the theme
+        // picker's rows, from the very functions the views call.
+        let row = |row: &picker::Row| {
+            serde_json::json!({
+                "title": row.title,
+                "matched": row.matched.iter().map(|range| [range.start, range.end]).collect::<Vec<_>>(),
+                "detail": row.detail,
+                "keys": row.keys,
+                "enabled": row.enabled,
+            })
+        };
+        let panel = if let Some(state) = &app.command_palette {
+            let (rows, headers) = command::rows(app, state);
+            Some(serde_json::json!({
+                "kind": "command",
+                "query": state.query,
+                "selected": state.selected,
+                "offset": state.offset,
+                "rows": rows.iter().map(row).collect::<Vec<_>>(),
+                "headers": headers.iter().map(|(heads, label)| serde_json::json!([heads, label])).collect::<Vec<_>>(),
+            }))
+        } else {
+            app.theme_picker.as_ref().map(|picker| {
+                serde_json::json!({
+                    "kind": "theme",
+                    "query": picker.state.query,
+                    "selected": picker.state.selected,
+                    "offset": picker.state.offset,
+                    "rows": app.theme_rows(picker).iter().map(row).collect::<Vec<_>>(),
+                    "headers": [],
+                })
+            })
+        };
+        // The theme on the board: the one previewed, while the picker's open.
+        let theme = match &app.theme_picker {
+            Some(_) => app.highlighted_theme_name().unwrap_or_default(),
+            None => app.config.theme.clone(),
+        };
+        let menu = app.context_menu.as_ref().map(|menu| {
+            let kind = match menu.kind {
+                ContextMenuKind::Canvas { .. } => "canvas",
+                ContextMenuKind::Node => "card",
+                ContextMenuKind::Link => "link",
+            };
+            serde_json::json!({ "kind": kind, "x": menu.screen.x, "y": menu.screen.y })
+        });
+        serde_json::json!({
+            "t": t,
+            "viewport": [tour.viewport.width, tour.viewport.height],
+            "overlay": app.overlay,
+            "reveal": app.reveal,
+            "pointer": [tour.cursor.x, tour.cursor.y],
+            "pressed": self.pressed.take(),
+            "keys": self.keys.take(),
+            "camera": [world.x, world.y, app.camera.zoom],
+            "nodes": nodes,
+            "edges": edges,
+            "flows": flows,
+            "selected": selected,
+            "clusters": clusters,
+            "clusterLinks": cluster_links,
+            "editing": editing,
+            "menu": menu,
+            "panel": panel,
+            "theme": theme,
+            "connecting": self.connecting.as_ref().map(|(id, side)| serde_json::json!({ "from": id, "side": side })),
+        })
+    }
+
+    /// A card's id changed: every frame so far says the new one, so a replay
+    /// sees one card throughout rather than one leaving as another arrives.
+    fn rename(&mut self, old: &str, new: &str) {
+        fn walk(value: &mut serde_json::Value, old: &str, new: &str) {
+            match value {
+                serde_json::Value::String(s) if s == old => *s = new.to_owned(),
+                serde_json::Value::Array(items) => items.iter_mut().for_each(|item| walk(item, old, new)),
+                serde_json::Value::Object(fields) => fields.values_mut().for_each(|field| walk(field, old, new)),
+                _ => {}
+            }
+        }
+        for frame in &mut self.frames {
+            walk(frame, old, new);
+        }
+    }
+
+    fn save(&mut self, tour: &Tour, name: &str) {
+        let path = tour.out.join(format!("{name}.json"));
+        std::fs::write(&path, serde_json::to_string(&self.frames).expect("frames as JSON")).expect("write the recording");
+        println!("tour: {} ({} frames)", path.display(), self.frames.len());
+        self.started = None;
+    }
+}
+
 const SCENES: &[(&str, fn())] = &[
     ("first_run", first_run),
     ("build_a_board", build_a_board),
@@ -2746,6 +3398,7 @@ const SCENES: &[(&str, fn())] = &[
     ("keyboard_only", keyboard_only),
     ("offscreen", offscreen),
     ("small_windows", small_windows),
+    ("canvas", canvas),
 ];
 
 #[test]

@@ -456,9 +456,10 @@ pub(crate) fn key_event(
     picker::panel_key(&event, Panel::Command)
 }
 
-/// The palette panel: a focused input over the listing. Rows are greyed and
-/// un-clickable when their command isn't applicable.
-pub(super) fn view<'a>(app: &'a App, state: &'a picker::State) -> Element<'a, Message> {
+/// The palette's rows and section headers, as `state` has them: what [`view`]
+/// draws, and what the tour records of it. Rows are greyed and un-clickable
+/// when their command isn't applicable.
+pub(super) fn rows<'a>(app: &'a App, state: &picker::State) -> (Vec<Row<'a>>, Vec<(usize, Cow<'a, str>)>) {
     let Listing { entries, headers } = listing(app, &state.query);
     let rows = entries
         .into_iter()
@@ -477,7 +478,12 @@ pub(super) fn view<'a>(app: &'a App, state: &'a picker::State) -> Element<'a, Me
             }
         })
         .collect();
+    (rows, headers.into_iter().map(|(heads, label)| (heads, label.into())).collect())
+}
 
+/// The palette panel: a focused input over the listing.
+pub(super) fn view<'a>(app: &'a App, state: &'a picker::State) -> Element<'a, Message> {
+    let (rows, headers) = rows(app, state);
     picker::view(
         app,
         state,
@@ -488,7 +494,7 @@ pub(super) fn view<'a>(app: &'a App, state: &'a picker::State) -> Element<'a, Me
             on_submit: Message::RunSelectedCommand,
             verb: "Run",
             empty: "No matching command".into(),
-            headers: headers.into_iter().map(|(heads, label)| (heads, label.into())).collect(),
+            headers,
         },
         rows,
     )
