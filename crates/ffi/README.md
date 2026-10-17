@@ -32,7 +32,7 @@ model — including fields ThinkBoard doesn't model — so `toJson()` never drop
 another tool's data. `Node` / `Edge` / `MarkdownSpan` / `LayoutPosition` are
 plain value structs for the UI.
 
-- `parseMarkdown` turns note text into styled spans (bold/italic/code, heading
+- `parseMarkdown` turns card text into styled spans (bold/italic/code, heading
   level, links, and per-token syntax classes for code blocks).
 - `layout` returns computed positions without mutating; `applyLayout` writes
   them back. The editing methods live on `CanvasDocument` in the core crate, so

@@ -33,10 +33,10 @@ pub struct Config {
     pub vault: String,
     /// Whether clicking empty space on the overlay dismisses the board.
     pub dismiss_on_background_click: bool,
-    /// Whether double-clicking empty space adds a note there, as Obsidian's
+    /// Whether double-clicking empty space adds a card there, as Obsidian's
     /// canvas does. Opt-in, and only where a click doesn't dismiss the board —
-    /// see [`Config::double_click_adds_note`].
-    pub double_click_adds_note: bool,
+    /// see [`Config::double_click_adds_card`].
+    pub double_click_adds_card: bool,
     /// Whether the board stays up when you switch macOS Spaces. When false
     /// (default), switching Spaces auto-dismisses it (re-summon with the
     /// hotkey).
@@ -120,7 +120,7 @@ pub struct Config {
     // --- Behavior ---
     /// Idle time after the last edit before autosaving (milliseconds).
     pub autosave_debounce_ms: u64,
-    /// Zoom below which nearby notes collapse into semantic-zoom clusters.
+    /// Zoom below which nearby cards collapse into semantic-zoom clusters.
     pub cluster_zoom: f32,
     /// Adding a node while zoomed out below `auto_zoom_trigger` flies the
     /// camera in to `auto_zoom_level`.
@@ -158,7 +158,7 @@ pub struct Config {
     /// simply-emphasized text (only bold/italic) is centered, and anything with
     /// richer formatting (headings, code, links, lists) is left-aligned; when
     /// false, everything is left-aligned — the Obsidian way.
-    pub center_node_text: bool,
+    pub center_card_text: bool,
     /// How node/cluster text is drawn. `true` pre-rasterizes it into bitmap
     /// snapshots (crisp, but large textures cost GPU bandwidth while panning);
     /// `false` draws it live as vector text every frame (always crisp, more
@@ -168,16 +168,16 @@ pub struct Config {
     /// scrollbar (and can be manually resized below its content). Off by default:
     /// nodes clamp to fit their text. On: manual resize can shrink a node past
     /// its text and the overflow scrolls (editing the node re-grows it to fit).
-    pub node_scrollbars: bool,
+    pub card_scrollbars: bool,
 
     // --- Node & auto-layout sizing ---
     /// Bounds a freshly created / auto-sized text node grows within.
-    pub new_node_min_width: f32,
-    pub new_node_min_height: f32,
-    pub max_node_width: f32,
+    pub new_card_min_width: f32,
+    pub new_card_min_height: f32,
+    pub max_card_width: f32,
     /// Gaps used by the "Auto-layout" command (world px).
     pub layout_rank_gap: f32,
-    pub layout_node_gap: f32,
+    pub layout_card_gap: f32,
 
     /// When true, adding a node (port drag or AI) auto-lays-out its connected
     /// graph. Toggled from the canvas context menu; persisted here.
@@ -227,15 +227,15 @@ pub struct Config {
     /// then dropped — see [`Config::migrate_api_key`].
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub ai_api_key: String,
-    /// Hard cap on notes a single AI answer may split into (the model is asked
-    /// to stay under it; extra content appends to the last note).
-    pub max_ai_nodes: usize,
+    /// Hard cap on cards a single AI answer may split into (the model is asked
+    /// to stay under it; extra content appends to the last card).
+    pub max_ai_cards: usize,
     /// Obsidian color code ("1"–"6") a node is tinted when it triggers an AI
     /// request; "0" leaves it uncolored.
     pub ai_trigger_color: String,
     /// Obsidian color code ("1"–"6") given to AI-generated response nodes; "0"
     /// leaves them uncolored, which is the default.
-    pub ai_node_color: String,
+    pub ai_card_color: String,
     /// Copilot-style suggestions: after adding a connected node, the AI offers
     /// a few "ghost" sibling nodes you can accept. Shelved, so nothing sets it
     /// and nothing acts on it (see `app::ghosts`); kept so a config that has it
@@ -253,7 +253,7 @@ impl Default for Config {
             canvas: String::new(),
             vault: String::new(),
             dismiss_on_background_click: true,
-            double_click_adds_note: false,
+            double_click_adds_card: false,
             persist_across_spaces: false,
             overlay_transparent: true,
             overlay_backdrop: String::new(),
@@ -286,15 +286,15 @@ impl Default for Config {
             font: String::new(),
             overlay_dim: 0.55,
             colored_card_opacity: 0.85,
-            center_node_text: true,
+            center_card_text: true,
             rasterize_text: true,
-            node_scrollbars: false,
+            card_scrollbars: false,
 
-            new_node_min_width: 250.0,
-            new_node_min_height: 60.0,
-            max_node_width: 420.0,
+            new_card_min_width: 250.0,
+            new_card_min_height: 60.0,
+            max_card_width: 420.0,
             layout_rank_gap: 70.0,
-            layout_node_gap: 40.0,
+            layout_card_gap: 40.0,
 
             auto_layout: false,
             auto_layout_direction: "LR".to_owned(),
@@ -310,9 +310,9 @@ impl Default for Config {
             ai_model: "google/gemma-4-26b-a4b-qat".to_owned(),
             ai_api_keys: BTreeMap::new(),
             ai_api_key: String::new(),
-            max_ai_nodes: 6,
+            max_ai_cards: 6,
             ai_trigger_color: "0".to_owned(), // uncolored
-            ai_node_color: "0".to_owned(),    // uncolored
+            ai_card_color: "0".to_owned(),    // uncolored
             ai_completions: false,
             ai_thinking: false,
         }
@@ -565,15 +565,15 @@ impl Config {
         overlay && self.dismiss_on_background_click
     }
 
-    /// Whether a double-click on empty space adds a note.
+    /// Whether a double-click on empty space adds a card.
     ///
     /// Never while a click dismisses: the dismissal fires as the *first* click
     /// is released, so the board would be gone before the second arrived, and
     /// holding every dismissal back by the double-click window to find out
     /// would make the Dashboard-style click feel late. So the two are
     /// exclusive, and the setting waits on the other one being off.
-    pub fn double_click_adds_note(&self, overlay: bool) -> bool {
-        self.double_click_adds_note && !self.click_dismisses(overlay)
+    pub fn double_click_adds_card(&self, overlay: bool) -> bool {
+        self.double_click_adds_card && !self.click_dismisses(overlay)
     }
 
     /// Whether AI is on: an endpoint is configured. Empty `ai_url` is the "Off"
@@ -615,22 +615,22 @@ impl Config {
         self.overlay_blur = self.overlay_blur.clamp(0.0, 4.0);
         // A floor, so a card can't be faded out of sight by accident.
         self.colored_card_opacity = self.colored_card_opacity.clamp(0.2, 1.0);
-        self.new_node_min_width = self.new_node_min_width.max(20.0);
-        self.new_node_min_height = self.new_node_min_height.max(20.0);
-        self.max_node_width = self.max_node_width.max(self.new_node_min_width);
+        self.new_card_min_width = self.new_card_min_width.max(20.0);
+        self.new_card_min_height = self.new_card_min_height.max(20.0);
+        self.max_card_width = self.max_card_width.max(self.new_card_min_width);
         self.layout_rank_gap = self.layout_rank_gap.max(0.0);
-        self.layout_node_gap = self.layout_node_gap.max(0.0);
+        self.layout_card_gap = self.layout_card_gap.max(0.0);
         self.snap_grid_size = self.snap_grid_size.clamp(2.0, 500.0);
         // A floor, as for coloured cards, so a link can't be hidden by accident.
         self.link_opacity = self.link_opacity.clamp(0.1, 1.0);
         if self.auto_layout_direction != "LR" && self.auto_layout_direction != "TD" {
             self.auto_layout_direction = "LR".to_owned();
         }
-        self.max_ai_nodes = self.max_ai_nodes.clamp(1, 50);
+        self.max_ai_cards = self.max_ai_cards.clamp(1, 50);
         // AI tint colors: an Obsidian preset "0"–"6" ("0" = none), else default.
         for (code, default) in [
             (&mut self.ai_trigger_color, "0"),
-            (&mut self.ai_node_color, "0"),
+            (&mut self.ai_card_color, "0"),
         ] {
             if !matches!(code.as_str(), "0" | "1" | "2" | "3" | "4" | "5" | "6") {
                 *code = default.to_owned();
@@ -862,17 +862,17 @@ mod tests {
     }
 
     #[test]
-    fn double_click_adds_a_note_only_where_a_click_doesnt_dismiss() {
-        let mut config = Config { double_click_adds_note: true, ..Config::default() };
+    fn double_click_adds_a_card_only_where_a_click_doesnt_dismiss() {
+        let mut config = Config { double_click_adds_card: true, ..Config::default() };
         // The overlay with click-to-dismiss on: the first click would already
         // have put the board away.
-        assert!(!config.double_click_adds_note(true));
+        assert!(!config.double_click_adds_card(true));
         // A window is never dismissed by a click, whatever the setting says.
-        assert!(config.double_click_adds_note(false));
+        assert!(config.double_click_adds_card(false));
         config.dismiss_on_background_click = false;
-        assert!(config.double_click_adds_note(true));
+        assert!(config.double_click_adds_card(true));
         // And it is opt-in.
-        assert!(!Config::default().double_click_adds_note(false));
+        assert!(!Config::default().double_click_adds_card(false));
     }
 
     #[test]

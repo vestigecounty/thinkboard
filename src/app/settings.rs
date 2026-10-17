@@ -40,7 +40,7 @@ pub(crate) enum Field {
     SummonGesture,
     Vault,
     DismissOnBackgroundClick,
-    DoubleClickAddsNote,
+    DoubleClickAddsCard,
     // Only surfaced in the UI on macOS (its Spaces are the only workspaces we
     // watch), but the apply/config plumbing stays cross-platform.
     #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
@@ -58,10 +58,10 @@ pub(crate) enum Field {
     TrayIconMonochrome,
     LinkStyle,
     ArrowTip,
-    CenterNodeText,
-    NodeScrollbars,
+    CenterCardText,
+    CardScrollbars,
     ColoredCardOpacity,
-    MaxNodeWidth,
+    MaxCardWidth,
     // Canvas
     SnapToGrid,
     SnapGridSize,
@@ -75,7 +75,7 @@ pub(crate) enum Field {
     AiUrl,
     AiModel,
     AiApiKey,
-    AiNodeColor,
+    AiCardColor,
     AiThinking,
     // Advanced
     RasterizeText,
@@ -123,12 +123,12 @@ pub(crate) const FILE_ONLY: [&str; 16] = [
     "pinch_zoom_step",
     "auto_zoom_trigger",
     "auto_zoom_level",
-    "new_node_min_width",
-    "new_node_min_height",
+    "new_card_min_width",
+    "new_card_min_height",
     "layout_rank_gap",
-    "layout_node_gap",
+    "layout_card_gap",
     "autosave_debounce_ms",
-    "max_ai_nodes",
+    "max_ai_cards",
     "ai_trigger_color",
     "link_opacity",
     "overlay_blur",
@@ -239,7 +239,7 @@ pub(crate) fn index() -> Vec<Field> {
     if cfg!(target_os = "macos") {
         fields.push(SummonGesture);
     }
-    fields.extend([Vault, DismissOnBackgroundClick, DoubleClickAddsNote]);
+    fields.extend([Vault, DismissOnBackgroundClick, DoubleClickAddsCard]);
     if cfg!(target_os = "macos") {
         fields.push(PersistAcrossSpaces);
     }
@@ -248,9 +248,9 @@ pub(crate) fn index() -> Vec<Field> {
         fields.push(TrayIconMonochrome);
     }
     fields.extend([
-        LinkStyle, ArrowTip, CenterNodeText, NodeScrollbars, ColoredCardOpacity, MaxNodeWidth,
+        LinkStyle, ArrowTip, CenterCardText, CardScrollbars, ColoredCardOpacity, MaxCardWidth,
         SnapToGrid, AutoLayout, AutoLayoutDirection, ZoomSpeed, PanInertia,
-        AiProvider, AiUrl, AiModel, AiApiKey, AiNodeColor, AiThinking,
+        AiProvider, AiUrl, AiModel, AiApiKey, AiCardColor, AiThinking,
         RasterizeText, ClusterZoom, AnimationScale, ThemeCss, Canvas,
     ]);
     fields
@@ -264,7 +264,7 @@ impl Field {
             Field::SummonGesture => "Four-finger swipe down",
             Field::Vault => "Obsidian vault",
             Field::DismissOnBackgroundClick => "Click empty space to dismiss",
-            Field::DoubleClickAddsNote => "Double-click to add a note",
+            Field::DoubleClickAddsCard => "Double-click to add a card",
             Field::PersistAcrossSpaces => "Stay up across Spaces",
             Field::OverlayDim => "Dim behind board",
             Field::Windowed => "Run as a normal window",
@@ -275,10 +275,10 @@ impl Field {
             Field::TrayIconMonochrome => "Monochrome menu bar icon",
             Field::LinkStyle => "Link style",
             Field::ArrowTip => "Arrow tips",
-            Field::CenterNodeText => "Center plain text",
-            Field::NodeScrollbars => "Card scrollbars",
+            Field::CenterCardText => "Center plain text",
+            Field::CardScrollbars => "Card scrollbars",
             Field::ColoredCardOpacity => "Colored card opacity",
-            Field::MaxNodeWidth => "Card grows to",
+            Field::MaxCardWidth => "Card grows to",
             Field::SnapToGrid => "Snap to grid",
             Field::SnapGridSize => "Grid spacing",
             Field::AutoLayout => "Auto-layout when adding a linked card",
@@ -289,7 +289,7 @@ impl Field {
             Field::AiUrl => "API URL",
             Field::AiModel => "Model",
             Field::AiApiKey => "API key",
-            Field::AiNodeColor => "Answer card color",
+            Field::AiCardColor => "Answer card color",
             Field::AiThinking => "Let the model think first",
             Field::RasterizeText => "Rasterize text",
             Field::ClusterZoom => "Cluster below zoom",
@@ -314,12 +314,12 @@ impl Field {
     pub(crate) fn tab(self) -> Tab {
         use Field::*;
         match self {
-            SummonHotkey | SummonGesture | Vault | DismissOnBackgroundClick | DoubleClickAddsNote
+            SummonHotkey | SummonGesture | Vault | DismissOnBackgroundClick | DoubleClickAddsCard
             | PersistAcrossSpaces | OverlayDim | Windowed => Tab::General,
             Theme | Font | OverlayBackdrop | OverlayImage | TrayIconMonochrome | LinkStyle | ArrowTip
-            | CenterNodeText | NodeScrollbars | ColoredCardOpacity | MaxNodeWidth => Tab::Appearance,
+            | CenterCardText | CardScrollbars | ColoredCardOpacity | MaxCardWidth => Tab::Appearance,
             SnapToGrid | SnapGridSize | AutoLayout | AutoLayoutDirection | ZoomSpeed | PanInertia => Tab::Canvas,
-            AiProvider | AiUrl | AiModel | AiApiKey | AiNodeColor | AiThinking => Tab::Ai,
+            AiProvider | AiUrl | AiModel | AiApiKey | AiCardColor | AiThinking => Tab::Ai,
             RasterizeText | ClusterZoom | AnimationScale | ThemeCss | Canvas => Tab::Advanced,
         }
     }
@@ -327,12 +327,12 @@ impl Field {
     pub(crate) fn kind(self) -> Kind {
         use Field::*;
         match self {
-            SummonGesture | DismissOnBackgroundClick | DoubleClickAddsNote | PersistAcrossSpaces | Windowed
-            | TrayIconMonochrome | CenterNodeText | NodeScrollbars | SnapToGrid | AutoLayout | AiThinking
+            SummonGesture | DismissOnBackgroundClick | DoubleClickAddsCard | PersistAcrossSpaces | Windowed
+            | TrayIconMonochrome | CenterCardText | CardScrollbars | SnapToGrid | AutoLayout | AiThinking
             | RasterizeText => Kind::Switch,
-            OverlayBackdrop | LinkStyle | ArrowTip | AutoLayoutDirection | AiProvider | AiNodeColor => Kind::Choice,
+            OverlayBackdrop | LinkStyle | ArrowTip | AutoLayoutDirection | AiProvider | AiCardColor => Kind::Choice,
             Theme | Font | AiModel => Kind::Picker,
-            SummonHotkey | Vault | OverlayDim | OverlayImage | ColoredCardOpacity | MaxNodeWidth | SnapGridSize
+            SummonHotkey | Vault | OverlayDim | OverlayImage | ColoredCardOpacity | MaxCardWidth | SnapGridSize
             | ZoomSpeed | PanInertia | AiUrl | AiApiKey | ClusterZoom | AnimationScale | ThemeCss | Canvas => Kind::Row,
         }
     }
@@ -345,7 +345,7 @@ impl Field {
             Field::SummonGesture => "macos trackpad swipe gesture summon",
             Field::Vault => "obsidian folder",
             Field::DismissOnBackgroundClick => "dismiss hide close click",
-            Field::DoubleClickAddsNote => "create new card obsidian",
+            Field::DoubleClickAddsCard => "create new note node obsidian",
             Field::PersistAcrossSpaces => "macos desktop workspace persist",
             Field::OverlayDim => "darken dim opacity",
             Field::Windowed => "window mode overlay",
@@ -353,10 +353,10 @@ impl Field {
             Field::TrayIconMonochrome => "macos tray menu bar icon template",
             Field::LinkStyle => "links edges curve routing",
             Field::ArrowTip => "arrowhead arrow head link edge",
-            Field::CenterNodeText => "align centre text",
-            Field::NodeScrollbars => "scroll resize overflow",
+            Field::CenterCardText => "align centre text",
+            Field::CardScrollbars => "scroll resize overflow",
             Field::ColoredCardOpacity => "colour color transparency",
-            Field::MaxNodeWidth => "card width size",
+            Field::MaxCardWidth => "card width size",
             Field::SnapToGrid => "grid align",
             Field::AutoLayout => "layout arrange",
             Field::AutoLayoutDirection => "layout direction flow",
@@ -365,7 +365,7 @@ impl Field {
             Field::AiProvider => "ai llm endpoint",
             Field::AiUrl => "ai endpoint url",
             Field::AiApiKey => "ai key token",
-            Field::AiNodeColor => "ai answer colour color",
+            Field::AiCardColor => "ai answer colour color",
             Field::AiThinking => "ai reasoning",
             Field::RasterizeText => "bitmap performance gpu",
             Field::ClusterZoom => "cluster semantic zoom",
@@ -431,7 +431,7 @@ impl App {
                     .map(|name| choice(name, Msg::PickPreset(name.to_owned()), current == name, ""))
                     .collect()
             }
-            Field::AiNodeColor => [
+            Field::AiCardColor => [
                 ("0", "None"),
                 ("1", "Red"),
                 ("2", "Orange"),
@@ -441,7 +441,7 @@ impl App {
                 ("6", "Purple"),
             ]
             .into_iter()
-            .map(|(code, label)| choice(label, Msg::Pick(field, code.to_owned()), c.ai_node_color == code, ""))
+            .map(|(code, label)| choice(label, Msg::Pick(field, code.to_owned()), c.ai_card_color == code, ""))
             .collect(),
             _ => Vec::new(),
         }
@@ -468,7 +468,7 @@ impl Field {
             Field::SummonGesture => c.summon_gesture != d.summon_gesture,
             Field::Vault => !c.vault.trim().is_empty(),
             Field::DismissOnBackgroundClick => c.dismiss_on_background_click != d.dismiss_on_background_click,
-            Field::DoubleClickAddsNote => c.double_click_adds_note != d.double_click_adds_note,
+            Field::DoubleClickAddsCard => c.double_click_adds_card != d.double_click_adds_card,
             Field::PersistAcrossSpaces => c.persist_across_spaces != d.persist_across_spaces,
             Field::OverlayDim => moved(c.overlay_dim, d.overlay_dim),
             Field::Windowed => c.windowed != d.windowed,
@@ -478,10 +478,10 @@ impl Field {
             Field::TrayIconMonochrome => c.tray_icon_monochrome != d.tray_icon_monochrome,
             Field::LinkStyle => LinkStyle::of(c) != LinkStyle::of(&d),
             Field::ArrowTip => ArrowTip::of(c) != ArrowTip::of(&d),
-            Field::CenterNodeText => c.center_node_text != d.center_node_text,
-            Field::NodeScrollbars => c.node_scrollbars != d.node_scrollbars,
+            Field::CenterCardText => c.center_card_text != d.center_card_text,
+            Field::CardScrollbars => c.card_scrollbars != d.card_scrollbars,
             Field::ColoredCardOpacity => moved(c.colored_card_opacity, d.colored_card_opacity),
-            Field::MaxNodeWidth => moved(c.max_node_width, d.max_node_width),
+            Field::MaxCardWidth => moved(c.max_card_width, d.max_card_width),
             Field::SnapToGrid => c.snap_to_grid != d.snap_to_grid,
             Field::SnapGridSize => moved(c.snap_grid_size, d.snap_grid_size),
             Field::AutoLayout => c.auto_layout != d.auto_layout,
@@ -489,7 +489,7 @@ impl Field {
             Field::ZoomSpeed => moved(c.zoom_speed, d.zoom_speed),
             Field::PanInertia => moved(c.pan_inertia, d.pan_inertia),
             Field::AiProvider => c.ai_enabled(),
-            Field::AiNodeColor => c.ai_node_color != d.ai_node_color,
+            Field::AiCardColor => c.ai_card_color != d.ai_card_color,
             Field::AiThinking => c.ai_thinking != d.ai_thinking,
             Field::RasterizeText => c.rasterize_text != d.rasterize_text,
             Field::ClusterZoom => moved(c.cluster_zoom, d.cluster_zoom),
@@ -511,7 +511,7 @@ impl Field {
             | Field::ThemeCss
             | Field::OverlayDim
             | Field::ColoredCardOpacity
-            | Field::MaxNodeWidth
+            | Field::MaxCardWidth
             | Field::ZoomSpeed
             | Field::PanInertia
             | Field::ClusterZoom
@@ -532,7 +532,7 @@ pub(crate) fn hand_picked_css(c: &Config) -> bool {
 
 /// Whether a field is edited as a number (so text input is parsed as `f32`).
 pub(crate) fn is_number(field: Field) -> bool {
-    matches!(field, Field::MaxNodeWidth | Field::SnapGridSize | Field::ClusterZoom)
+    matches!(field, Field::MaxCardWidth | Field::SnapGridSize | Field::ClusterZoom)
 }
 
 /// The config's value for a text or number field, as its editor shows it.
@@ -541,7 +541,7 @@ pub(crate) fn config_text(config: &Config, field: Field) -> String {
         Field::AiUrl => config.ai_url.clone(),
         Field::AiModel => config.ai_model.clone(),
         Field::AiApiKey => config.ai_key().to_owned(),
-        Field::MaxNodeWidth => config.max_node_width.to_string(),
+        Field::MaxCardWidth => config.max_card_width.to_string(),
         Field::SnapGridSize => config.snap_grid_size.to_string(),
         Field::ClusterZoom => config.cluster_zoom.to_string(),
         _ => String::new(),
@@ -564,10 +564,10 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
         (Field::AiModel, Value::Text(s)) => config.ai_model = s,
         (Field::AiApiKey, Value::Text(s)) => config.set_ai_key(&s),
         (Field::AutoLayoutDirection, Value::Text(s)) => config.auto_layout_direction = s,
-        (Field::AiNodeColor, Value::Text(s)) => config.ai_node_color = s,
+        (Field::AiCardColor, Value::Text(s)) => config.ai_card_color = s,
 
         (Field::DismissOnBackgroundClick, Value::Bool(b)) => config.dismiss_on_background_click = b,
-        (Field::DoubleClickAddsNote, Value::Bool(b)) => config.double_click_adds_note = b,
+        (Field::DoubleClickAddsCard, Value::Bool(b)) => config.double_click_adds_card = b,
         (Field::PersistAcrossSpaces, Value::Bool(b)) => config.persist_across_spaces = b,
         (Field::SummonGesture, Value::Bool(b)) => config.summon_gesture = b,
         (Field::OverlayImage, Value::Text(s)) => config.overlay_image = s.trim().to_owned(),
@@ -578,9 +578,9 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
         }
         (Field::Windowed, Value::Bool(b)) => config.windowed = b,
         (Field::TrayIconMonochrome, Value::Bool(b)) => config.tray_icon_monochrome = b,
-        (Field::CenterNodeText, Value::Bool(b)) => config.center_node_text = b,
+        (Field::CenterCardText, Value::Bool(b)) => config.center_card_text = b,
         (Field::RasterizeText, Value::Bool(b)) => config.rasterize_text = b,
-        (Field::NodeScrollbars, Value::Bool(b)) => config.node_scrollbars = b,
+        (Field::CardScrollbars, Value::Bool(b)) => config.card_scrollbars = b,
         // Stored by name, and matched back from the label the form shows.
         (Field::LinkStyle, Value::Text(label)) => {
             config.link_style = LinkStyle::ALL
@@ -604,7 +604,7 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
 
         (Field::OverlayDim, Value::Num(v)) => config.overlay_dim = v,
         (Field::ColoredCardOpacity, Value::Num(v)) => config.colored_card_opacity = v,
-        (Field::MaxNodeWidth, Value::Num(v)) => config.max_node_width = v,
+        (Field::MaxCardWidth, Value::Num(v)) => config.max_card_width = v,
         (Field::SnapGridSize, Value::Num(v)) => config.snap_grid_size = v,
         (Field::ZoomSpeed, Value::Num(v)) => config.zoom_speed = v,
         (Field::PanInertia, Value::Num(v)) => config.pan_inertia = v,
@@ -667,7 +667,7 @@ impl App {
     pub(super) fn populate_settings_drafts(&mut self) {
         use Field::*;
         self.settings_drafts.clear();
-        for field in [AiUrl, AiModel, AiApiKey, MaxNodeWidth, SnapGridSize, ClusterZoom] {
+        for field in [AiUrl, AiModel, AiApiKey, MaxCardWidth, SnapGridSize, ClusterZoom] {
             self.settings_drafts.insert(field, config_text(&self.config, field));
         }
     }
@@ -830,7 +830,7 @@ impl App {
             }
             Field::OverlayDim => c.overlay_dim = fresh.overlay_dim,
             Field::ColoredCardOpacity => c.colored_card_opacity = fresh.colored_card_opacity,
-            Field::MaxNodeWidth => c.max_node_width = fresh.max_node_width,
+            Field::MaxCardWidth => c.max_card_width = fresh.max_card_width,
             Field::ZoomSpeed => c.zoom_speed = fresh.zoom_speed,
             Field::PanInertia => c.pan_inertia = fresh.pan_inertia,
             Field::ClusterZoom => c.cluster_zoom = fresh.cluster_zoom,
@@ -879,7 +879,7 @@ impl App {
         self.cache.clear();
         let c = &self.config;
         let looks = before.theme != c.theme || before.theme_css != c.theme_css || before.font != c.font;
-        let text = before.rasterize_text != c.rasterize_text || before.center_node_text != c.center_node_text;
+        let text = before.rasterize_text != c.rasterize_text || before.center_card_text != c.center_card_text;
         if looks {
             tasks.push(self.apply_theme_css());
         }
@@ -910,7 +910,7 @@ impl App {
             // These change how node *and* cluster text is drawn — re-rasterize
             // both. Cluster snapshots aren't produced while rasterize is off, so
             // turning it on must regenerate them or clusters render empty.
-            Field::RasterizeText | Field::CenterNodeText => {
+            Field::RasterizeText | Field::CenterCardText => {
                 Task::batch([self.refresh_snapshots(), self.schedule_recluster()])
             }
             // A theme now swaps in place rather than waiting for a restart.
@@ -993,13 +993,13 @@ impl App {
         let c = &self.config;
         match field {
             Field::DismissOnBackgroundClick => c.dismiss_on_background_click,
-            Field::DoubleClickAddsNote => c.double_click_adds_note,
+            Field::DoubleClickAddsCard => c.double_click_adds_card,
             Field::PersistAcrossSpaces => c.persist_across_spaces,
             Field::SummonGesture => c.summon_gesture,
-            Field::CenterNodeText => c.center_node_text,
+            Field::CenterCardText => c.center_card_text,
             Field::TrayIconMonochrome => c.tray_icon_monochrome,
             Field::RasterizeText => c.rasterize_text,
-            Field::NodeScrollbars => c.node_scrollbars,
+            Field::CardScrollbars => c.card_scrollbars,
             Field::AiThinking => c.ai_thinking,
             Field::Windowed => c.windowed,
             Field::SnapToGrid => c.snap_to_grid,
@@ -1209,7 +1209,7 @@ mod tests {
         // config_text formats the value; parsing that text back and applying it
         // must restore the same value (the drafts-backed number editor path).
         let c = Config::default();
-        for field in [Field::MaxNodeWidth, Field::SnapGridSize, Field::ClusterZoom] {
+        for field in [Field::MaxCardWidth, Field::SnapGridSize, Field::ClusterZoom] {
             assert!(is_number(field));
             let text = config_text(&c, field);
             let value: f32 = text.parse().expect("numeric field formats as a number");
@@ -1240,12 +1240,12 @@ mod tests {
         let fresh = Config::default();
         for field in [
             Field::SummonHotkey, Field::SummonGesture, Field::Vault, Field::DismissOnBackgroundClick,
-            Field::DoubleClickAddsNote, Field::PersistAcrossSpaces, Field::OverlayDim, Field::Windowed,
+            Field::DoubleClickAddsCard, Field::PersistAcrossSpaces, Field::OverlayDim, Field::Windowed,
             Field::Theme, Field::Font, Field::OverlayBackdrop, Field::TrayIconMonochrome, Field::LinkStyle,
             Field::ArrowTip,
-            Field::CenterNodeText, Field::NodeScrollbars, Field::ColoredCardOpacity, Field::MaxNodeWidth,
+            Field::CenterCardText, Field::CardScrollbars, Field::ColoredCardOpacity, Field::MaxCardWidth,
             Field::SnapToGrid, Field::SnapGridSize, Field::AutoLayout, Field::AutoLayoutDirection,
-            Field::ZoomSpeed, Field::PanInertia, Field::AiProvider, Field::AiNodeColor, Field::AiThinking,
+            Field::ZoomSpeed, Field::PanInertia, Field::AiProvider, Field::AiCardColor, Field::AiThinking,
             Field::RasterizeText, Field::ClusterZoom, Field::AnimationScale, Field::ThemeCss,
         ] {
             assert!(!field.modified(&fresh), "{field:?} reads as changed on a fresh config");

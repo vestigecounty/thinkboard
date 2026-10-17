@@ -12,7 +12,7 @@
 		{
 			"id": "tip_edit",
 			"type": "text",
-			"text": "**Double-click** any note to edit. Press **Esc** or **Cmd/Ctrl+Enter** when you're done.",
+			"text": "**Double-click** any card to edit. Press **Esc** or **Cmd/Ctrl+Enter** when you're done.",
 			"x": -12,
 			"y": -498,
 			"width": 389,
@@ -21,7 +21,7 @@
 		{
 			"id": "tip_connect",
 			"type": "text",
-			"text": "Hover a note's edge to reveal a **dot**, then drag it onto another note to connect them.",
+			"text": "Hover a card's edge to reveal a **dot**, then drag it onto another card to connect them.",
 			"x": -10,
 			"y": -375,
 			"width": 392,
@@ -30,7 +30,7 @@
 		{
 			"id": "tip_ai",
 			"type": "text",
-			"text": "**Ask AI** turns a chain of notes into a prompt and writes the reply back onto the board.\n\nIt needs a provider first \u2014 **Settings \u2192 AI**, pick one and paste a key. Until then the menu item stays hidden.",
+			"text": "**Ask AI** turns a chain of cards into a prompt and writes the reply back onto the board.\n\nIt needs a provider first \u2014 **Settings \u2192 AI**, pick one and paste a key. Until then the menu item stays hidden.",
 			"x": 12,
 			"y": -256,
 			"width": 361,

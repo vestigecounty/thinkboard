@@ -98,7 +98,7 @@ impl App {
                     Ok((file, handle, id)) => {
                         // Fit the image to a comfortable size, keeping its aspect.
                         let (w, h) =
-                            arrange::fit_image_size(width, height, self.config.max_node_width);
+                            arrange::fit_image_size(width, height, self.config.max_card_width);
                         let center = self.find_free_placement(world, w, h);
                         self.images.insert(id.clone(), handle);
                         CanvasNode {

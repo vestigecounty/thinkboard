@@ -5,7 +5,7 @@
 //! per-field diffs). A drag or a resize takes its snapshot on its first step
 //! and records it when it ends, so the gesture is one step rather than one per
 //! mouse-move; and in-flight AI generations are excluded until they finish, so
-//! an unrelated action's snapshot never captures a half-written note.
+//! an unrelated action's snapshot never captures a half-written card.
 
 use std::collections::{HashMap, HashSet};
 
@@ -348,7 +348,7 @@ mod tests {
     #[test]
     fn a_snapshot_drops_every_edge_touching_a_transient_node() {
         // Two concurrent in-flight generations off "a": ai1 and ai2, with an
-        // edge between them (a split's chained notes). Every edge touching a
+        // edge between them (a split's chained cards). Every edge touching a
         // transient node — including the one between the two transients — is out.
         let nodes = vec![
             node("a", "x", 100.0),

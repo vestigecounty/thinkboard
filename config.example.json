@@ -27,15 +27,15 @@
   "font": "",
   "overlay_dim": 0.55,
   "colored_card_opacity": 0.85,
-  "center_node_text": true,
+  "center_card_text": true,
   "link_style": "obsidian",
   "rasterize_text": true,
 
-  "new_node_min_width": 250.0,
-  "new_node_min_height": 60.0,
-  "max_node_width": 420.0,
+  "new_card_min_width": 250.0,
+  "new_card_min_height": 60.0,
+  "max_card_width": 420.0,
   "layout_rank_gap": 70.0,
-  "layout_node_gap": 40.0,
+  "layout_card_gap": 40.0,
 
   "auto_layout": false,
   "auto_layout_direction": "LR",
@@ -46,9 +46,9 @@
     "https://api.openai.com/v1": "",
     "https://api.fireworks.ai/inference/v1": ""
   },
-  "max_ai_nodes": 6,
+  "max_ai_cards": 6,
   "ai_trigger_color": "0",
-  "ai_node_color": "6",
+  "ai_card_color": "6",
   "ai_completions": false,
   "ai_thinking": false
 }

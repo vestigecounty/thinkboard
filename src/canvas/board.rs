@@ -153,7 +153,7 @@ fn chord(letter: char, shift: bool, has_selection: bool) -> Option<Chord> {
         ('f', _) => Chord::Find,
         // The command palette, on every chord someone arrives with: ⌘P from
         // Obsidian, ⌘K from the web's command menus, ⌘⇧P from Sublime and VS
-        // Code. Board only, as every chord here is — in a note, ⌘K is the
+        // Code. Board only, as every chord here is — while editing, ⌘K is the
         // editor's to make a link with, as it is in Obsidian.
         ('p', _) | ('k', false) => Chord::Palette,
         // Switch boards: the vault browser where a vault is configured, the
@@ -469,7 +469,7 @@ pub fn cluster_opacity(zoom: f32) -> f32 {
 
 /// The active board search, passed to [`Board`] while the find bar is open.
 pub struct SearchView<'a> {
-    /// The current query (case-insensitive substring, highlighted in note text).
+    /// The current query (case-insensitive substring, highlighted in card text).
     pub query: &'a str,
     /// Which hit is the one being stepped through: the node it's in, and how
     /// many of that node's hits come before it.
@@ -536,7 +536,7 @@ pub struct Board<'a> {
     /// so the texture is resident before the visible swap.
     pub staging_snapshots: &'a HashMap<usize, crate::StagedSnapshot>,
     /// Vertical scroll offset (world px) per node id, for nodes shrunk below
-    /// their content with `node_scrollbars` on. Clamped to the overflow on use.
+    /// their content with `card_scrollbars` on. Clamped to the overflow on use.
     pub node_scroll: &'a HashMap<String, f32>,
     /// Overlay entrance/exit progress: 0 = hidden, 1 = fully shown.
     pub reveal: f32,
@@ -547,7 +547,7 @@ pub struct Board<'a> {
     /// Edge under the cursor (highlighted). App state so the cached edge
     /// layer can render it behind the nodes.
     pub hovered_edge: Option<usize>,
-    /// The in-board find, while its bar is open: the query to highlight in note
+    /// The in-board find, while its bar is open: the query to highlight in card
     /// text and the node holding the current match (emphasized).
     pub search: Option<SearchView<'a>>,
     /// Pending AI requests, each shimmered independently (its own clock) so
@@ -825,12 +825,12 @@ fn editing_thumb(
 /// Whether a card scrolls its overflow instead of showing all of it.
 ///
 /// Either the setting is on, or the card has grown to the auto-size ceiling —
-/// where it stops growing, so without a scrollbar the rest of the note would
+/// where it stops growing, so without a scrollbar the rest of the card would
 /// simply be unreachable. Public, with [`scroll_offset`] and [`text_frame`],
 /// because the app maps points to text too (a double-click's caret, a find
 /// hit), and a map that disagrees with what's drawn lands on the wrong line.
 pub fn scrolls(config: &crate::config::Config, node: &CanvasNode) -> bool {
-    node.is_text() && (config.node_scrollbars || node.height >= crate::text_raster::MAX_AUTO_HEIGHT - 0.5)
+    node.is_text() && (config.card_scrollbars || node.height >= crate::text_raster::MAX_AUTO_HEIGHT - 0.5)
 }
 
 /// Scrollable content height (world px) of a text node: the rendered text
@@ -1015,7 +1015,7 @@ impl canvas::Program<Message> for Board<'_> {
             // The board by keyboard (see `app::navigate`) — not while editing,
             // with a menu up, or with the find bar taking the keys. The
             // arrows move the selection, or with ⌥ the cards; Enter edits;
-            // Tab adds a linked note.
+            // Tab adds a linked card.
             Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(named),
                 modifiers,
@@ -1034,7 +1034,7 @@ impl canvas::Program<Message> for Board<'_> {
                     (_, Some(toward)) if modifiers.alt() => Message::NudgeSelection(toward),
                     (_, Some(toward)) => Message::SelectToward { toward, extend: modifiers.shift() },
                     (Named::Enter, _) if !self.selected.is_empty() => Message::EditSelected,
-                    (Named::Tab, _) if !self.selected.is_empty() && !modifiers.shift() => Message::AddLinkedNote,
+                    (Named::Tab, _) if !self.selected.is_empty() && !modifiers.shift() => Message::AddLinkedNode,
                     _ => return None,
                 };
                 Some(canvas::Action::publish(message).and_capture())
@@ -1303,7 +1303,7 @@ impl Stacked<Message> for Board<'_> {
 
             // Ghost suggestions (uncached so they can fade toward dismissal).
             self.draw_ghosts(&mut overlay);
-            // Shimmer sweeping across the notes feeding each pending AI request.
+            // Shimmer sweeping across the cards feeding each pending AI request.
             for flow in self.ai_flows {
                 self.draw_flow_shimmer(&mut overlay, flow);
             }
@@ -1362,7 +1362,7 @@ impl Stacked<Message> for Board<'_> {
         }
 
         // Its counterpart for a board with nothing to find: how to start one.
-        // Gone with the first note, and while a menu is up — the menu is the
+        // Gone with the first card, and while a menu is up — the menu is the
         // answer it gives.
         if self.nodes.is_empty() && self.ghosts.is_empty() && !self.context_menu {
             let mut hint = Frame::new(renderer, bounds.size());
@@ -1521,7 +1521,7 @@ impl Board<'_> {
                     {
                         state.kind = Kind::Idle;
                         // Pass the click's world position so the caret lands under
-                        // the cursor, not at the start of the note.
+                        // the cursor, not at the start of the card.
                         Some(
                             canvas::Action::publish(Message::StartEditing {
                                 index,
@@ -1576,10 +1576,10 @@ impl Board<'_> {
                                     .and_capture(),
                             )
                         } else if is_double_click
-                            && self.config.double_click_adds_note(self.overlay)
+                            && self.config.double_click_adds_card(self.overlay)
                         {
                             // The first click of the pair started a marquee and
-                            // released it unmoved; this one makes the note.
+                            // released it unmoved; this one makes the card.
                             state.kind = Kind::Idle;
                             let world = self.camera.to_world(position);
                             Some(canvas::Action::publish(Message::CreateNode { world }).and_capture())
@@ -2062,7 +2062,7 @@ impl Board<'_> {
 
     /// The `tb_action` of a button node (currently only in the embedded scratch
     /// board), if node `index` carries one. Such nodes behave as buttons rather
-    /// than editable notes.
+    /// than editable cards.
     fn node_action(&self, index: usize) -> Option<String> {
         self.nodes
             .get(index)?
@@ -2097,7 +2097,7 @@ impl Board<'_> {
             wrap,
             FONT_SIZE,
             *self.theme,
-            self.config.center_node_text,
+            self.config.center_card_text,
             |runs| {
                 for run in runs {
                     let Some(url) = &run.link else { continue };
@@ -2185,7 +2185,7 @@ impl Board<'_> {
         (rect, dir)
     }
 
-    /// What a new, empty board says in its middle: how to put the first note on
+    /// What a new, empty board says in its middle: how to put the first card on
     /// it, and where every other action lives. A blank board said nothing at
     /// all, and the right-click that starts one is the gesture nobody tries
     /// first. Muted, and drawn on the canvas rather than as a widget above it,
@@ -2195,13 +2195,13 @@ impl Board<'_> {
         let center = Point::new(size.width / 2.0, size.height / 2.0);
         // Whichever gesture works here: double-click only where it's been
         // turned on and a click doesn't dismiss the board instead.
-        let gesture = if self.config.double_click_adds_note(self.overlay) {
+        let gesture = if self.config.double_click_adds_card(self.overlay) {
             "Double-click"
         } else {
             "Right-click"
         };
         frame.fill_text(canvas::Text {
-            content: format!("{gesture} to add a note"),
+            content: format!("{gesture} to add a card"),
             position: Point::new(center.x, center.y - 12.0),
             color: Color { a, ..self.theme.text_muted },
             size: 17.0.into(),
@@ -2325,7 +2325,7 @@ impl Board<'_> {
         };
         // Cards first, frames second. A frame's border runs *behind* its
         // members, so a card's port has to win wherever the two overlap —
-        // otherwise dragging a note near the edge of its group would grab the
+        // otherwise dragging a card near the edge of its group would grab the
         // group instead.
         self.frame_last(|index, node| port(index, node))
     }
@@ -2575,7 +2575,7 @@ impl Board<'_> {
         self.scene_alpha() * self.cluster_weight()
     }
 
-    /// Draws each cluster as one large summary card: the main note's text
+    /// Draws each cluster as one large summary card: the main card's text
     /// at its fitted size, or the main image scaled to the cluster box.
     fn draw_clusters(&self, frame: &mut Frame) {
         let alpha = self.cluster_layer_alpha();
@@ -3109,7 +3109,7 @@ impl Board<'_> {
             wrap_width,
             font_size,
             *self.theme,
-            self.config.center_node_text,
+            self.config.center_card_text,
             |runs| {
                 // Where the search hits fall, so the glyphs over one can be
                 // inked to read against it. The fills themselves are painted by
@@ -3184,11 +3184,11 @@ impl Board<'_> {
 
     /// Paints a highlight rect behind each occurrence of `query` (case-
     /// insensitive) within a single laid-out run. Occurrences that cross a run
-    /// (style/line) boundary aren't caught — acceptable for plain notes.
+    /// (style/line) boundary aren't caught — acceptable for plain cards.
     /// Where `query` occurs in one laid-out run, case-insensitively.
     ///
     /// Occurrences that straddle a run boundary (a style or line change) aren't
-    /// caught — acceptable for plain notes, and the alternative is matching
+    /// caught — acceptable for plain cards, and the alternative is matching
     /// across text that isn't adjacent on screen.
     fn match_hits(&self, run: &crate::text_raster::TextRun, query: &str) -> Vec<Hit> {
         // Measured as the run is set — face, weight, slant, features — or a
@@ -3238,7 +3238,7 @@ impl Board<'_> {
             wrap_width,
             font_size,
             *self.theme,
-            self.config.center_node_text,
+            self.config.center_card_text,
             |runs| {
                 // Counted across the node's runs, in reading order, so the
                 // ordinal means the same thing on both sides.
@@ -3283,7 +3283,7 @@ impl Board<'_> {
             wrap_width,
             font_size,
             *self.theme,
-            self.config.center_node_text,
+            self.config.center_card_text,
             |runs| {
                 // The text column's left edge, as the layout placed it.
                 let column = (rect.width / zoom - (wrap_width - 2.0 * MD_PADDING).max(1.0)) / 2.0;
@@ -3328,7 +3328,7 @@ impl Board<'_> {
             wrap_width,
             font_size,
             *self.theme,
-            self.config.center_node_text,
+            self.config.center_card_text,
             |rules| {
                 for rule in rules {
                     let line = Rectangle::new(
@@ -4022,7 +4022,7 @@ impl Board<'_> {
     }
 
     /// Arrows between connected clusters, drawn behind the cluster cards.
-    /// Sized larger than note edges since clusters are large.
+    /// Sized larger than ordinary links since clusters are large.
     fn draw_cluster_links(&self, frame: &mut Frame) {
         let alpha = self.cluster_layer_alpha();
         let zoom = self.camera.zoom;

@@ -312,9 +312,9 @@ fn general(app: &App, look: Look) -> Vec<Element<'_, Message>> {
     // Greyed while a click dismisses, which is when it couldn't work: the
     // board is gone before the second click lands.
     let dismisses = c.click_dismisses(overlay);
-    let mut double = setting(Field::DoubleClickAddsNote)
-        .control(switch(look, Field::DoubleClickAddsNote, c.double_click_adds_note, !dismisses))
-        .desc("Double-clicking empty space adds a note there, as Obsidian's canvas does.");
+    let mut double = setting(Field::DoubleClickAddsCard)
+        .control(switch(look, Field::DoubleClickAddsCard, c.double_click_adds_card, !dismisses))
+        .desc("Double-clicking empty space adds a card there, as Obsidian's canvas does.");
     if dismisses {
         let off = Message::Settings(Msg::Toggle(Field::DismissOnBackgroundClick, false));
         double = double
@@ -413,12 +413,12 @@ fn appearance(app: &App, look: Look) -> Vec<Element<'_, Message>> {
             .control(arrow_tips(app, look))
             .desc("The shape at a link's arrowed end. Which ends have one is the link's own, set from its right-click menu.")
             .build(app, look),
-        setting(Field::CenterNodeText)
-            .control(switch(look, Field::CenterNodeText, c.center_node_text, true))
+        setting(Field::CenterCardText)
+            .control(switch(look, Field::CenterCardText, c.center_card_text, true))
             .desc("Headings, code and lists stay left-aligned.")
             .build(app, look),
-        setting(Field::NodeScrollbars)
-            .control(switch(look, Field::NodeScrollbars, c.node_scrollbars, true))
+        setting(Field::CardScrollbars)
+            .control(switch(look, Field::CardScrollbars, c.card_scrollbars, true))
             .desc("Resize a card below its text; the rest scrolls.")
             .build(app, look),
         setting(Field::ColoredCardOpacity)
@@ -432,8 +432,8 @@ fn appearance(app: &App, look: Look) -> Vec<Element<'_, Message>> {
             ))
             .desc("Below 100%, what is underneath shows through.")
             .build(app, look),
-        setting(Field::MaxNodeWidth)
-            .control(number(look, Field::MaxNodeWidth, app.draft(Field::MaxNodeWidth), "px", true))
+        setting(Field::MaxCardWidth)
+            .control(number(look, Field::MaxCardWidth, app.draft(Field::MaxCardWidth), "px", true))
             .desc("How wide a card gets by itself as you type.")
             .build(app, look),
     ];
@@ -541,7 +541,7 @@ fn ai(app: &App, look: Look) -> Vec<Element<'_, Message>> {
             "Answers",
             "",
             vec![
-                setting(Field::AiNodeColor)
+                setting(Field::AiCardColor)
                     .control(swatches(app, look))
                     .desc("The color a new answer card takes. The struck-through one leaves it uncolored.")
                     .build(app, look),
@@ -1091,7 +1091,7 @@ fn segments<'a>(look: Look, field: Field, options: [(&'static str, &'static str)
 
 /// The answer colour, as the colours themselves: none, then Obsidian's six.
 fn swatches<'a>(app: &App, look: Look) -> Element<'a, Message> {
-    let chosen = app.config.ai_node_color.clone();
+    let chosen = app.config.ai_card_color.clone();
     // "No colour" is a card's own fill, as the card menu's first swatch is —
     // struck through, the sign for "none" an editor's colour well uses, or it
     // read as one more dark colour rather than as the way to have none.
@@ -1122,7 +1122,7 @@ fn swatches<'a>(app: &App, look: Look) -> Element<'a, Message> {
             button(ring)
                 .padding(0)
                 .style(bare(look))
-                .on_press(Message::Settings(Msg::Pick(Field::AiNodeColor, code.to_owned()))),
+                .on_press(Message::Settings(Msg::Pick(Field::AiCardColor, code.to_owned()))),
         );
     }
     bar.into()

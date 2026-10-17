@@ -1,11 +1,11 @@
 //! Semantic-zoom cluster cards (the render half of clustering).
 //!
-//! When zoomed out far enough that individual notes are unreadable, a group
-//! of nearby notes is replaced by one large summary card showing the group's
-//! main note, at a font size fitted to the card's box so it stays comfortable
+//! When zoomed out far enough that individual cards are unreadable, a group
+//! of nearby cards is replaced by one large summary card showing the group's
+//! main card, at a font size fitted to the card's box so it stays comfortable
 //! to read. Computed once up front — nothing is recomputed while zooming.
 //!
-//! The grouping itself (proximity, containment, main-note choice, cross-group
+//! The grouping itself (proximity, containment, main-card choice, cross-group
 //! links) is UI-agnostic and lives in [`thinkboard_core::cluster`]. This module
 //! wraps its bare bounds in `iced::Rectangle` and adds what needs the text
 //! rasterizer: fitting a font size to the box, and choosing between a text and
@@ -32,18 +32,18 @@ pub struct Clustering {
 #[derive(Debug, Clone)]
 pub struct Cluster {
     pub bounds: Rectangle,
-    /// Main-note text; empty when the main note is an image.
+    /// Main-card text; empty when the main card is an image.
     pub text: String,
     /// Font size in world units, fitted to `bounds`.
     pub font_size: f32,
-    /// Node id when the main note is an image, to render it large instead.
+    /// Node id when the main card is an image, to render it large instead.
     pub image_id: Option<String>,
     /// Member node indices, for dragging the whole cluster.
     pub members: Vec<usize>,
 }
 
-/// Groups nearby notes and summarizes each with its main note, rendered either
-/// as text fitted to the card or as the main note's image.
+/// Groups nearby cards and summarizes each with its main card, rendered either
+/// as text fitted to the card or as the main card's image.
 pub fn compute(nodes: &[CanvasNode], edges: &[CanvasEdge], theme: &Theme) -> Clustering {
     let grouping = thinkboard_core::cluster::group(nodes, edges);
 
@@ -86,8 +86,8 @@ pub fn compute(nodes: &[CanvasNode], edges: &[CanvasEdge], theme: &Theme) -> Clu
     }
 }
 
-/// The text a cluster card shows for its main note: the note's own text for a
-/// canvas note, and the file title / URL for the kinds whose content isn't in
+/// The text a cluster card shows for its main card: the card's own text for a
+/// text card, and the file title / URL for the kinds whose content isn't in
 /// the document.
 fn summary_text(node: &CanvasNode) -> String {
     match node.node_kind() {
@@ -232,7 +232,7 @@ mod tests {
     }
 
     #[test]
-    fn the_card_is_summarized_by_its_main_note() {
+    fn a_cluster_is_summarized_by_its_main_card() {
         // Chain a -> b -> c in one cluster; the root `a` names it.
         let nodes = vec![
             text_node("a", 0.0, 0.0, 100.0, 100.0),
@@ -379,7 +379,7 @@ mod tests {
 
     #[test]
     fn the_card_box_is_the_members_union_plus_a_margin() {
-        // Two notes 50 apart join; the card spans both, expanded by MARGIN.
+        // Two cards 50 apart join; the card spans both, expanded by MARGIN.
         let nodes = vec![
             text_node("a", 0.0, 0.0, 100.0, 100.0),
             text_node("b", 150.0, 0.0, 100.0, 100.0),

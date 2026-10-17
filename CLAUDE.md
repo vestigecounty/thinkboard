@@ -111,22 +111,22 @@ module and its `impl App` block there — keep `update` a dispatch table.
 
 Auto-size **grows a card, never narrows it**, and grows its height **downward
 from the top edge** — about its centre, every new line pushed the text already
-written upward and let a long note climb over the card above. While editing, a
+written upward and let a long card climb over the card above. While editing, a
 card is sized to the larger of its source and its rendered Markdown, so ending
 an edit doesn't make it jump (a heading is typed at body size but rendered
 large). A width is something the user can
 drag to deliberately, and re-deriving it from the text on the next keystroke
-threw that away. `max_node_width` bounds how wide a card grows *by itself*; it
+threw that away. `max_card_width` bounds how wide a card grows *by itself*; it
 is not a limit on one sized by hand. Height still tracks content, so text
 neither clips nor leaves a card standing empty.
 
 Height stops at `text_raster::MAX_AUTO_HEIGHT` (`MAX_DIMENSION / 2`). A card's
 bitmap is capped at 2048 px on its longest side, so a taller card loses
 resolution in proportion — retina at 1024, 1:1 at 2048, and below 1:1 past that,
-where the bitmap holds less detail than the card is. Rather than let a long note
+where the bitmap holds less detail than the card is. Rather than let a long card
 grow until it visibly blurs, growth stops and the overflow scrolls;
 `Board::scrollable` forces the scrollbar on for such a card whatever
-`node_scrollbars` says, or the rest of the note would be unreachable.
+`card_scrollbars` says, or the rest of the card would be unreachable.
 
 The editing overlay is bounded to its card for the same reason: sized to its
 content it spilled over the board above and below. Bounded, iced scrolls it
@@ -151,7 +151,7 @@ Link clicks ignored the scroll and hit another line's link. The caret is found
 in the *rendered* layout and traced back to the source (`edit::locate`), not by
 clicking the editor at the same point: the editor shows the source, with its
 markers and body-size headings, so the same point is a different line further
-down a note — and on a scrolled card, a paragraph that wasn't on screen.
+down a card — and on a scrolled card, a paragraph that wasn't on screen.
 
 **A table is laid out as a grid, not as text.** A cosmic-text buffer has one
 wrap width and only uniform tab stops, so cells can't line up in it. A card's
@@ -231,6 +231,17 @@ anyone pointing an unfamiliar app at their notes.
 **One word for the thing you work on: "board".** `.canvas` is the file format
 and "canvas" stays a hidden search term, so Obsidian's word still finds the
 command, but no user-facing string says both.
+
+**And one for what's on it: "card".** Every kind — text, image, link, an
+embedded note — is a card to the person using it, as it is in Obsidian's own
+canvas. The code says **node**, because the file format does (`nodes`,
+`CanvasNode`), as it says `canvas` where the UI says board. **"Note" means a
+Markdown file from the vault** (`NodeKind::Note`), in code and on screen —
+never a card in general; it was both, and "Add note" beside "Add node" beside
+"Colored card opacity" was three words for one thing. Config keys are read
+and edited by hand, so they say card too (`max_card_width`); comments and test
+names describing what's on screen may as well. "node" and "note" stay hidden
+palette terms, so either still finds "Add card".
 
 ## The vault
 
@@ -532,7 +543,7 @@ model is that model not being served. A 401 sent with no key asks for one rather
 than calling it rejected, and nothing listening on localhost asks whether the
 runtime is running, by its preset's name where it has one.
 
-A failed answer stays on the board as a note, which is deliberate: it's where
+A failed answer stays on the board as a card, which is deliberate: it's where
 the question was asked, and deleting it is the editor's ordinary delete. A
 failure partway through is added under what had arrived, not written over it.
 
@@ -602,7 +613,7 @@ on a selection was out of a keyboard's reach. **The arrows go spatially**
 through, so → is the card beside this one, a card off to the side counting
 twice its distance. Shift+arrow adds to the selection, ⌥+arrow nudges (a run of
 nudges is one undo step), Enter edits with the caret at the end, Tab adds a
-note linked to the right, ⌘= ⌘− ⌘0 zoom and fit. Ending an edit from the
+card linked to the right, ⌘= ⌘− ⌘0 zoom and fit. Ending an edit from the
 keyboard (`FinishEditing`: Esc, ⌘Enter) leaves the card selected, as does
 closing the find bar on a hit; undo keeps the selection by id.
 
@@ -710,7 +721,7 @@ gaps with dummy nodes. Ours come from the file.
   sites gate on. A new frame carries no `label`, since there's no rename UI —
   name it, which drops straight into naming it; double-clicking a frame's
   header reopens the caption. A blank caption clears the label rather than
-  deleting the frame — unlike a drag-created note, which *is* taken back when
+  deleting the frame — unlike a drag-created card, which *is* taken back when
   left empty.
 - **The editor edits two things.** `EditTarget::Body` is a text node's text over
   the whole card; `EditTarget::Label` is a frame's caption along its header
@@ -721,17 +732,17 @@ gaps with dummy nodes. Ours come from the file.
   the board out for nothing.
 - **Ask AI works on a frame**, which has no incoming links to walk. Its contents
   are flattened into an outline instead (`ai::group_prompt`), preserving both
-  hierarchies the user sees: links nest a note's targets under it, and a nested
+  hierarchies the user sees: links nest a card's targets under it, and a nested
   frame's contents nest under its caption. A node inside nested frames is
   attributed to the innermost one, so nothing is listed twice.
 - **Group membership is positional, never stored.** The format has no children
   array and no parent pointer — only geometry — so `enclosed_by` recomputes it
   from centres whenever it matters. Dragging a node out of a frame is therefore
-  just moving it, with no state to keep in sync, and adding a note to a group
+  just moving it, with no state to keep in sync, and adding a card to a group
   is just dropping it inside the bounds. Never invent a membership field: it
   would be ours alone, and Obsidian would ignore it.
 - **A frame can be linked like any node**, so a port-drag off a group makes a
-  connected note — that's how a question gets asked *about* a group. Its ports
+  connected card — that's how a question gets asked *about* a group. Its ports
   lose every hit test to the cards it encloses (`Board::frame_last`), since a
   frame's border runs behind its members. A group among a chain's ancestors
   contributes its flattened outline to `upstream_prompt`, and its images to
@@ -743,7 +754,7 @@ gaps with dummy nodes. Ours come from the file.
 - **Card alignment follows what the card is.** A note or attachment is a
   document: top-left under a muted file-name header and a hairline rule. A link
   is a single label: host and URL centred in the card. Text nodes centre or
-  left-align per `center_node_text`. Keep new kinds consistent with whichever
+  left-align per `center_card_text`. Keep new kinds consistent with whichever
   of the two they resemble.
 
 ## When the file changes elsewhere
@@ -769,7 +780,7 @@ added in Obsidian while one was edited here was written over by the edit.
   there can't pull it from under the editor. If it was changed there before
   anything was typed, the editor follows (`follow_edited_card`).
 - **An outside change is an undo step**, as in an editor whose file changes on
-  disk; the history used to be dropped. An edit, gesture or new note under way
+  disk; the history used to be dropped. An edit, gesture or new card under way
   has taken its undo point already, so the change is recorded from that point
   and the point is rebased past it — undoing the edit then keeps the change.
 - **A rename is followed** (`sync::find_renamed`: the same inode, or the same
@@ -937,7 +948,7 @@ shot that lied:
   through `event::listen_with`, not the widget tree; `App::event_listeners` is
   the one list both `subscription` and the tour read.
 - **Draw after every event.** Drawing isn't only output: the editor
-  highlights in its draw. Typing a note with no frames between keystrokes
+  highlights in its draw. Typing a card with no frames between keystrokes
   left headings unstyled — a real bug (`MdHighlighter::change_line` kept the
   latest change, not the earliest) that a window, drawing between keys, shows
   far more rarely.

@@ -169,7 +169,7 @@ private struct LevelView: View {
     let onBeginEdit: () -> Void
     let onAddRoot: () -> Void
     @Binding var pendingEdit: String?
-    /// Whether this is the root level (an empty root offers "Add Note"; an empty
+    /// Whether this is the root level (an empty root offers "Add Card"; an empty
     /// deeper level pops back instead).
     let isRoot: Bool
     let onPop: () -> Void
@@ -398,7 +398,7 @@ private struct LevelView: View {
             Button {
                 onAddRoot()
             } label: {
-                Label("Add Note", systemImage: "plus")
+                Label("Add Card", systemImage: "plus")
             }
             .buttonStyle(.borderedProminent)
         }

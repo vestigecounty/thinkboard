@@ -1,4 +1,4 @@
-//! The in-place note editor: opening and committing an edit session, the
+//! The in-place card editor: opening and committing an edit session, the
 //! text-level undo inside it, and the Markdown marker toggles (Cmd+B/I).
 //!
 //! The editor is a fixed-size widget clamped to the viewport, so a node hanging
@@ -412,7 +412,7 @@ impl App {
             .filter(|_| target == EditTarget::Body)
             .and_then(|at| self.text_position_at(index, at));
         // Capture a pre-edit snapshot to make the edit undoable. A brand-new
-        // note's is from before it was created, so the note and its first
+        // card's is from before it was created, so the card and its first
         // text are one step — undone, it's gone, as it was before.
         self.edit_undo = if self.fresh_node == Some(index) {
             self.fresh_undo.take()
@@ -433,7 +433,7 @@ impl App {
         // With scrollbars on, editing a node re-grows it to fit (its shrink was
         // temporary): drop its scroll and autosize before anything else, so the
         // editor lays out over the full content rather than a scrolled window.
-        if target == EditTarget::Body && self.config.node_scrollbars {
+        if target == EditTarget::Body && self.config.card_scrollbars {
             if let Some(id) = self.nodes.get(index).map(|n| n.id.clone()) {
                 self.node_scroll.remove(&id);
             }
@@ -449,7 +449,7 @@ impl App {
     /// Commits the open edit: trims the text, settles the card size, records an
     /// undo step only if the text actually changed, and takes back a
     /// drag-created node that was left empty. May kick off AI suggestions for a
-    /// freshly created note that hangs off a parent.
+    /// freshly created card that hangs off a parent.
     pub(super) fn stop_editing(&mut self) -> Task<Message> {
         let Some(target) = self.editing.as_ref().map(|e| e.target) else {
             return Task::none();
@@ -492,7 +492,7 @@ impl App {
                         }
                         // Unless nothing changed, which leaves the card as it
                         // was. Fitting it was for text that changed: a card
-                        // Obsidian left smaller than its note grew over the one
+                        // Obsidian left smaller than its text grew over the one
                         // below on a double-click and an Esc — a change to the
                         // file, and none undo could take back.
                         let untouched = self
@@ -797,14 +797,14 @@ impl App {
 
         let wrap = text_raster::card_text_wrap(node.width);
         // Measure/size the text at the editor's inner column (inset a side like
-        // read mode), not the full card wrap, or a wrapping note is a line short
+        // read mode), not the full card wrap, or a wrapping card is a line short
         // and the box mis-centers.
         let text_wrap = text_raster::editor_text_wrap(node.width);
         let text = editing.content.text();
         let (text_width, text_height) =
             text_raster::measure_source(&text, text_wrap, FONT_SIZE, zoom, &self.theme);
         let caret_slack = 4.0;
-        // Bound the box to the card, so a note longer than its card scrolls
+        // Bound the box to the card, so text longer than its card scrolls
         // *within* it instead of spilling over the board above and below.
         //
         // The scrolling is iced's: given a fixed height smaller than the
@@ -818,7 +818,7 @@ impl App {
         // Match read mode's alignment while editing: a centered block that hugs
         // the text for simple content, or the full (left-aligned) wrap column
         // when the read view left-aligns it.
-        let centered = self.config.center_node_text && markdown::is_simple(&text);
+        let centered = self.config.center_card_text && markdown::is_simple(&text);
         let width = if centered {
             (text_width + caret_slack).clamp(MIN_EDITOR_WIDTH * zoom, wrap * zoom + caret_slack)
         } else {
@@ -848,7 +848,7 @@ impl App {
     ///
     /// Found in the rendered Markdown, rather than by clicking the editor at
     /// the same point. The editor shows the source — markers take room, a
-    /// heading is body size — so the further down a note, the further that
+    /// heading is body size — so the further down a card, the further that
     /// click landed from the word under it; and a card scrolled to its middle
     /// opened at its top, with the caret in a paragraph that hadn't been on
     /// screen. `None` where the text can't be traced back to the source, and
@@ -869,7 +869,7 @@ impl App {
             wrap,
             FONT_SIZE,
             self.theme,
-            self.config.center_node_text,
+            self.config.center_card_text,
             |runs| {
                 // The line under the point or the nearest one, and on it the
                 // run under the point or the nearest one.

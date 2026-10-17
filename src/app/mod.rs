@@ -278,11 +278,11 @@ pub(crate) enum Message {
     UseAsOverlayBackground,
     /// The board by keyboard (see `navigate`): an arrow moves the selection to
     /// the nearest card that way, or with Shift adds it; ⌥+arrow nudges the
-    /// selected cards; Enter edits; Tab adds a linked note; ⌘0 fits the board.
+    /// selected cards; Enter edits; Tab adds a linked card; ⌘0 fits the board.
     SelectToward { toward: thinkboard_core::navigate::Toward, extend: bool },
     NudgeSelection(thinkboard_core::navigate::Toward),
     EditSelected,
-    AddLinkedNote,
+    AddLinkedNode,
     FitBoard,
     /// Asks the AI about the selected node(s) (tinting them the trigger color).
     AskAi,
@@ -360,7 +360,7 @@ pub(crate) enum Message {
     ClustersReady(cluster::Clustering, HashMap<usize, text_raster::Snapshot>),
     /// A press on node `index` let go — after a drag when `moved`, else a click.
     NodeDragEnd { index: usize, moved: bool },
-    /// Open a link (from a note's text) in the default browser.
+    /// Open a link (from a card's text) in the default browser.
     OpenUrl(String),
     Undo,
     Redo,
@@ -499,7 +499,7 @@ struct ContextMenu {
 
 #[derive(Clone, Copy)]
 enum ContextMenuKind {
-    /// Empty canvas: offers "Add node" at the clicked world point.
+    /// Empty board: offers "Add card" at the clicked world point.
     Canvas { world: Point },
     /// A node: offers "Delete" for the selected node.
     Node,
@@ -646,10 +646,10 @@ struct App {
     registered_hotkey: Option<HotKey>,
     show_fps: bool,
     /// Vertical scroll offset (world px from the top) per node id, for nodes
-    /// resized below their content while `node_scrollbars` is on. Clamped to the
+    /// resized below their content while `card_scrollbars` is on. Clamped to the
     /// content overflow on use; stale entries clamp to 0 harmlessly.
     node_scroll: HashMap<String, f32>,
-    /// In-flight AI generations: their streams, pending notes, and shimmers.
+    /// In-flight AI generations: their streams, pending cards, and shimmers.
     ai: Ai,
     /// Copilot-style suggestion cards awaiting accept/dismiss.
     ghosts: Ghosts,
@@ -693,7 +693,7 @@ struct App {
     layout_anim: Option<LayoutAnim>,
     /// Undo/redo history of document snapshots. Every change to the document
     /// records an entry — a drag or resize one for the whole gesture, a new
-    /// note one with its first text, an outside change one of its own.
+    /// card one with its first text, an outside change one of its own.
     history: History<DocSnapshot>,
     /// Pre-edit snapshot captured while editing an existing node, committed
     /// to the undo stack only if the text actually changed.
@@ -706,7 +706,7 @@ struct App {
     /// mouse-move.
     gesture_undo: Option<DocSnapshot>,
     /// The document before `fresh_node` was created. Its editor takes this as
-    /// its pre-edit snapshot, so the note and its first text are one step.
+    /// its pre-edit snapshot, so the card and its first text are one step.
     fresh_undo: Option<DocSnapshot>,
     phase: Phase,
     /// 0 = hidden, 1 = fully shown; the board eases node positions, node
@@ -1039,9 +1039,9 @@ impl App {
             Message::SelectToward { toward, extend } => self.select_toward(toward, extend),
             Message::NudgeSelection(toward) => self.nudge_selection(toward),
             Message::EditSelected => return self.edit_selected(),
-            Message::AddLinkedNote => {
+            Message::AddLinkedNode => {
                 self.dismiss_ghosts();
-                self.add_linked_note();
+                self.add_linked_node();
             }
             Message::FitBoard => self.fit_board(),
             Message::GroupSelection => {
@@ -1924,7 +1924,7 @@ impl App {
         // (matching the drag preview) and the body extends away from the source
         // — right of a left link, under a top link, etc.
         let to_side = board::opposite_side(side);
-        let (w, h) = (self.config.new_node_min_width, self.config.new_node_min_height);
+        let (w, h) = (self.config.new_card_min_width, self.config.new_card_min_height);
         let center = match to_side {
             "left" => Point::new(world.x + w / 2.0, world.y),
             "right" => Point::new(world.x - w / 2.0, world.y),
@@ -2170,8 +2170,8 @@ impl App {
             CommandId::Setting(field) => Message::OpenSettingsAt(field),
             CommandId::Choice(field, at) => Message::Settings(self.choices(field).into_iter().nth(usize::from(at))?.msg),
             CommandId::FitBoard => Message::FitBoard,
-            CommandId::EditNote => Message::EditSelected,
-            CommandId::AddLinkedNote => Message::AddLinkedNote,
+            CommandId::EditNode => Message::EditSelected,
+            CommandId::AddLinkedNode => Message::AddLinkedNode,
             CommandId::Colour(code) => Message::SetNodeColor(code.map(str::to_owned)),
         };
         Some(message)

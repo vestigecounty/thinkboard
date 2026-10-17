@@ -106,7 +106,7 @@ impl App {
 
     /// Scrolls a card that scrolls so its `ordinal`-th hit sits a third of
     /// the way down it, and returns the world y of the hit's line as it now
-    /// is. Centring on the card wasn't enough: a hit in a long note's overflow
+    /// is. Centring on the card wasn't enough: a hit in a long card's overflow
     /// was counted, highlighted, and out of sight below the card's edge.
     fn scroll_to_hit(&mut self, index: usize, ordinal: usize) -> Option<f32> {
         let query = self.search.as_ref()?.query.clone();
@@ -123,7 +123,7 @@ impl App {
             wrap,
             FONT_SIZE,
             self.theme,
-            self.config.center_node_text,
+            self.config.center_card_text,
             |runs| {
                 runs.iter()
                     .flat_map(|run| {

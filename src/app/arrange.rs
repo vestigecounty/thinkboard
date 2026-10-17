@@ -238,11 +238,11 @@ impl App {
         // the width.
         let auto_max = self
             .config
-            .max_node_width
+            .max_card_width
             .min(cap.max(me.width))
-            .max(self.config.new_node_min_width);
+            .max(self.config.new_card_min_width);
         // A width the card already has outranks the auto-grow ceiling, because
-        // the user may have dragged it there. `max_node_width` bounds how wide
+        // the user may have dragged it there. `max_card_width` bounds how wide
         // a card grows *by itself*; it is not a limit on one sized by hand.
         let max_width = auto_max.max(me.width);
         // Both branches measure at the same card wrap column and inset
@@ -272,20 +272,20 @@ impl App {
         // user can set deliberately by dragging, and re-deriving it from the
         // text on the next keystroke would throw that away — which it did.
         let mut width = (text_width + text_raster::NODE_PAD_X)
-            .clamp(self.config.new_node_min_width, max_width)
+            .clamp(self.config.new_card_min_width, max_width)
             .max(me.width);
         // Height still follows the content, so text neither clips nor leaves a
         // card standing empty — but it stops at the ceiling, past which the
         // card scrolls instead of growing (see `text_raster::MAX_AUTO_HEIGHT`).
         let mut height = (text_height + text_raster::NODE_PAD_Y).clamp(
-            self.config.new_node_min_height,
-            text_raster::MAX_AUTO_HEIGHT.max(self.config.new_node_min_height),
+            self.config.new_card_min_height,
+            text_raster::MAX_AUTO_HEIGHT.max(self.config.new_card_min_height),
         );
 
         // Snap-to-grid: round the fitted size *up* to whole cells so the text
         // still fits, and grow from a fixed (grid-aligned) top-left rather than
         // recentering — so a grid-aligned node stays aligned as it grows (e.g.
-        // a streaming AI note). Off the grid, keep the centered grow.
+        // a streaming AI card). Off the grid, keep the centered grow.
         if snapped {
             (width, height) = crate::snap::fit_size(width, height, grid);
         }
@@ -293,7 +293,7 @@ impl App {
         // Height grows downward from the top edge, snapped or not, the way a
         // page does. Grown about its centre, every new line pushed the top up
         // half a line — the text already written crept upward as you typed,
-        // and a long note climbed over whatever sat above it.
+        // and a long card climbed over whatever sat above it.
         let node = &mut self.nodes[index];
         if (width - node.width).abs() > 0.5 || (height - node.height).abs() > 0.5 {
             if !snapped {
@@ -306,13 +306,13 @@ impl App {
     }
 
     /// The size a new card takes to show `text` whole: as wide as it needs up
-    /// to `max_node_width`, as tall as its rendered Markdown up to the
+    /// to `max_card_width`, as tall as its rendered Markdown up to the
     /// auto-size ceiling — what [`App::autosize_node`] grows a card to, for a
     /// card that isn't anywhere yet. A paste is sized with it before it's
     /// placed, so the free spot found is free for the card it'll be.
     pub(super) fn text_card_size(&self, text: &str) -> (f32, f32) {
-        let (min_width, min_height) = (self.config.new_node_min_width, self.config.new_node_min_height);
-        let max_width = self.config.max_node_width.max(min_width);
+        let (min_width, min_height) = (self.config.new_card_min_width, self.config.new_card_min_height);
+        let max_width = self.config.max_card_width.max(min_width);
         let wrap = text_raster::card_text_wrap(max_width);
         let (text_width, text_height) = text_raster::measure_markdown(text, wrap, FONT_SIZE, &self.theme);
         let width = (text_width + text_raster::NODE_PAD_X).clamp(min_width, max_width);
@@ -342,9 +342,9 @@ impl App {
             &self.theme,
         );
         // A card taller than the ceiling scrolls whatever the setting says, so
-        // it can also be dragged shorter than its text — otherwise a long note
+        // it can also be dragged shorter than its text — otherwise a long card
         // could never be resized down at all.
-        let scrolls = self.config.node_scrollbars
+        let scrolls = self.config.card_scrollbars
             || text_height + text_raster::NODE_PAD_Y > text_raster::MAX_AUTO_HEIGHT;
         let min_height = resize_min_height(scrolls, text_height);
         let height = drag_h.max(min_height).max(MIN_SCROLLABLE_NODE_HEIGHT);
@@ -414,12 +414,12 @@ impl App {
     /// overlap), animates it in, and queues its editor to open. Returns the
     /// new node's index.
     pub(super) fn spawn_text_node(&mut self, world: Point) -> usize {
-        // Undoing the note takes it back whole, so the point is before it was
+        // Undoing the card takes it back whole, so the point is before it was
         // made — and before whatever made it moved anything (a connected
-        // note's link and the relayout after it).
+        // card's link and the relayout after it).
         self.fresh_undo = Some(self.snapshot());
-        let width = self.config.new_node_min_width;
-        let height = self.config.new_node_min_height;
+        let width = self.config.new_card_min_width;
+        let height = self.config.new_card_min_height;
         let center = self.find_free_placement(world, width, height);
         let mut node = CanvasNode {
             id: model::random_id(),
@@ -579,7 +579,7 @@ impl App {
         self.fresh_undo = None;
         self.mark_dirty();
         self.cache.clear();
-        // Drop straight into naming it, the way a drag-created note opens its
+        // Drop straight into naming it, the way a drag-created card opens its
         // editor.
         Task::batch([
             self.schedule_recluster(),
@@ -602,7 +602,7 @@ impl App {
             subset,
             dir,
             self.config.layout_rank_gap,
-            self.config.layout_node_gap,
+            self.config.layout_card_gap,
         );
         if moves.is_empty() {
             return;
@@ -727,7 +727,7 @@ impl App {
         if ai.is_empty() {
             return;
         }
-        // One answer, one width. Each note sized to its own text left the
+        // One answer, one width. Each card sized to its own text left the
         // column's right edge ragged, and a list read as unrelated cards. They
         // take the widest's width — auto-size only ever grows a card, so this
         // is the one width none of them has to shrink to — and are re-fitted,
@@ -751,7 +751,7 @@ impl App {
             &sizes,
             dir,
             self.config.layout_rank_gap,
-            self.config.layout_node_gap,
+            self.config.layout_card_gap,
         );
 
         // `sibling_stack` anchors the block beside the source, blind to other
@@ -827,7 +827,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn resize_min_height_respects_node_scrollbars() {
+    fn resize_min_height_respects_card_scrollbars() {
         // Scrollbars OFF: the floor is the fitted content (+ vertical padding),
         // never below 60 — so a resize can't shrink a node past its text (it
         // would clip). This is today's autoresize-friendly behavior.

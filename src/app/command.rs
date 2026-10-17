@@ -55,8 +55,8 @@ pub(crate) enum CommandId {
     /// The board-by-keyboard actions (see `app::navigate`), here so they can
     /// be found — and their keys learned from the hint beside them.
     FitBoard,
-    EditNote,
-    AddLinkedNote,
+    EditNode,
+    AddLinkedNode,
     /// Colours the selection: an Obsidian preset code, or `None` for none —
     /// the node menu's swatches, for a keyboard.
     Colour(Option<&'static str>),
@@ -83,19 +83,19 @@ impl CommandId {
         match self {
             CommandId::AskAi if !app.config.ai_enabled() => Some(NO_PROVIDER),
             CommandId::ChooseModel if !app.config.ai_enabled() => Some(NO_PROVIDER),
-            CommandId::AskAi if app.selected.is_empty() => Some("Select a note to ask about"),
+            CommandId::AskAi if app.selected.is_empty() => Some("Select a card to ask about"),
             CommandId::Copy
             | CommandId::DeleteSelected
             | CommandId::Distribute
-            | CommandId::EditNote
-            | CommandId::AddLinkedNote
+            | CommandId::EditNode
+            | CommandId::AddLinkedNode
             | CommandId::Colour(_)
                 if app.selected.is_empty() =>
             {
-                Some("Select a note first")
+                Some("Select a card first")
             }
             CommandId::GroupSelection if !app.groupable_selection() => {
-                Some("Select two or more notes")
+                Some("Select two or more cards")
             }
             // Nothing to browse until a vault has been picked — "Open vault…"
             // sits right above it.
@@ -115,10 +115,10 @@ fn settings_unavailable(app: &App, field: Field) -> Option<&'static str> {
         {
             Some("Overlay only")
         }
-        Field::DoubleClickAddsNote if app.config.click_dismisses(app.overlay) => {
+        Field::DoubleClickAddsCard if app.config.click_dismisses(app.overlay) => {
             Some("Needs click-to-dismiss off")
         }
-        Field::AiApiKey | Field::AiNodeColor | Field::AiThinking if !app.config.ai_enabled() => {
+        Field::AiApiKey | Field::AiCardColor | Field::AiThinking if !app.config.ai_enabled() => {
             Some("Needs an AI provider — Settings → AI")
         }
         // Only a custom endpoint has a URL to type: a preset fills its own.
@@ -157,9 +157,9 @@ static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
         cmd(ChooseTheme, "Change theme…", "colours colors appearance scheme palette dark", ""),
         cmd(ChooseFont, "Change font…", "typeface family typography text serif mono", ""),
         cmd(ChooseModel, "Change AI model…", "llm gpt claude openrouter fireworks provider", ""),
-        cmd(AddNode, "Add node", "new note card", ""),
-        cmd(AddLinkedNote, "Add linked note", "new child connected card link", "⇥"),
-        cmd(EditNote, "Edit note", "write text change", "↩"),
+        cmd(AddNode, "Add card", "new note node", ""),
+        cmd(AddLinkedNode, "Add linked card", "new child connected note node link", "⇥"),
+        cmd(EditNode, "Edit card", "write text change note node", "↩"),
         cmd(FitBoard, "Fit board to view", "zoom all overview everything", "⌘0"),
         cmd(Colour(Some("1")), "Color: red", "colour color tint card", ""),
         cmd(Colour(Some("2")), "Color: orange", "colour color tint card", ""),
@@ -326,5 +326,16 @@ mod tests {
         assert!(commands("vault").contains(&CommandId::OpenVault));
         // "browse" is a keyword of Switch canvas, not of its title.
         assert!(commands("browse").contains(&CommandId::SwitchCanvas));
+    }
+
+    #[test]
+    fn the_old_words_for_a_card_still_find_it() {
+        // A card was a node in one menu and a note in the next; both are
+        // hidden terms now, as "canvas" is for board.
+        for word in ["node", "note"] {
+            for id in [CommandId::AddNode, CommandId::AddLinkedNode, CommandId::EditNode] {
+                assert!(commands(word).contains(&id), "{word} finds {id:?}");
+            }
+        }
     }
 }

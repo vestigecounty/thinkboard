@@ -139,7 +139,7 @@ impl App {
             &clustering.clusters,
             self.config.cluster_zoom,
             self.theme,
-            self.config.center_node_text,
+            self.config.center_card_text,
             self.config.rasterize_text,
         );
         Clusters {
@@ -248,7 +248,7 @@ impl App {
 
         let zoom = self.camera.zoom;
         let theme = self.theme;
-        let center = self.config.center_node_text;
+        let center = self.config.center_card_text;
         let editing = self.editing.as_ref().map(|editing| editing.index);
 
         let jobs: Vec<(usize, String, f32, f32)> = self
@@ -318,7 +318,7 @@ impl App {
         let edges = self.edges.clone();
         let cluster_zoom = self.config.cluster_zoom;
         let theme = self.theme;
-        let center = self.config.center_node_text;
+        let center = self.config.center_card_text;
         let rasterize = self.config.rasterize_text;
         Task::perform(
             async move {

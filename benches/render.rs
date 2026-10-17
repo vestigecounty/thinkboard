@@ -25,7 +25,7 @@ const FONT_SIZE: f32 = 17.0;
 const NODE_WIDTH: f32 = 250.0;
 const NODE_HEIGHT: f32 = 120.0;
 
-/// Text of the shape a note actually holds. `plain` is the common case; `rich`
+/// Text of the shape a card actually holds. `plain` is the common case; `rich`
 /// exercises the styled-span path (headings, bold, links, lists) that costs
 /// noticeably more to shape.
 const PLAIN: &str = "A short note of the kind most cards hold, long enough to wrap onto \

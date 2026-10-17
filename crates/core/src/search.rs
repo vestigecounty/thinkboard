@@ -1,4 +1,4 @@
-//! Case-insensitive text search across a canvas's notes.
+//! Case-insensitive text search across a canvas's cards.
 //!
 //! Runs on every keystroke in the find bar, over every node, on the main
 //! thread — so it is written to avoid allocating per node. Pure ASCII text and

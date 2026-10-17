@@ -1,11 +1,11 @@
 //! The board by keyboard: moving the selection from card to card, editing the
-//! selected one, adding a linked note beside it, nudging, and fitting the
+//! selected one, adding a linked card beside it, nudging, and fitting the
 //! board to the view.
 //!
 //! Before this, nothing selected a card without the mouse — so everything
 //! that acts on a selection (delete, group, ask, colour, copy) was out of a
 //! keyboard's reach, and the palette listed them greyed out with "Select a
-//! note first". The arrows go spatially (`thinkboard_core::navigate`): a board
+//! card first". The arrows go spatially (`thinkboard_core::navigate`): a board
 //! has no reading order to tab through.
 //!
 //! **Esc is not part of it.** It ends an edit and closes what's on top, and
@@ -26,7 +26,7 @@ const NUDGE: f32 = 10.0;
 /// How long a run of nudges is one undo step: a key held down, or tapped a few
 /// times to line something up, is one move.
 const NUDGE_RUN: Duration = Duration::from_secs(1);
-/// The gap Tab leaves between a card and the note it adds beside it.
+/// The gap Tab leaves between a card and the card it adds beside it.
 const LINKED_GAP: f32 = 80.0;
 
 impl App {
@@ -75,10 +75,10 @@ impl App {
         task
     }
 
-    /// Adds a note linked from the selected card, to its right — where a drag
+    /// Adds a card linked from the selected card, to its right — where a drag
     /// off its right port would put one — and opens its editor. Tab again
     /// after Esc adds the next, as a mind map does.
-    pub(super) fn add_linked_note(&mut self) {
+    pub(super) fn add_linked_node(&mut self) {
         let Some(&from) = self.selected.last() else {
             return;
         };
@@ -133,7 +133,7 @@ impl App {
 
     /// Ends the edit from the keyboard — Esc, or ⌘Enter — leaving the card
     /// selected, so the next key acts on what was just written: Enter to go
-    /// back in, Tab to add the next note, an arrow to move on. A click
+    /// back in, Tab to add the next card, an arrow to move on. A click
     /// elsewhere ends it too, and selects whatever it lands on instead.
     pub(super) fn finish_editing(&mut self) -> Task<Message> {
         let id = self
@@ -142,7 +142,7 @@ impl App {
             .and_then(|editing| self.nodes.get(editing.index))
             .map(|node| node.id.clone());
         let task = self.stop_editing();
-        // Gone, if it was a new note left empty.
+        // Gone, if it was a new card left empty.
         if let Some(index) = id.and_then(|id| self.nodes.iter().position(|node| node.id == id)) {
             self.selected = vec![index];
             self.selected_edge = None;

@@ -309,7 +309,7 @@ impl From<syntax::Syntax> for SyntaxClass {
     }
 }
 
-/// A run of note text sharing one style — the unit a renderer draws. Block
+/// A run of card text sharing one style — the unit a renderer draws. Block
 /// breaks arrive as spans of `"\n\n"`; list items get a `"• "` prefix.
 #[derive(uniffi::Record)]
 pub struct MarkdownSpan {
@@ -341,7 +341,7 @@ impl From<markdown::Span> for MarkdownSpan {
     }
 }
 
-/// Parse note text into styled spans for rendering. A table arrives as rows
+/// Parse card text into styled spans for rendering. A table arrives as rows
 /// of text, its cells separated by `" | "` — the spans carry no grid.
 #[uniffi::export]
 pub fn parse_markdown(source: String) -> Vec<MarkdownSpan> {

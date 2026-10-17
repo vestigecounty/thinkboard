@@ -239,7 +239,7 @@ pub fn kill_previous_instances() {
 }
 
 /// Opens `url` in the user's default browser. Only `http(s)`/`mailto` schemes
-/// are launched — a guard so a note's link can't fire an arbitrary URL handler
+/// are launched — a guard so a card's link can't fire an arbitrary URL handler
 /// (`file:`, `javascript:`, custom app schemes, …).
 pub fn open_url(url: &str) {
     let allowed = url.starts_with("http://")

@@ -464,7 +464,7 @@ impl App {
 
         let content: Element<Message> = match menu.kind {
             ContextMenuKind::Canvas { world } => column![
-                item(None, "Add node", Message::CreateNode { world }),
+                item(None, "Add card", Message::CreateNode { world }),
                 sep(),
                 item(Some(self.config.auto_layout), "Auto-layout", Message::ToggleAutoLayout),
                 sep(),
@@ -660,7 +660,7 @@ impl App {
         sep: impl Fn() -> container::Container<'a, Message> + Copy + 'a,
     ) -> Element<'a, Message> {
         let delete_label = if self.selected.len() > 1 {
-            format!("Delete {} nodes", self.selected.len())
+            format!("Delete {} cards", self.selected.len())
         } else {
             "Delete".to_owned()
         };
@@ -1084,7 +1084,7 @@ fn editor_key_binding(
                     Message::UndoEdit
                 }));
             }
-            // Cmd/Ctrl+Enter commits (Enter alone is a newline, since notes are
+            // Cmd/Ctrl+Enter commits (Enter alone is a newline, since cards are
             // multi-line).
             (_, Key::Named(Named::Enter)) => {
                 return Some(text_editor::Binding::Custom(Message::FinishEditing));

@@ -2,7 +2,7 @@
 //! OpenAI, …).
 //!
 //! Ad-hoc trigger for now: coloring a node yellow asks the endpoint with the
-//! chain of upstream notes as the prompt, and streams the answer into a new
+//! chain of upstream cards as the prompt, and streams the answer into a new
 //! node branching off it. See `App::trigger_ai`.
 
 use std::collections::HashSet;
@@ -16,9 +16,9 @@ use crate::model::{CanvasEdge, CanvasNode, NodeKind};
 /// A streamed event from the endpoint.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Event {
-    /// A chunk of the current note's text to append.
+    /// A chunk of the current card's text to append.
     Delta(String),
-    /// The model asked to start a new sibling note.
+    /// The model asked to start a new sibling card.
     Split,
     /// The answer finished.
     Done,
@@ -26,7 +26,7 @@ pub enum Event {
     Error(String),
 }
 
-/// A line of exactly this (per the system prompt) starts a new note.
+/// A line of exactly this (per the system prompt) starts a new card.
 const SEPARATOR: &str = "\n---\n";
 
 /// A known AI provider: a display name and its OpenAI-style base URL. Selecting
@@ -233,7 +233,7 @@ fn provider_name(base_url: &str) -> Option<&'static str> {
     PRESETS.iter().find(|preset| preset.url.trim_end_matches('/') == url).map(|preset| preset.name)
 }
 
-fn system_prompt(max_notes: usize) -> String {
+fn system_prompt(max_nodes: usize) -> String {
     format!(
         "You are a helpful assistant inside a mind-mapping canvas. The user's \
          query is formed by a chain of connected notes. Answer concisely. If — \
@@ -241,12 +241,12 @@ fn system_prompt(max_notes: usize) -> String {
          items (options, steps, alternatives), split it into separate notes by \
          putting a line containing only `---` between them; make each note \
          self-contained. Prefer a single note for explanations or prose, and \
-         never produce more than {max_notes} notes."
+         never produce more than {max_nodes} notes."
     )
 }
 
-/// Every note feeding into `target` (all ancestors, following incoming links,
-/// not just one chain), topologically ordered so each note precedes the ones it
+/// Every card feeding into `target` (all ancestors, following incoming links,
+/// not just one chain), topologically ordered so each card precedes the ones it
 /// feeds, with `target` last. `A -> B -> C` (target C) is `[A, B, C]`;
 /// `A, B, C -> D` is all four.
 pub fn upstream_nodes<'a>(
@@ -266,8 +266,8 @@ pub fn upstream_nodes<'a>(
         .collect()
 }
 
-/// Builds the text prompt for `target`: the text of its ancestor notes joined
-/// by blank lines (see [`upstream_nodes`] for the order). Image (file) notes
+/// Builds the text prompt for `target`: the text of its ancestor cards joined
+/// by blank lines (see [`upstream_nodes`] for the order). Image (file) cards
 /// contribute no text; see [`upstream_images`].
 ///
 /// A *group* among the ancestors contributes its whole contents, flattened by
@@ -296,13 +296,13 @@ pub fn upstream_prompt(nodes: &[CanvasNode], edges: &[CanvasEdge], target_id: &s
 }
 
 /// Flattens everything a group frame encloses into one outline, for asking
-/// about a whole group rather than a chain of notes.
+/// about a whole group rather than a chain of cards.
 ///
 /// A group has no incoming links to walk — it is a region, not a step in a
 /// chain — so the prompt is built from its contents instead, preserving the two
-/// hierarchies the user actually sees: links between the notes inside it (a
-/// note's targets are nested under it) and frames within frames (a nested
-/// group's contents are nested under its caption). Each note is emitted as a
+/// hierarchies the user actually sees: links between the cards inside it (a
+/// card's targets are nested under it) and frames within frames (a nested
+/// group's contents are nested under its caption). Each card is emitted as a
 /// bullet, its own line breaks indented to stay under it.
 pub fn group_prompt(nodes: &[CanvasNode], edges: &[CanvasEdge], frame: usize) -> String {
     let members = crate::model::enclosed_by(nodes, frame);
@@ -322,7 +322,7 @@ pub fn group_prompt(nodes: &[CanvasNode], edges: &[CanvasEdge], frame: usize) ->
 }
 
 /// Emits the members whose innermost enclosing frame (within the set) is
-/// `container`, following links so a note's targets nest under it.
+/// `container`, following links so a card's targets nest under it.
 #[allow(clippy::too_many_arguments)] // one recursive walk; splitting it would only move the args
 fn write_container(
     nodes: &[CanvasNode],
@@ -341,7 +341,7 @@ fn write_container(
         .filter(|&m| innermost_frame(nodes, m, member_set).unwrap_or(container) == container)
         .collect();
 
-    // Roots first: a note with no link from a sibling in the same container
+    // Roots first: a card with no link from a sibling in the same container
     // starts a branch. Everything else is reached by following links, and
     // anything left over (a cycle) is emitted afterwards so nothing is lost.
     let has_sibling_parent = |m: usize| {
@@ -387,7 +387,7 @@ fn write_member(
 
     let text = node.text.as_deref().unwrap_or("").trim();
     if !text.is_empty() {
-        // Keep a multi-line note under its own bullet rather than letting later
+        // Keep a multi-line card under its own bullet rather than letting later
         // lines read as separate items.
         let mut lines = text.lines();
         if let Some(first) = lines.next() {
@@ -424,7 +424,7 @@ fn innermost_frame(nodes: &[CanvasNode], member: usize, set: &HashSet<usize>) ->
         })
 }
 
-/// The `file` paths of the image notes a group frame encloses, to attach as
+/// The `file` paths of the image cards a group frame encloses, to attach as
 /// vision inputs alongside [`group_prompt`].
 pub fn group_images(nodes: &[CanvasNode], frame: usize) -> Vec<String> {
     crate::model::enclosed_by(nodes, frame)
@@ -434,7 +434,7 @@ pub fn group_images(nodes: &[CanvasNode], frame: usize) -> Vec<String> {
         .collect()
 }
 
-/// The `file` paths of image (file) notes among `target`'s ancestors, in the
+/// The `file` paths of image (file) cards among `target`'s ancestors, in the
 /// same order, to attach as vision inputs alongside the text prompt.
 pub fn upstream_images(nodes: &[CanvasNode], edges: &[CanvasEdge], target_id: &str) -> Vec<String> {
     upstream_nodes(nodes, edges, target_id)
@@ -456,7 +456,7 @@ pub fn upstream_images(nodes: &[CanvasNode], edges: &[CanvasEdge], target_id: &s
         .collect()
 }
 
-/// Post-order DFS over incoming links from `node`, pushing each note after all
+/// Post-order DFS over incoming links from `node`, pushing each card after all
 /// of its ancestors so `order` is a valid topological sort (ancestors first,
 /// `node` last). Marking visited on entry keeps it terminating on cycles.
 fn collect_ancestors<'a>(
@@ -475,8 +475,8 @@ fn collect_ancestors<'a>(
 }
 
 /// Copilot-style completion: asks (non-streaming) for up to `count` brief
-/// sibling notes that could branch alongside the note chain in `context`.
-/// `existing` lists the sibling notes already present so suggestions stay on
+/// sibling cards that could branch alongside the card chain in `context`.
+/// `existing` lists the sibling cards already present so suggestions stay on
 /// topic without repeating them. Returns the cleaned suggestions.
 pub async fn suggest(
     base_url: String,
@@ -564,7 +564,7 @@ fn mark_reasoning_required(model: &str) {
 }
 
 /// The OpenRouter `reasoning` object for the lowest thinking level: a minimal
-/// budget, excluded from the response so it doesn't leak into generated notes.
+/// budget, excluded from the response so it doesn't leak into generated cards.
 fn lowest_reasoning() -> serde_json::Value {
     serde_json::json!({ "effort": "low", "exclude": true })
 }
@@ -691,20 +691,20 @@ fn user_content(prompt: &str, images: &[String]) -> serde_json::Value {
 
 /// Streams a chat completion for `prompt` from `base_url` (its OpenAI-style
 /// base, e.g. `http://localhost:1234/v1`), yielding text deltas and `Split`s.
-/// `images` are base64 `data:` URLs attached as vision inputs. `max_notes`
-/// guides the model on how many notes it may produce.
+/// `images` are base64 `data:` URLs attached as vision inputs. `max_nodes`
+/// guides the model on how many cards it may produce.
 pub fn stream(
     base_url: String,
     model: String,
     api_key: String,
     prompt: String,
     images: Vec<String>,
-    max_notes: usize,
+    max_nodes: usize,
     thinking: bool,
 ) -> impl Stream<Item = Event> {
     event_stream(64, move |mut output| async move {
         if let Err(error) =
-            run(&base_url, &model, &api_key, &prompt, &images, max_notes, thinking, &mut output).await
+            run(&base_url, &model, &api_key, &prompt, &images, max_nodes, thinking, &mut output).await
         {
             let _ = output.send(Event::Error(error)).await;
         }
@@ -735,7 +735,7 @@ async fn run(
     api_key: &str,
     prompt: &str,
     images: &[String],
-    max_notes: usize,
+    max_nodes: usize,
     thinking: bool,
     output: &mut Sender<Event>,
 ) -> Result<(), String> {
@@ -743,7 +743,7 @@ async fn run(
         "model": model,
         "stream": true,
         "messages": [
-            { "role": "system", "content": system_prompt(max_notes) },
+            { "role": "system", "content": system_prompt(max_nodes) },
             { "role": "user", "content": user_content(prompt, images) },
         ],
     });
@@ -833,7 +833,7 @@ const BOLD_HOLD: usize = 160;
 /// an opening `**` with no closing one after it, or a lone trailing `*` that
 /// may be half of one.
 ///
-/// A note is drawn as it arrives, and `**Taberna da Rua` drawn before its
+/// A card is drawn as it arrives, and `**Taberna da Rua` drawn before its
 /// closing pair shows the asterisks, then snaps to bold when they come.
 /// Holding the run back until then costs a word or two of delay. An opener is
 /// a `**` not followed by a space and a closer one not preceded by one —
@@ -949,7 +949,7 @@ mod tests {
     }
 
     #[test]
-    fn a_multi_line_note_stays_under_its_own_bullet() {
+    fn a_multi_line_card_stays_under_its_own_bullet() {
         let nodes = vec![
             gnode("frame", "group", 0.0, 0.0, 500.0, 500.0, ""),
             gnode("a", "text", 50.0, 50.0, 100.0, 50.0, "# Heading\n\nbody line"),
@@ -964,7 +964,7 @@ mod tests {
     #[test]
     fn a_question_linked_from_a_frame_gets_the_frames_contents() {
         // The point of being able to draw that link: drag a port off a group,
-        // type a question into the note it makes, and ask.
+        // type a question into the card it makes, and ask.
         let nodes = vec![
             gnode("frame", "group", 0.0, 0.0, 800.0, 600.0, "Planning"),
             gnode("a", "text", 50.0, 50.0, 100.0, 50.0, "first note"),
@@ -1089,7 +1089,7 @@ mod tests {
         assert_eq!(first["reasoning"], serde_json::json!({ "enabled": false }));
 
         // After learning it mandates reasoning: request the lowest effort instead
-        // of a disable (which would 400), excluded so it doesn't leak into notes.
+        // of a disable (which would 400), excluded so it doesn't leak into cards.
         mark_reasoning_required(model);
         let mut later = serde_json::json!({ "model": model });
         apply_thinking(&mut later, "https://openrouter.ai/api/v1", false);
@@ -1163,7 +1163,7 @@ mod tests {
     #[test]
     fn drain_segments_reassembles_a_streamed_answer_across_chunk_splits() {
         // A separator split across two chunks still yields exactly one Split,
-        // and no separator text leaks into the notes.
+        // and no separator text leaks into the cards.
         let (text, splits, drained) = run_stream(&["First note\n-", "--\nSecond note"]);
         assert_eq!(text, "First noteSecond note");
         assert_eq!(splits, 1);
@@ -1182,7 +1182,7 @@ mod tests {
 
     #[test]
     fn a_stream_that_stops_after_a_completed_separator_still_splits() {
-        // The separator completed before the stream cut off mid-second-note.
+        // The separator completed before the stream cut off mid-second-card.
         let (text, splits, drained) = run_stream(&["A\n---\nB, cut off here"]);
         assert_eq!(text, "AB, cut off here");
         assert_eq!(splits, 1);
@@ -1296,7 +1296,7 @@ mod tests {
         img.file = Some("pics/a.png".to_owned());
         let nodes = [img, node("b", "B text"), node("c", "C text")];
         let edges = [edge("img", "b"), edge("b", "c")];
-        // The file note is an image input, and contributes no text.
+        // The file card is an image input, and contributes no text.
         assert_eq!(upstream_images(&nodes, &edges, "c"), vec!["pics/a.png".to_owned()]);
         assert_eq!(upstream_prompt(&nodes, &edges, "c"), "B text\n\nC text");
     }

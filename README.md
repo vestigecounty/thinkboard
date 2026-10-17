@@ -20,18 +20,18 @@ in your vault.
 - **Summon over anything** — a translucent, always-on-top overlay that drops onto your current desktop (even over fullscreen apps) with a global hotkey, and toggles away with the same key.
 - **Obsidian-compatible** — opens and saves standard `.canvas` files; pick up your vault's canvases or start fresh ones.
 - **Your whole vault** — point it at your Obsidian vault and **Cmd/Ctrl+O** lists every board in it, newest first, with fuzzy search by name. Boards from anywhere else still open by dialog or drag-and-drop.
-- **Fast to build** — create notes, drag from a note's edge to connect them, double-click to edit Markdown, and auto-layout to tidy the whole board.
-- **Ask AI (optional)** — right-click a note and the chain of notes leading into it becomes the prompt; the reply lands as new, connected notes. Off by default.
+- **Fast to build** — create cards, drag from a card's edge to connect them, double-click to edit Markdown, and auto-layout to tidy the whole board.
+- **Ask AI (optional)** — right-click a card and the chain of cards leading into it becomes the prompt; the reply lands as new, connected cards. Off by default.
 - **Make it yours** — ten built-in schemes (Solarized, Nord, Dracula, Gruvbox, Tokyo Night, Catppuccin, One Dark, Rosé Pine, Monokai), picked from the command palette with the board previewing each as you scroll. Drop your own in the themes folder, or set your vault and take on whichever theme Obsidian is using.
 - **macOS niceties** — pinch-to-zoom, plus an optional four-finger-swipe-down summon gesture.
 
 ## Quick start
 
 - Press **Pause** (the default hotkey, configurable) to summon or dismiss the board.
-- **Double-click** a note to edit it; **Esc** or **Cmd/Ctrl+Enter** when you're done.
-- **Drag from a note's edge** (the little dot) onto another note to connect them.
-- **Right-click** a note for actions (Ask AI, color…), or right-click empty space for canvas options like Auto-layout.
-- **Cmd/Ctrl+O** switches boards: pick your vault once (**Settings → Vault**, or "Open vault…" in the command palette) and it lists every canvas in it. Without a vault it's the ordinary open dialog.
+- **Double-click** a card to edit it; **Esc** or **Cmd/Ctrl+Enter** when you're done.
+- **Drag from a card's edge** (the little dot) onto another card to connect them.
+- **Right-click** a card for actions (Ask AI, color…), or right-click empty space for board options like Auto-layout.
+- **Cmd/Ctrl+O** switches boards: pick your vault once (**Settings → Vault**, or "Open vault…" in the command palette) and it lists every board in it. Without a vault it's the ordinary open dialog.
 - **Cmd/Ctrl+K** or **Cmd/Ctrl+P** opens the command palette; **Cmd/Ctrl+F** finds text on the board.
 - **"Change theme"** in the palette lists every theme — arrow through them and the board changes under the panel; Enter keeps one, Esc puts back what you had.
 - Open or create boards — and reach **Settings** — from the tray icon.
@@ -60,7 +60,7 @@ Keys are kept per provider, so switching between them doesn't lose the others:
 - **Local:** LM Studio, Ollama
 - **Hosted:** OpenAI, OpenRouter, Groq, Together AI, Fireworks AI, Mistral, DeepSeek
 
-Then right-click any note and choose **Ask AI**.
+Then right-click any card and choose **Ask AI**.
 
 ## Configuration
 

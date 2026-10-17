@@ -181,7 +181,7 @@ fn syntax_highlight(c: &mut Criterion) {
     });
 }
 
-/// Walking a note's ancestors to build an AI prompt. Runs once per Ask-AI, but
+/// Walking a card's ancestors to build an AI prompt. Runs once per Ask-AI, but
 /// over the whole edge list per step, so it's worth knowing its shape.
 fn upstream(c: &mut Criterion) {
     let mut group = c.benchmark_group("upstream_prompt");

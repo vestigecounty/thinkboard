@@ -1,6 +1,6 @@
 //! Copilot-style suggestion cards.
 //!
-//! Finishing a freshly created note that hangs off a parent asks the model for
+//! Finishing a freshly created card that hangs off a parent asks the model for
 //! sibling ideas; they appear as translucent "ghost" cards the user can accept,
 //! drag, or ignore. Ignored ones fade out and auto-dismiss, so a suggestion
 //! that missed never has to be dealt with. Engaging any of them (accepting,
@@ -162,8 +162,8 @@ impl App {
         self.ghosts.since = Instant::now();
     }
 
-    /// Whether a note just finished being created should get suggestions: the
-    /// feature is offered and on, an endpoint is configured, and the note has a
+    /// Whether a card just finished being created should get suggestions: the
+    /// feature is offered and on, an endpoint is configured, and the card has a
     /// parent.
     pub(super) fn completion_anchor(&self, index: usize) -> Option<String> {
         if !OFFERED || !self.config.ai_completions || !self.config.ai_enabled() {
@@ -203,7 +203,7 @@ impl App {
             return Task::none();
         }
         // The parent's other children, so suggestions stay on theme and don't
-        // repeat notes that already exist.
+        // repeat cards that already exist.
         let existing: Vec<String> = self
             .edges
             .iter()
@@ -247,7 +247,7 @@ impl App {
             return;
         };
         let rect = node_world_rect(node);
-        let (w, h) = (self.config.new_node_min_width, self.config.new_node_min_height);
+        let (w, h) = (self.config.new_card_min_width, self.config.new_card_min_height);
         let requested = Point::new(rect.center_x(), rect.y + rect.height + 30.0 + h / 2.0);
         let center = self.find_free_placement(requested, w, h);
         self.ghosts.cards.clear();
@@ -275,7 +275,7 @@ impl App {
         if generation != self.ghosts.generation {
             return;
         }
-        let (w, h) = (self.config.new_node_min_width, self.config.new_node_min_height);
+        let (w, h) = (self.config.new_card_min_width, self.config.new_card_min_height);
         // Anchor the batch to the placeholder's spot, falling back to just
         // below the added node.
         let start = self

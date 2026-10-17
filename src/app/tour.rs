@@ -911,7 +911,7 @@ fn block_on<F: std::future::Future>(future: F) -> F::Output {
 ///
 /// The AI scenes need something to ask, and it has to be the real client that
 /// asks it: the streamed `data:` lines, the `---` that splits an answer into
-/// notes, the sentence a refused request turns into — those are what a person
+/// cards, the sentence a refused request turns into — those are what a person
 /// sees, and a message sent straight to `update` would skip every one. Nothing
 /// leaves the machine and no key is needed.
 struct Provider {
@@ -925,7 +925,7 @@ struct Script {
     /// for any other model is refused with a 404, as OpenAI refuses one.
     models: &'static [(&'static str, Option<&'static str>, Option<u64>)],
     /// Streamed answers, each under a cue: a request gets the one whose cue
-    /// comes latest in its prompt, which ends with the note asked about.
+    /// comes latest in its prompt, which ends with the card asked about.
     answers: &'static [(&'static str, &'static str)],
     /// Refuse every request as an unrecognised key.
     reject_key: bool,
@@ -1113,7 +1113,7 @@ fn empty_document(_: &ColorTheme) -> CanvasDocument {
     CanvasDocument { nodes: Vec::new(), edges: Vec::new(), extra: serde_json::Map::new() }
 }
 
-/// A board with some life in it: eight topics, each a note linked to a
+/// A board with some life in it: eight topics, each a card linked to a
 /// handful of its own, laid out in blocks — enough to cluster when zoomed out
 /// and to have something on every side when panned.
 fn sample_board(_: &ColorTheme) -> CanvasDocument {
@@ -1151,7 +1151,7 @@ fn sample_board(_: &ColorTheme) -> CanvasDocument {
 
 /// One board with a bit of everything a theme colours: heading, bold,
 /// italic, code (inline and a block), a link, a list with tasks, a quote, a
-/// labelled link between notes, every card colour, and a named frame.
+/// labelled link between cards, every card colour, and a named frame.
 fn theme_sampler(_: &ColorTheme) -> CanvasDocument {
     use thinkboard_core::fixtures::{edge, node};
     let text = |id: &str, text: &str, (x, y, w, h): (f32, f32, f32, f32)| CanvasNode {
@@ -1213,7 +1213,7 @@ fn first_run() {
     tour.shot("after-palette");
 }
 
-/// A newcomer's first board: empty, then built up by hand — notes, an edit, a
+/// A newcomer's first board: empty, then built up by hand — cards, an edit, a
 /// link dragged from a port, a second link, a frame around a pair.
 fn build_a_board() {
     let mut tour = Tour::new("build_a_board", first_launch(empty_document));
@@ -1229,7 +1229,7 @@ fn build_a_board() {
 
     tour.right_click(Point::new(560.0, 380.0));
     tour.shot("context-menu");
-    // Whatever the menu calls it, adding a note is a `CreateNode` at the click.
+    // Whatever the menu calls it, adding a card is a `CreateNode` at the click.
     let world = tour.app.camera.to_world(Point::new(560.0, 380.0));
     tour.send(Message::CloseContextMenu);
     tour.send(Message::CreateNode { world });
@@ -1240,7 +1240,7 @@ fn build_a_board() {
     tour.named(key::Named::Escape);
     tour.shot("first-note");
 
-    // Drag out of the note's right-hand port onto empty space.
+    // Drag out of the card's right-hand port onto empty space.
     let first = 0;
     let node = &tour.app.nodes[first];
     let port = tour.app.camera.to_screen(Point::new(node.x + node.width, node.y + node.height / 2.0));
@@ -1273,11 +1273,11 @@ fn build_a_board() {
     tour.shot("deselected");
 }
 
-/// The opt-in Obsidian gesture: double-click empty space for a note. A window
+/// The opt-in Obsidian gesture: double-click empty space for a card. A window
 /// is never dismissed by a click, so here it works with the setting alone.
 fn double_click_to_add() {
     let mut tour = Tour::new("double_click_to_add", first_launch(empty_document));
-    tour.app.config.double_click_adds_note = true;
+    tour.app.config.double_click_adds_card = true;
     tour.shot("empty-board-hint");
     tour.double_click(Point::new(720.0, 300.0));
     tour.shot("double-clicked");
@@ -1292,14 +1292,14 @@ fn double_click_to_add() {
     tour.shot("settings");
 }
 
-/// Writing in a note, a frame per step: what the card and the editor do as
+/// Writing in a card, a frame per step: what the card and the editor do as
 /// lines break, wrap, and outgrow the card — and what changes when editing
 /// ends and starts again. Read the sheets with their `.txt` legends: the
 /// numbers say which of card, editor box and content fell behind.
 fn editing() {
     let mut tour = Tour::new("editing", first_launch(empty_document));
 
-    // A note made the way the hint says: right-click, "Add node".
+    // A card made the way the hint says: right-click, "Add card".
     let at = Point::new(560.0, 300.0);
     tour.right_click(at);
     tour.click(Point::new(at.x + 60.0, at.y + 19.0));
@@ -1513,7 +1513,7 @@ fn find() {
 /// Links: hovered, selected, its menu — and the board in each link style.
 fn links() {
     let mut tour = Tour::new("links", first_launch(sample_board));
-    // Close in on the first topic: its note on the left, its links fanning right.
+    // Close in on the first topic: its card on the left, its links fanning right.
     let root = tour.find("# Trip to Lisbon");
     let factor = 1.0 / tour.app.camera.zoom;
     tour.send(Message::ZoomBy { factor, cursor: Point::new(720.0, 450.0) });
@@ -1521,7 +1521,7 @@ fn links() {
     let to_left = Point::new(360.0, 450.0) - tour.node_center(root);
     tour.send(Message::Pan { delta: to_left, track: false });
     tour.settle();
-    // The middle of the link to the third note: halfway between its ports.
+    // The middle of the link to the third card: halfway between its ports.
     let child = tour.find("Pastéis");
     let (a, b) = (&tour.app.nodes[root], &tour.app.nodes[child]);
     let from = tour.app.camera.to_screen(Point::new(a.x + a.width, a.y + a.height / 2.0));
@@ -1566,13 +1566,13 @@ fn links() {
     tour.shot("tips-triangle-hovered");
 }
 
-/// Grouping: three notes swept up with a marquee, framed, named, moved.
+/// Grouping: three cards swept up with a marquee, framed, named, moved.
 fn groups() {
     let mut tour = Tour::new("groups", first_launch(sample_board));
     let factor = 0.9 / tour.app.camera.zoom;
     tour.send(Message::ZoomBy { factor, cursor: Point::new(720.0, 450.0) });
     tour.settle();
-    // A marquee around the first topic's first three notes.
+    // A marquee around the first topic's first three cards.
     let (first, third) = (&tour.app.nodes[1], &tour.app.nodes[3]);
     let top_left = tour.app.camera.to_screen(Point::new(first.x - 30.0, first.y - 30.0));
     let bottom_right = tour.app.camera.to_screen(Point::new(third.x + third.width + 30.0, third.y + third.height + 30.0));
@@ -1835,7 +1835,7 @@ fn trip_board(_: &ColorTheme) -> CanvasDocument {
     }
 }
 
-/// Zoom 1, with the trip's note a sixth of the way in.
+/// Zoom 1, with the trip's card a sixth of the way in.
 fn frame_trip(tour: &mut Tour) {
     let factor = 1.0 / tour.app.camera.zoom;
     tour.send(Message::ZoomBy { factor, cursor: Point::new(720.0, 450.0) });
@@ -1853,7 +1853,7 @@ fn configure(tour: &mut Tour, url: &str) {
     tour.app.config.ai_model = "qwen/qwen3-30b-a3b".to_owned();
 }
 
-/// Asks about the note `index` from its menu.
+/// Asks about the card `index` from its menu.
 fn ask(tour: &mut Tour, index: usize) {
     tour.right_click(tour.node_center(index));
     tour.click_label("Ask AI");
@@ -1901,7 +1901,7 @@ fn ai_setup() {
 }
 
 /// An answer: the board waiting on its first word, the words arriving, and
-/// the notes it splits into at each `---` — then a second question, asked
+/// the cards it splits into at each `---` — then a second question, asked
 /// from the palette, answered in prose.
 fn ai_answers() {
     let provider = Provider::start(&TRIP);
@@ -2061,7 +2061,7 @@ fn outside_changes() {
     // A card being edited here while one is added there.
     let eat = tour.find("Where should we eat");
     tour.double_click(tour.node_center(eat));
-    // To the end of the note, which wraps onto a second line.
+    // To the end of the card, which wraps onto a second line.
     tour.named(key::Named::ArrowDown);
     tour.named(key::Named::End);
     tour.type_text(" Near Alfama.");
@@ -2179,7 +2179,7 @@ fn undo_and_clipboard() {
     tour.drag(corner, Point::new(corner.x + 80.0, corner.y + 40.0));
     done.push(state(&tour));
     tour.right_click(Point::new(560.0, 790.0));
-    tour.click_label("Add node");
+    tour.click_label("Add card");
     tour.type_text("Pack an umbrella");
     tour.named(key::Named::Escape);
     done.push(state(&tour));
@@ -2330,8 +2330,8 @@ Walk downhill. Take a tram or a funicular up, then walk the long way down throug
 
 The ferry from Cais do Sodré to Cacilhas takes ten minutes and costs less than a coffee. Go at sunset for the view back across the river to the whole city, then eat grilled fish by the water before the last boat home.";
 
-/// A note an Obsidian card was left too small for — how a card drawn in
-/// Obsidian holds a note that later grew.
+/// Text an Obsidian card was left too small for — how a card drawn in
+/// Obsidian holds text that later grew.
 const GROWN: &str = "## Restaurants to try
 
 **Taberna da Rua das Flores** — no bookings, so arrive at opening; the menu is a chalkboard and changes daily.
@@ -2368,12 +2368,12 @@ Grilled sardines in June, bifanas any time, a ginjinha in a chocolate cup if you
 
 Tap water is fine. Cards are taken almost everywhere, but small tascas want cash. Sundays are quiet; Mondays many museums close.";
 
-/// Long notes: a guide pasted past the auto-size ceiling, a card Obsidian
-/// left smaller than its note, a link and a line of code too long to wrap, a
+/// Long cards: a guide pasted past the auto-size ceiling, a card Obsidian
+/// left smaller than its text, a link and a line of code too long to wrap, a
 /// table, and a long note from the vault — read, scrolled, searched, edited
 /// and zoomed. What a shot can't show (sizes, scroll offsets) is in
 /// `notes.txt`.
-fn long_notes() {
+fn long_cards() {
     let dir = std::env::temp_dir().join(format!("thinkboard-tour-long-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("a folder for the vault");
@@ -2418,7 +2418,7 @@ fn long_notes() {
         ];
         CanvasDocument { nodes, edges: Vec::new(), extra: serde_json::Map::new() }
     };
-    let mut tour = Tour::new("long_notes", launch(document, true, dir.clone()));
+    let mut tour = Tour::new("long_cards", launch(document, true, dir.clone()));
     tour.shot("board");
 
     // The guide, pasted onto the board from wherever it was written.
@@ -2538,7 +2538,7 @@ fn long_notes() {
 }
 
 /// Keyboard only: after launch, not one click — moving from card to card,
-/// editing, adding linked notes, nudging, zooming, colouring from the palette,
+/// editing, adding linked cards, nudging, zooming, colouring from the palette,
 /// finding and acting on what was found, and the settings form. What each key
 /// changed (the selection, the editor, the camera) is in `notes.txt`.
 fn keyboard_only() {
@@ -2569,7 +2569,7 @@ fn keyboard_only() {
     key(&mut tour, "↓", &|t| t.named(key::Named::ArrowDown));
     tour.shot("moved-to-sintra");
 
-    // Editing it, and the next note beside it.
+    // Editing it, and the next card beside it.
     key(&mut tour, "Enter", &|t| t.named(key::Named::Enter));
     key(&mut tour, "typed \" By train.\"", &|t| t.type_text(" By train."));
     key(&mut tour, "Esc", &|t| t.named(key::Named::Escape));
@@ -2707,7 +2707,7 @@ const SCENES: &[(&str, fn())] = &[
     ("ai_errors", ai_errors),
     ("outside_changes", outside_changes),
     ("undo_and_clipboard", undo_and_clipboard),
-    ("long_notes", long_notes),
+    ("long_cards", long_cards),
     ("keyboard_only", keyboard_only),
     ("small_windows", small_windows),
 ];

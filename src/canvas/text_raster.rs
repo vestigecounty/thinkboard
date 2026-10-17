@@ -57,7 +57,7 @@ const MAX_DIMENSION: f32 = 2048.0;
 /// A card's bitmap is capped at [`MAX_DIMENSION`] on its longest side, so a
 /// card taller than that loses resolution in proportion: at 1024 the raster is
 /// exactly retina, by 2048 it is 1:1, and past that the bitmap holds *less*
-/// detail than the card is — a long note renders visibly soft. Rather than let
+/// detail than the card is — a long card renders visibly soft. Rather than let
 /// a card grow until it blurs, growth stops here and the overflow scrolls,
 /// which also forces the scrollbar on regardless of the setting (see
 /// `Board::scrollable`) so the rest stays reachable.
@@ -1723,8 +1723,8 @@ mod measure_tests {
         // (measure_markdown) both inset MD_PADDING a side and add it back, so a
         // plain-text card is the same width whether you're editing or reading it —
         // its text never reflows on commit.
-        const MIN_W: f32 = 250.0; // config.new_node_min_width
-        const MAX_W: f32 = 420.0; // config.max_node_width
+        const MIN_W: f32 = 250.0; // config.new_card_min_width
+        const MAX_W: f32 = 420.0; // config.max_card_width
         let node = |text_w: f32| (text_w + NODE_PAD_X).clamp(MIN_W, MAX_W);
 
         // Plain text (no markup, so the editor and read view lay out identically)
@@ -1771,7 +1771,7 @@ mod measure_tests {
         // The editor measures the source at the card wrap minus the inset each
         // side (the app's `EDITOR_INSET` == `MD_PADDING`); read mode
         // (`measure_markdown`) insets the same amount internally. For plain text
-        // the two must lay out to the same height, or the note jumps when you
+        // the two must lay out to the same height, or the card jumps when you
         // start editing — the bug this guards. Several widths so at least one
         // wraps to multiple lines.
         let text =

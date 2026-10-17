@@ -68,7 +68,7 @@ pub struct CanvasNode {
 /// so that distinction lives in exactly one place.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NodeKind {
-    /// A note typed on the canvas itself; the only editable kind.
+    /// A card typed on the canvas itself; the only editable kind.
     Text,
     /// A file node embedding an image.
     Image,

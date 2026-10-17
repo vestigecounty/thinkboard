@@ -1,9 +1,9 @@
-//! Spatial grouping of canvas notes — the pure half of semantic-zoom clustering.
+//! Spatial grouping of a board's cards — the pure half of semantic-zoom clustering.
 //!
-//! Groups notes by proximity (single-linkage: notes within [`PROXIMITY`] of
-//! each other join, plus any note falling within a group's bounding box), picks
-//! the note that summarizes each group, and reports which edges cross between
-//! groups. Grouping is purely spatial: a nearby note joins whether or not an
+//! Groups cards by proximity (single-linkage: cards within [`PROXIMITY`] of
+//! each other join, plus any card falling within a group's bounding box), picks
+//! the card that summarizes each group, and reports which edges cross between
+//! groups. Grouping is purely spatial: a nearby card joins whether or not an
 //! edge connects it. Edges only decide *which* member is the main one.
 //!
 //! Rendering the result — fitting a font size to the box, choosing between a
@@ -22,7 +22,7 @@ pub type Bounds = (f32, f32, f32, f32);
 
 /// Expansion (world px) of a group's box beyond its members' extent.
 pub const MARGIN: f32 = 24.0;
-/// Gap (world px) below which two notes are grouped together.
+/// Gap (world px) below which two cards are grouped together.
 const PROXIMITY: f32 = 120.0;
 
 #[derive(Debug, Clone)]
@@ -48,8 +48,8 @@ pub struct Group {
     pub members: Vec<usize>,
 }
 
-/// Groups nearby notes (single-linkage by [`PROXIMITY`]) and picks each
-/// group's main note — the text root with the most edges, else the
+/// Groups nearby cards (single-linkage by [`PROXIMITY`]) and picks each
+/// group's main card — the text root with the most edges, else the
 /// highest-degree member.
 ///
 /// Group nodes take no part: they are frames the user draws *around* other
@@ -89,7 +89,7 @@ pub fn group(nodes: &[CanvasNode], edges: &[CanvasEdge]) -> Grouping {
     union_by_proximity(nodes, &mut parent);
     absorb_contained(nodes, &mut parent);
 
-    // Assign each note a group index (grouped by union-find root).
+    // Assign each card a group index (grouped by union-find root).
     let mut root_to_group: HashMap<usize, usize> = HashMap::new();
     let mut members_by_group: Vec<Vec<usize>> = Vec::new();
     let mut node_group = vec![0usize; n];
@@ -146,8 +146,8 @@ pub fn group(nodes: &[CanvasNode], edges: &[CanvasEdge]) -> Grouping {
     Grouping { groups, links }
 }
 
-/// Unions any two notes whose rectangles are within [`PROXIMITY`], using a
-/// uniform grid (cell = `PROXIMITY`) so each note is compared only against ones
+/// Unions any two cards whose rectangles are within [`PROXIMITY`], using a
+/// uniform grid (cell = `PROXIMITY`) so each card is compared only against ones
 /// in its own and adjacent cells — not the whole canvas.
 fn union_by_proximity(nodes: &[CanvasNode], parent: &mut [usize]) {
     let n = nodes.len();
@@ -194,7 +194,7 @@ fn union_by_proximity(nodes: &[CanvasNode], parent: &mut [usize]) {
     }
 }
 
-/// Absorbs any note that falls within a group's bounding box (e.g. one sitting
+/// Absorbs any card that falls within a group's bounding box (e.g. one sitting
 /// in an interior gap wider than [`PROXIMITY`]). Absorbing grows the box, which
 /// can pull in more — so repeat until stable; the component count only shrinks,
 /// so this terminates.
@@ -252,9 +252,9 @@ fn find(parent: &mut [usize], mut x: usize) -> usize {
     x
 }
 
-/// The group's main note: a text root (no incoming edges) with the most
+/// The group's main card: a text root (no incoming edges) with the most
 /// outgoing edges; failing that the highest-degree text node; failing that
-/// the first member. A tie goes to the note read first — topmost, then
+/// the first member. A tie goes to the card read first — topmost, then
 /// leftmost.
 fn select_main(
     members: &[usize],
@@ -272,9 +272,9 @@ fn select_main(
     let roots: Vec<usize> = pool.iter().copied().filter(|&i| incoming[i] == 0).collect();
     let candidates = if roots.is_empty() { pool } else { &roots };
 
-    // `max_by_key` alone hands a tie to the *last* candidate: a column of notes
+    // `max_by_key` alone hands a tie to the *last* candidate: a column of cards
     // each linked once from a parent outside the group was summed up by its
-    // bottom note, which is the least likely to say what the column is about.
+    // bottom card, which is the least likely to say what the column is about.
     let degree = |i: usize| outgoing[i] + incoming[i];
     let read_first = |a: usize, b: usize| {
         nodes[b].y.total_cmp(&nodes[a].y).then(nodes[b].x.total_cmp(&nodes[a].x))
@@ -346,7 +346,7 @@ mod tests {
 
     #[test]
     fn nearby_nodes_merge_by_proximity() {
-        // Gap of 50 (< PROXIMITY) so the two notes join.
+        // Gap of 50 (< PROXIMITY) so the two cards join.
         let nodes = vec![
             text_node("a", 0.0, 0.0, 100.0, 100.0),
             text_node("b", 150.0, 0.0, 100.0, 100.0),
@@ -373,7 +373,7 @@ mod tests {
     }
 
     #[test]
-    fn main_note_is_the_text_root() {
+    fn main_card_is_the_text_root() {
         // Chain a -> b -> c in one group; the root `a` names it.
         let nodes = vec![
             text_node("a", 0.0, 0.0, 100.0, 100.0),
@@ -387,8 +387,8 @@ mod tests {
     }
 
     #[test]
-    fn a_column_of_equals_is_named_by_its_first_note() {
-        // Three notes stacked, each linked once from a parent too far away to
+    fn a_column_of_equals_is_named_by_its_first_card() {
+        // Three cards stacked, each linked once from a parent too far away to
         // join them: a three-way tie, which went to the last in the file.
         let nodes = vec![
             text_node("first", 400.0, 0.0, 200.0, 60.0),
@@ -456,7 +456,7 @@ mod tests {
 
     #[test]
     fn a_group_frame_takes_no_part_in_clustering() {
-        // A group's box encloses both notes and is far larger than PROXIMITY.
+        // A group's box encloses both cards and is far larger than PROXIMITY.
         // Left in, containment would absorb everything into one cluster and the
         // frame itself would become a member.
         let nodes = vec![
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn indices_survive_the_group_filter() {
-        // A group node *between* two notes shifts the local indices; the mapping
+        // A group node *between* two cards shifts the local indices; the mapping
         // back must undo that for both `members` and `main`.
         let nodes = vec![
             text_node("a", 0.0, 0.0, 100.0, 100.0),

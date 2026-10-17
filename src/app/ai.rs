@@ -1,10 +1,10 @@
-//! Ask-AI: streaming an answer into fresh notes branching off the asked one.
+//! Ask-AI: streaming an answer into fresh cards branching off the asked one.
 //!
-//! The chain of notes feeding the clicked note becomes the prompt, upstream
-//! image notes ride along as vision inputs, and the reply streams into a
-//! response note (a `---` in the answer rolls over to a new sibling). Response
+//! The chain of cards feeding the clicked card becomes the prompt, upstream
+//! image cards ride along as vision inputs, and the reply streams into a
+//! response card (a `---` in the answer rolls over to a new sibling). Response
 //! nodes stay *transient* — excluded from undo snapshots — until their stream
-//! finishes, so an unrelated action never captures a half-written note.
+//! finishes, so an unrelated action never captures a half-written card.
 
 use std::collections::{HashMap, HashSet};
 use std::path::Path as FsPath;
@@ -28,16 +28,16 @@ const RELAYOUT_THROTTLE: Duration = Duration::from_millis(350);
 /// only bloats the request.
 const IMAGE_MAX_PX: u32 = 1024;
 
-/// A live AI answer stream, keyed by its first note's id: the source it
-/// branches from, the note currently receiving text (a `---` in the answer
-/// rolls this over to a new sibling), how many notes it has spawned, and a
+/// A live AI answer stream, keyed by its first card's id: the source it
+/// branches from, the card currently receiving text (a `---` in the answer
+/// rolls this over to a new sibling), how many cards it has spawned, and a
 /// handle to abort the in-flight request (e.g. when a response node is deleted).
 pub(super) struct AiStream {
     source: String,
     current: String,
     count: usize,
     handle: iced::task::Handle,
-    /// Every node this generation has created (first note + any split
+    /// Every node this generation has created (first card + any split
     /// siblings). They are transient — excluded from undo snapshots — until the
     /// stream finishes, so an unrelated action's snapshot doesn't capture a
     /// half-generated "…" node.
@@ -54,7 +54,7 @@ pub(super) struct Ai {
     dots: usize,
     /// Last time a streaming answer triggered an auto-relayout (throttle).
     last_relayout: Option<Instant>,
-    /// Live answer streams, keyed by first-note id (the `Message::Ai` tag).
+    /// Live answer streams, keyed by first-card id (the `Message::Ai` tag).
     pub(super) streams: HashMap<String, AiStream>,
     /// Pending requests' input chains, each shimmered on its own clock (see
     /// [`board::AiFlow`]) so concurrent generations animate independently.
@@ -108,7 +108,7 @@ fn downscale_to_png(img: ::image::DynamicImage) -> Option<Vec<u8>> {
 }
 
 /// Ids of AI streams to cancel when the nodes in `removed` are deleted: a
-/// stream is cancelled if its anchor (first) note or the note it is currently
+/// stream is cancelled if its anchor (first) card or the card it is currently
 /// writing to has been removed. `streams` yields `(stream_id, current_id)`.
 fn streams_to_cancel<'a>(
     streams: impl Iterator<Item = (&'a str, &'a str)>,
@@ -155,9 +155,9 @@ impl App {
         Task::batch(tasks)
     }
 
-    /// Asks the AI with the chain of notes feeding `source`, spawning a response
+    /// Asks the AI with the chain of cards feeding `source`, spawning a response
     /// node branching to its right and streaming the answer into it. A `---` in
-    /// the answer starts a new sibling note (up to `config.max_ai_nodes`).
+    /// the answer starts a new sibling card (up to `config.max_ai_cards`).
     fn trigger_ai(&mut self, source: usize) -> Task<Message> {
         if !self.config.ai_enabled() {
             return Task::none();
@@ -184,7 +184,7 @@ impl App {
         } else {
             let prompt = ai::upstream_prompt(&self.nodes, &self.edges, &source_id);
             let files = ai::upstream_images(&self.nodes, &self.edges, &source_id);
-            // The ancestor notes, which include the clicked node.
+            // The ancestor cards, which include the clicked node.
             let inputs: HashSet<String> = ai::upstream_nodes(&self.nodes, &self.edges, &source_id)
                 .iter()
                 .map(|node| node.id.clone())
@@ -192,7 +192,7 @@ impl App {
             (prompt, files, inputs)
         };
 
-        // Attach any image notes among the inputs as vision inputs (downscaled).
+        // Attach any image cards among the inputs as vision inputs (downscaled).
         let images: Vec<String> = image_files
             .iter()
             .filter_map(|file| encode_image_data_url(&self.base_path.as_path().join(file)))
@@ -212,7 +212,7 @@ impl App {
             .map(|e| e.id.clone())
             .collect();
 
-        // The first response note starts as animated dots.
+        // The first response card starts as animated dots.
         let Some(node_id) = self.spawn_ai_node(&source_id, ".") else {
             return Task::none();
         };
@@ -228,7 +228,7 @@ impl App {
             self.config.ai_url.clone(),
             self.config.ai_model.clone(),
             self.config.ai_key().to_owned(),
-            self.config.max_ai_nodes,
+            self.config.max_ai_cards,
         );
         let thinking = self.config.ai_thinking;
         let stream_id = node_id.clone();
@@ -277,7 +277,7 @@ impl App {
 
     fn spawn_ai_node(&mut self, source_id: &str, initial: &str) -> Option<String> {
         let source = self.nodes.iter().position(|n| n.id == source_id)?;
-        let (width, height) = (self.config.new_node_min_width, self.config.new_node_min_height);
+        let (width, height) = (self.config.new_card_min_width, self.config.new_card_min_height);
         let center = self.ai_answer_placement(source, width, height);
         let node_id = model::random_id();
         let mut node = CanvasNode {
@@ -289,7 +289,7 @@ impl App {
             y: center.y - height / 2.0,
             width,
             height,
-            color: config_color(&self.config.ai_node_color),
+            color: config_color(&self.config.ai_card_color),
             extra: Default::default(),
         };
         snap_node_geometry(&mut node, self.snap_grid());
@@ -321,7 +321,7 @@ impl App {
         }
     }
 
-    /// A chunk of answer text: appended to the note currently receiving it.
+    /// A chunk of answer text: appended to the card currently receiving it.
     fn ai_delta(&mut self, stream_id: &str, text: String) -> Task<Message> {
         let Some(target) = self.ai.streams.get(stream_id).map(|s| s.current.clone()) else {
             return Task::none();
@@ -365,13 +365,13 @@ impl App {
         Task::none()
     }
 
-    /// A `---` in the answer: start a new sibling note off the same source,
-    /// unless the note cap is reached — then keep appending to the current one.
+    /// A `---` in the answer: start a new sibling card off the same source,
+    /// unless the card cap is reached — then keep appending to the current one.
     fn ai_split(&mut self, stream_id: &str) -> Task<Message> {
         let Some(stream) = self.ai.streams.get(stream_id) else {
             return Task::none();
         };
-        if stream.count >= self.config.max_ai_nodes {
+        if stream.count >= self.config.max_ai_cards {
             return Task::none();
         }
         let source = stream.source.clone();
@@ -389,7 +389,7 @@ impl App {
         let Some(stream) = self.ai.streams.remove(stream_id) else {
             return Task::none();
         };
-        // A still-pending first note means no text ever arrived.
+        // A still-pending first card means no text ever arrived.
         if self.end_ai_pending(stream_id)
             && let Some(index) = self.nodes.iter().position(|n| n.id == stream.current)
         {
@@ -404,7 +404,7 @@ impl App {
     }
 
     fn ai_error(&mut self, stream_id: &str, error: String) -> Task<Message> {
-        // Still pending, the note holds only the dots; otherwise it holds the
+        // Still pending, the card holds only the dots; otherwise it holds the
         // answer as far as it got, which the failure is added to rather than
         // written over.
         let pending = self.end_ai_pending(stream_id);
@@ -422,7 +422,7 @@ impl App {
         self.refresh_snapshots()
     }
 
-    /// Advances the "…" animation on every note still awaiting its first token.
+    /// Advances the "…" animation on every card still awaiting its first token.
     pub(super) fn tick_ai_dots(&mut self) {
         if self.ai.pending.is_empty() {
             return;
@@ -480,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_the_streaming_note_cancels_its_stream() {
+    fn deleting_the_streaming_card_cancels_its_stream() {
         // Stream "a" is currently writing into split sibling "a2"; deleting "a2"
         // cancels it. Stream "b" is untouched.
         let streams = [("a", "a2"), ("b", "b")];
@@ -491,7 +491,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_the_anchor_note_cancels_its_stream() {
+    fn deleting_the_anchor_card_cancels_its_stream() {
         let streams = [("a", "a3")];
         assert_eq!(
             streams_to_cancel(streams.into_iter(), &removed(&["a"])),
@@ -500,7 +500,7 @@ mod tests {
     }
 
     #[test]
-    fn deleting_an_unrelated_note_cancels_nothing() {
+    fn deleting_an_unrelated_card_cancels_nothing() {
         let streams = [("a", "a2"), ("b", "b")];
         assert!(streams_to_cancel(streams.into_iter(), &removed(&["zzz"])).is_empty());
     }

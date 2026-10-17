@@ -83,7 +83,7 @@ mod tests {
     use super::*;
 
     /// A plan: the trip on the left, two questions to its right, one above
-    /// the other, and a note far below the trip.
+    /// the other, and a card far below the trip.
     const CARDS: [(f32, f32, f32, f32); 4] = [
         (0.0, 100.0, 200.0, 100.0),   // 0: trip
         (400.0, 0.0, 200.0, 60.0),    // 1: eat, up and right

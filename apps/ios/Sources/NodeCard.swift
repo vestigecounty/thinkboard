@@ -81,7 +81,7 @@ struct NodeContent: View {
                 Label(file, systemImage: "doc")
                     .foregroundStyle(.secondary)
             } else {
-                Text("(empty note)")
+                Text("(empty card)")
                     .foregroundStyle(.secondary)
             }
         }
@@ -109,11 +109,11 @@ struct NodeContent: View {
         }
     }
 
-    /// Rendered markdown, or a muted placeholder for an empty note (so a fresh
+    /// Rendered markdown, or a muted placeholder for an empty card (so a fresh
     /// node still shows a tappable target).
     @ViewBuilder private func renderedText(_ text: String) -> some View {
         if text.isEmpty {
-            Text("Empty note")
+            Text("Empty card")
                 .italic()
                 .foregroundStyle(.secondary)
         } else {

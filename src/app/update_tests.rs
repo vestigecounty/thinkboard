@@ -451,8 +451,8 @@ fn a_freshly_created_node_with_text_stays() {
 }
 
 #[test]
-fn a_new_note_and_its_first_text_are_one_undo_step() {
-    // Adding a note wasn't undoable: its first edit skipped the snapshot, so
+fn a_new_card_and_its_first_text_are_one_undo_step() {
+    // Adding a card wasn't undoable: its first edit skipped the snapshot, so
     // Cmd+Z went straight past it to whatever came before.
     let mut app = app_with(two_nodes(), Vec::new());
     send(&mut app, Message::CreateNode { world: Point::new(0.0, 400.0) });
@@ -583,7 +583,7 @@ fn frames_take_no_part_in_clustering() {
     b.x = 2000.0;
     let app = app_with(vec![node_of("frame", "group"), a, b], Vec::new());
 
-    // Two distant notes stay two clusters, and the frame joins neither.
+    // Two distant cards stay two clusters, and the frame joins neither.
     assert_eq!(app.clusters.list.len(), 2);
     assert!(app.clusters.list.iter().all(|c| !c.members.contains(&0)));
 }
@@ -815,7 +815,7 @@ fn creating_a_group_opens_its_caption_for_naming() {
 
 #[test]
 fn a_caption_left_empty_leaves_the_frame_unnamed() {
-    // Unlike a drag-created note, an unnamed frame is not taken back.
+    // Unlike a drag-created card, an unnamed frame is not taken back.
     let mut app = app_with(two_nodes(), Vec::new());
     let frame = grouped(&mut app);
 
@@ -983,8 +983,8 @@ fn an_answer_about_a_frame_never_lands_inside_it() {
 }
 
 #[test]
-fn an_answer_about_a_note_still_prefers_the_space_beside_it() {
-    // The frame exclusion is scoped to frames: a note's answer keeps landing
+fn an_answer_about_a_card_still_prefers_the_space_beside_it() {
+    // The frame exclusion is scoped to frames: a card's answer keeps landing
     // just to its right when that space is free.
     let mut a = text_node("a", "question");
     a.x = 0.0;
@@ -998,7 +998,7 @@ fn an_answer_about_a_note_still_prefers_the_space_beside_it() {
 
 #[test]
 fn a_new_node_can_still_be_placed_inside_a_frame() {
-    // The exclusion must not leak into ordinary placement — dropping a note
+    // The exclusion must not leak into ordinary placement — dropping a card
     // into a group is the normal way to add one to it.
     let mut app = app_with(Vec::new(), Vec::new());
     let mut frame = node_of("frame", "group");
@@ -1033,7 +1033,7 @@ fn a_manual_resize_survives_editing() {
 
 #[test]
 fn a_manual_width_beyond_the_auto_ceiling_is_kept() {
-    // `max_node_width` (420) bounds how wide a card grows by itself. It must
+    // `max_card_width` (420) bounds how wide a card grows by itself. It must
     // not claw back one dragged wider than that.
     let mut node = text_node("a", "short");
     node.width = 1200.0;
@@ -1125,8 +1125,8 @@ fn a_card_stops_growing_at_the_height_ceiling() {
     assert!(height > 500.0, "but it should still have grown: {height}");
 }
 
-/// A note past the height ceiling, in sections, with `word` once near its end.
-fn long_note(word: &str) -> CanvasNode {
+/// A card past the height ceiling, in sections, with `word` once near its end.
+fn long_node(word: &str) -> CanvasNode {
     let mut text = String::from("# A long note");
     for section in 1..=14 {
         text.push_str(&format!(
@@ -1152,7 +1152,7 @@ fn drawn_at(app: &App, index: usize, word: &str) -> Point {
     let text = node.text.as_deref().unwrap();
     text_raster::with_markdown_layout(
         text, frame.width, frame.height, text_raster::card_text_wrap(node.width), FONT_SIZE, app.theme,
-        app.config.center_node_text,
+        app.config.center_card_text,
         |runs| {
             let run = runs.iter().find(|run| run.text.contains(word)).expect("the word is drawn");
             let before = &run.text[..run.text.find(word).unwrap()];
@@ -1167,7 +1167,7 @@ fn double_clicking_a_long_card_puts_the_caret_on_the_word_under_it() {
     // The editor shows the source, where a heading is body size, and opens at
     // its top: clicked at the same point, the caret landed in a paragraph
     // above the word — on a scrolled card, one that hadn't been on screen.
-    let mut app = app_with(vec![long_note("Cacilhas")], Vec::new());
+    let mut app = app_with(vec![long_node("Cacilhas")], Vec::new());
     for scroll in [0.0, 400.0] {
         app.node_scroll.insert("long".to_owned(), scroll);
         let at = drawn_at(&app, 0, "Section 13");
@@ -1184,8 +1184,8 @@ fn double_clicking_a_long_card_puts_the_caret_on_the_word_under_it() {
 #[test]
 fn find_scrolls_a_long_card_to_its_hit() {
     // The hit was counted and highlighted, and out of sight below the card's
-    // edge, in the part of the note it hadn't scrolled to.
-    let mut app = app_with(vec![long_note("Cacilhas")], Vec::new());
+    // edge, in the part of the card it hadn't scrolled to.
+    let mut app = app_with(vec![long_node("Cacilhas")], Vec::new());
     send(&mut app, Message::OpenSearch);
     send(&mut app, Message::SearchInput("cacilhas".to_owned()));
     let scroll = app.node_scroll.get("long").copied().unwrap_or(0.0);
@@ -1200,7 +1200,7 @@ fn find_scrolls_a_long_card_to_its_hit() {
 
 #[test]
 fn an_edit_that_changes_nothing_leaves_the_card_as_it_was() {
-    // A card Obsidian left smaller than its note grew over the one below on a
+    // A card Obsidian left smaller than its text grew over the one below on a
     // double-click and an Esc.
     let small = CanvasNode {
         width: 300.0,
@@ -1221,7 +1221,7 @@ fn an_edit_that_changes_nothing_leaves_the_card_as_it_was() {
 
 #[test]
 fn height_still_settles_back_when_text_is_removed() {
-    // Height tracks content — otherwise deleting a long note leaves a tall
+    // Height tracks content — otherwise deleting a long card leaves a tall
     // empty card behind. Only the width is treated as a user decision.
     let mut app = app_with(vec![text_node("a", "")], Vec::new());
 
@@ -1249,7 +1249,7 @@ fn card_screen_rect(app: &App, index: usize) -> iced::Rectangle {
 
 #[test]
 fn the_editor_never_extends_past_the_card_it_edits() {
-    // A note with far more text than its card can show. The editor used to be
+    // A card with far more text than it can show. The editor used to be
     // sized to the whole text, so it spilled out of the card — over the board
     // above and below it — instead of scrolling within it.
     let mut app = app_with(vec![text_node("a", &"a line of the note\n".repeat(200))], Vec::new());
@@ -1278,8 +1278,8 @@ fn the_editor_never_extends_past_the_card_it_edits() {
 }
 
 #[test]
-fn a_short_note_still_gets_an_editor_that_hugs_its_text() {
-    // The clamp must not become "always fill the card": a short note's editor
+fn a_short_card_still_gets_an_editor_that_hugs_its_text() {
+    // The clamp must not become "always fill the card": a short card's editor
     // is sized to its text and centred, which is what matches read mode.
     let mut app = app_with(vec![text_node("a", "one line")], Vec::new());
     send(&mut app, Message::StartEditing { index: 0, at: None });
@@ -1949,9 +1949,9 @@ fn reset_puts_a_setting_back_and_clears_its_mark() {
     assert!(!settings::Field::ZoomSpeed.modified(&app.config));
 
     // A typed number goes back in its field too, not just in the config.
-    send(&mut app, Message::Settings(settings::Msg::Edit(settings::Field::MaxNodeWidth, "600".to_owned())));
-    send(&mut app, Message::Settings(settings::Msg::Reset(settings::Field::MaxNodeWidth)));
-    assert_eq!(app.draft(settings::Field::MaxNodeWidth), "420");
+    send(&mut app, Message::Settings(settings::Msg::Edit(settings::Field::MaxCardWidth, "600".to_owned())));
+    send(&mut app, Message::Settings(settings::Msg::Reset(settings::Field::MaxCardWidth)));
+    assert_eq!(app.draft(settings::Field::MaxCardWidth), "420");
 
     // The provider's way back is Off.
     app.config.ai_url = "http://localhost:1234/v1".to_owned();
@@ -2047,7 +2047,7 @@ fn the_palette_flips_a_switch_and_opens_the_form_at_anything_else() {
     let scrollbars = command::filtered(&app, "card scrollbars").into_iter().next().expect("a hit");
     assert_eq!((scrollbars.title.as_ref(), scrollbars.detail.as_ref()), ("Card scrollbars", "Off"));
     run(&mut app, scrollbars.id);
-    assert!(app.config.node_scrollbars);
+    assert!(app.config.card_scrollbars);
 
     // A number is set in the form: it opens there, on its tab, its row focused.
     let inertia = command::filtered(&app, "pan inertia").into_iter().next().expect("a hit");
@@ -2116,13 +2116,13 @@ fn a_greyed_command_says_what_would_let_it_run() {
     let mut app = app_with(two_nodes(), Vec::new());
     app.config.ai_url.clear();
     send(&mut app, Message::SelectNode(Some(0)));
-    // The missing provider is the reason that matters even with a note
+    // The missing provider is the reason that matters even with a card
     // selected: selecting one more won't help.
     assert!(AskAi.unavailable(&app).is_some_and(|why| why.contains("AI provider")));
 
     app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
     send(&mut app, Message::SelectNode(None));
-    assert_eq!(AskAi.unavailable(&app), Some("Select a note to ask about"));
+    assert_eq!(AskAi.unavailable(&app), Some("Select a card to ask about"));
 
     send(&mut app, Message::SelectNode(Some(0)));
     assert_eq!(AskAi.unavailable(&app), None);
@@ -2135,7 +2135,7 @@ fn a_failure_partway_keeps_what_was_written() {
     app.config.ai_url = "http://localhost:1234/v1".to_owned();
     let text = |app: &App, id: &str| app.nodes.iter().find(|n| n.id == id).and_then(|n| n.text.clone());
 
-    // Before the first word, the note holds only the dots: the failure is it.
+    // Before the first word, the card holds only the dots: the failure is it.
     send(&mut app, Message::SelectNode(Some(0)));
     send(&mut app, Message::AskAi);
     let first = app.ai.streams.keys().next().expect("asked").clone();
@@ -2152,7 +2152,7 @@ fn a_failure_partway_keeps_what_was_written() {
 }
 
 #[test]
-fn an_answers_notes_share_one_width() {
+fn an_answers_cards_share_one_width() {
     use thinkboard_core::ai::Event;
     let mut app = app_with(two_nodes(), Vec::new());
     app.config.ai_url = "http://localhost:1234/v1".to_owned();
@@ -2683,16 +2683,16 @@ fn enter_edits_at_the_end_and_esc_leaves_the_card_selected() {
 }
 
 #[test]
-fn tab_adds_a_linked_note_beside_the_selected_card() {
+fn tab_adds_a_linked_card_beside_the_selected_one() {
     let mut app = app_with(plan(), Vec::new());
     send(&mut app, Message::SelectNode(Some(1)));
-    send(&mut app, Message::AddLinkedNote);
+    send(&mut app, Message::AddLinkedNode);
     assert_eq!(app.nodes.len(), 4);
     let (eat, new) = (&app.nodes[1], &app.nodes[3]);
     assert!(new.x > eat.x + eat.width, "to its right");
     assert!(app.edges.iter().any(|e| e.from_node == "eat" && e.to_node == new.id), "linked from it");
     assert_eq!(selected_ids(&app), [new.id.as_str()]);
-    // Its editor opens as a drag-created note's does; written and closed with
+    // Its editor opens as a drag-created card's does; written and closed with
     // Esc, it stays selected for the next Tab.
     send(&mut app, Message::StartEditing { index: 3, at: None });
     type_text(&mut app, "Tascas");
