@@ -115,7 +115,7 @@ impl Tab {
 /// and none is something anyone changes twice: their defaults are tuned, and
 /// any sane value works. Counted at the foot of Advanced, so the form says
 /// they exist rather than leaving them to be found.
-pub(crate) const FILE_ONLY: [&str; 15] = [
+pub(crate) const FILE_ONLY: [&str; 16] = [
     "min_zoom",
     "max_zoom",
     "zoom_smoothing",
@@ -131,6 +131,7 @@ pub(crate) const FILE_ONLY: [&str; 15] = [
     "max_ai_nodes",
     "ai_trigger_color",
     "link_opacity",
+    "overlay_blur",
 ];
 
 /// A settings-form edit. `Slide`/`Edit` change the value live; `Commit` (slider
@@ -868,11 +869,17 @@ impl App {
         if self.overlay {
             self.apply_backdrop();
         }
+        let mut tasks = Vec::new();
+        // The tiles were prepared at the old blur; Reload is on the form, so
+        // they're on screen.
+        if before.overlay_blur != self.config.overlay_blur {
+            self.backdrop_previews.clear();
+            tasks.push(self.preview_backdrops());
+        }
         self.cache.clear();
         let c = &self.config;
         let looks = before.theme != c.theme || before.theme_css != c.theme_css || before.font != c.font;
         let text = before.rasterize_text != c.rasterize_text || before.center_node_text != c.center_node_text;
-        let mut tasks = Vec::new();
         if looks {
             tasks.push(self.apply_theme_css());
         }
@@ -1078,6 +1085,7 @@ impl App {
         if image.is_file() {
             wanted.push(BackdropPicture::File(image));
         }
+        let blur = self.config.overlay_blur;
         let mut tasks = Vec::new();
         for picture in wanted {
             if self.backdrop_previews.iter().any(|(asked, _)| *asked == picture) {
@@ -1085,16 +1093,21 @@ impl App {
             }
             self.backdrop_previews.push((picture.clone(), Preview::Pending));
             let (sender, receiver) = iced::futures::channel::oneshot::channel();
-            crate::platform::preview_backdrop_picture(picture.clone(), move |png| {
+            crate::platform::preview_backdrop_picture(picture.clone(), blur, move |png| {
                 let _ = sender.send(png);
             });
-            tasks.push(Task::perform(receiver, move |png| Message::BackdropPreview(picture, png.ok().flatten())));
+            tasks.push(Task::perform(receiver, move |png| Message::BackdropPreview(picture, blur, png.ok().flatten())));
         }
         Task::batch(tasks)
     }
 
-    /// A tile's picture, ready.
-    pub(super) fn backdrop_previewed(&mut self, picture: BackdropPicture, png: Option<Vec<u8>>) {
+    /// A tile's picture, ready — at the blur it was asked for at, or it's
+    /// dropped: a Reload that changed the blur asked again, and the tile waits
+    /// for that one instead.
+    pub(super) fn backdrop_previewed(&mut self, picture: BackdropPicture, blur: f32, png: Option<Vec<u8>>) {
+        if blur != self.config.overlay_blur {
+            return;
+        }
         if let Some((_, preview)) = self.backdrop_previews.iter_mut().find(|(asked, _)| *asked == picture) {
             // Made once and kept: a handle made from bytes is a new image to
             // the renderer each time, uploaded again on every frame.

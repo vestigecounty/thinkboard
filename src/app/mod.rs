@@ -450,7 +450,7 @@ pub(crate) enum Message {
     SettingsBrowseDialog(settings::Field),
     /// An overlay background tile's picture, prepared (PNG), or `None` if it
     /// couldn't be read.
-    BackdropPreview(platform::BackdropPicture, Option<Vec<u8>>),
+    BackdropPreview(platform::BackdropPicture, f32, Option<Vec<u8>>),
     /// A create/open-board action was invoked — from a scratch-board button
     /// node (its `tb_action`) or the tray menu. Values: "new_board",
     /// "open_board", "open_vault", or "use_vault:<path>".
@@ -1379,7 +1379,7 @@ impl App {
                 return Task::batch([previews, open.discard()]);
             }
             Message::Settings(msg) => return self.apply_setting(msg),
-            Message::BackdropPreview(picture, png) => self.backdrop_previewed(picture, png),
+            Message::BackdropPreview(picture, blur, png) => self.backdrop_previewed(picture, blur, png),
             Message::SettingsBrowsed(field, path) => return self.settings_browsed(field, path),
             Message::SettingsBrowseDialog(field) => return self.browse_dialog(field),
             Message::RecordHotkey => self.hotkey_recording = true,
@@ -1454,16 +1454,17 @@ impl App {
     /// prepared ahead of the summon that shows it.
     pub(super) fn apply_backdrop(&self) {
         let backdrop = config::OverlayBackdrop::shown(&self.config);
+        let blur = self.config.overlay_blur;
         platform::set_overlay_opaque(!backdrop.see_through());
         match backdrop {
-            config::OverlayBackdrop::Wallpaper => platform::set_backdrop_picture(platform::BackdropPicture::Wallpaper),
+            config::OverlayBackdrop::Wallpaper => platform::set_backdrop_picture(platform::BackdropPicture::Wallpaper, blur),
             // Only a file that's there: the path is typed a key at a time,
             // and each half-typed one would start a picture of its own. Until
             // it names one, the last picture stays.
             config::OverlayBackdrop::Image => {
                 let path = PathBuf::from(self.config.overlay_image.trim());
                 if path.is_file() {
-                    platform::set_backdrop_picture(platform::BackdropPicture::File(path));
+                    platform::set_backdrop_picture(platform::BackdropPicture::File(path), blur);
                 }
             }
             config::OverlayBackdrop::Transparent | config::OverlayBackdrop::Theme => {}

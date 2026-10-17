@@ -70,21 +70,27 @@ pub enum BackdropPicture {
     File(std::path::PathBuf),
 }
 
-/// Chooses the picture under the overlay and starts preparing it in the
-/// background, once per picture, so the summon that shows it doesn't wait.
-/// Main thread only; a no-op where [`SUPPORTS_BACKDROP_PICTURE`] is false.
-pub fn set_backdrop_picture(picture: BackdropPicture) {
-    backend::set_backdrop_picture(picture);
+/// Chooses the picture under the overlay, blurred by `blur` (a multiple of
+/// its own blur, `Config::overlay_blur`), and starts preparing it in the
+/// background, once per picture and blur, so the summon that shows it doesn't
+/// wait. Main thread only; a no-op where [`SUPPORTS_BACKDROP_PICTURE`] is
+/// false.
+pub fn set_backdrop_picture(picture: BackdropPicture, blur: f32) {
+    backend::set_backdrop_picture(picture, blur);
 }
 
-/// Readies `picture` as the overlay would show it — the same blur — and hands
-/// it to `ready` as PNG once it's done, from a background thread, or `None` if
-/// it couldn't be read. The settings form previews with it, so a tile shows
-/// what choosing it gives, and choosing it afterwards costs nothing more.
-/// Main thread only; `ready(None)` at once where [`SUPPORTS_BACKDROP_PICTURE`]
-/// is false.
-pub fn preview_backdrop_picture(picture: BackdropPicture, ready: impl FnOnce(Option<Vec<u8>>) + Send + 'static) {
-    backend::preview_backdrop_picture(picture, ready);
+/// Readies `picture` as the overlay would show it at `blur` and hands it to
+/// `ready` as PNG once it's done, from a background thread, or `None` if it
+/// couldn't be read. The settings form previews with it, so a tile shows what
+/// choosing it gives, and choosing it afterwards costs nothing more. Main
+/// thread only; `ready(None)` at once where [`SUPPORTS_BACKDROP_PICTURE`] is
+/// false.
+pub fn preview_backdrop_picture(
+    picture: BackdropPicture,
+    blur: f32,
+    ready: impl FnOnce(Option<Vec<u8>>) + Send + 'static,
+) {
+    backend::preview_backdrop_picture(picture, blur, ready);
 }
 
 /// Shows the chosen picture under the overlay at `alpha` — faded with the

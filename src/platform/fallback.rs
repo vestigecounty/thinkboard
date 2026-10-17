@@ -46,11 +46,12 @@ pub fn set_overlay_opaque(_opaque: bool) {}
 pub const SUPPORTS_BACKDROP_PICTURE: bool = false;
 
 /// Nothing to choose (see [`SUPPORTS_BACKDROP_PICTURE`]).
-pub fn set_backdrop_picture(_picture: super::BackdropPicture) {}
+pub fn set_backdrop_picture(_picture: super::BackdropPicture, _blur: f32) {}
 
 /// Nothing to preview (see [`SUPPORTS_BACKDROP_PICTURE`]).
 pub fn preview_backdrop_picture(
     _picture: super::BackdropPicture,
+    _blur: f32,
     ready: impl FnOnce(Option<Vec<u8>>) + Send + 'static,
 ) {
     ready(None);

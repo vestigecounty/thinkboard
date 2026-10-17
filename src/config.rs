@@ -56,6 +56,12 @@ pub struct Config {
     /// The picture behind the overlay when [`OverlayBackdrop::Image`] is
     /// chosen: a file path, set from Settings or from an image card's menu.
     pub overlay_image: String,
+    /// How blurred the picture behind the overlay is, as a multiple of each
+    /// one's own: the wallpaper heavily, since it's there for its colour and
+    /// light, and a picture of your own lightly, so it's still the picture you
+    /// chose. 0 shows either sharp, 2 twice as blurred. Only in this file
+    /// (`settings::FILE_ONLY`).
+    pub overlay_blur: f32,
     /// Run as an ordinary titled application window instead of the desktop
     /// overlay: no global summon hotkey, tray, or always-on-top click-through.
     /// The `--windowed` CLI flag forces this on regardless. Takes effect on the
@@ -252,6 +258,7 @@ impl Default for Config {
             overlay_transparent: true,
             overlay_backdrop: String::new(),
             overlay_image: String::new(),
+            overlay_blur: 1.0,
             windowed: false,
             tray_icon_monochrome: false,
             summon_hotkey: "Pause".to_owned(),
@@ -603,6 +610,9 @@ impl Config {
         self.auto_zoom_trigger = self.auto_zoom_trigger.clamp(0.0, self.max_zoom);
         self.auto_zoom_level = self.auto_zoom_level.clamp(self.min_zoom, self.max_zoom);
         self.overlay_dim = self.overlay_dim.clamp(0.0, 1.0);
+        // A ceiling: past it the wallpaper is one colour already, and a wider
+        // blur only takes longer to prepare.
+        self.overlay_blur = self.overlay_blur.clamp(0.0, 4.0);
         // A floor, so a card can't be faded out of sight by accident.
         self.colored_card_opacity = self.colored_card_opacity.clamp(0.2, 1.0);
         self.new_node_min_width = self.new_node_min_width.max(20.0);
@@ -968,12 +978,14 @@ mod tests {
         config.zoom_smoothing = 0.0; // would divide by zero
         config.pan_inertia = 2.0; // never stops
         config.animation_scale = -3.0; // negative
+        config.overlay_blur = -1.0; // sharper than sharp
 
         assert!(config.sanitize());
         assert!(config.max_zoom > config.min_zoom);
         assert!(config.zoom_smoothing > 0.0);
         assert!(config.pan_inertia <= 0.999);
         assert!(config.animation_scale >= 0.0);
+        assert_eq!(config.overlay_blur, 0.0);
     }
 
     #[test]

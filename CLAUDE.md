@@ -975,8 +975,14 @@ shot that lied:
   as soon as it's chosen**, and the wallpaper is read once per launch, from the
   Space the app started on: following each Space's own meant reading (and on a
   new Space, blurring) at the moment of summoning, and the lag that added was
-  worse than a stale picture. macOS's live behind-window blur was tried too:
-  no faster than the desktop, a second slower to summon, and greyed colours.
+  worse than a stale picture. How blurred is `config.overlay_blur` (file-only),
+  a multiple of each picture's own — the wallpaper heavily, yours lightly —
+  and the blur is also what lets a picture be prepared small: the less of it,
+  the larger it's decoded (`preparation`), up to the screen at 0. Sharp costs
+  about 0.7 s and a 12 MB PNG on a 3456 px screen, against 0.26 s for the
+  default wallpaper: once, in the background, but it's why sharp isn't the
+  default. macOS's live behind-window blur was tried too: no faster than the
+  desktop, a second slower to summon, and greyed colours.
 - **Linux** — Wayland can't hide a window in place, so hiding *closes* the
   window and summoning opens a fresh one. Tray uses `ksni` (pure-Rust D-Bus, no
   GTK) so the zig cross-build works; the dialogs use the xdg-portal backend for

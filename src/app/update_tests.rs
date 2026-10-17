@@ -1976,6 +1976,25 @@ fn reload_takes_what_the_file_says_and_keeps_the_board_open() {
 }
 
 #[test]
+fn a_reload_that_changes_the_blur_waits_for_tiles_at_the_new_one() {
+    if !crate::platform::SUPPORTS_BACKDROP_PICTURE {
+        return;
+    }
+    use crate::platform::BackdropPicture;
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.overlay_blur = 2.0;
+    send(&mut app, Message::OpenSettingsOverlay);
+    send(&mut app, Message::Settings(settings::Msg::ReloadConfig));
+    assert_eq!(app.config.overlay_blur, 1.0);
+    // The tile asked for before the reload lands after it, and isn't what the
+    // overlay would show any more.
+    send(&mut app, Message::BackdropPreview(BackdropPicture::Wallpaper, 2.0, Some(vec![0])));
+    assert!(app.backdrop_preview(&BackdropPicture::Wallpaper).is_none());
+    send(&mut app, Message::BackdropPreview(BackdropPicture::Wallpaper, 1.0, Some(vec![0])));
+    assert!(app.backdrop_preview(&BackdropPicture::Wallpaper).is_some());
+}
+
+#[test]
 fn a_theme_picked_from_the_form_is_drawn_over_it_and_closes_with_it() {
     let mut app = app_with(two_nodes(), Vec::new());
     send(&mut app, Message::OpenSettingsOverlay);
