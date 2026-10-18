@@ -801,7 +801,7 @@ impl iced_runtime::core::widget::Operation for Noop {
 /// desktop — see [`desktop`].
 fn over_a_desktop(rgba: &mut [u8], width: u32, height: u32) {
     let under = desktop(width, height);
-    for (pixel, below) in rgba.chunks_exact_mut(4).zip(under.chunks_exact(3)) {
+    for (pixel, below) in rgba.as_chunks_mut::<4>().0.iter_mut().zip(under.as_chunks::<3>().0) {
         let clear = 255 - u16::from(pixel[3]);
         for c in 0..3 {
             pixel[c] = (u16::from(pixel[c]) + u16::from(below[c]) * clear / 255).min(255) as u8;
