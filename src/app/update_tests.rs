@@ -1506,8 +1506,12 @@ impl ThemedVault {
     }
 
     fn theme_path(&self, name: &str) -> String {
+        // A part at a time, as `vault::active_theme` joins it: one `join`
+        // of ".obsidian/themes" keeps its `/`, and on Windows the path the
+        // app found, all `\`, didn't equal it.
         self.0
-            .join(".obsidian/themes")
+            .join(".obsidian")
+            .join("themes")
             .join(name)
             .join("theme.css")
             .to_string_lossy()
@@ -2158,6 +2162,11 @@ fn a_settings_file_dialog_puts_the_overlay_away_and_brings_it_back() {
 
 #[test]
 fn the_image_background_is_chosen_by_its_picture() {
+    // Where there's no window to show a picture in, the form doesn't offer
+    // one, and a config naming one is read as the live desktop.
+    if !crate::platform::SUPPORTS_BACKDROP_PICTURE {
+        return;
+    }
     use crate::config::OverlayBackdrop;
     // With the overlay up, so asking puts it away rather than opening a real
     // dialog under the test.

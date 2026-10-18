@@ -761,7 +761,9 @@ mod tests {
 
     fn vault(name: &str) -> thinkboard_core::obsidian::Vault {
         thinkboard_core::obsidian::Vault {
-            path: FsPath::new("/vaults").join(name),
+            // Written out rather than joined: `join` puts a `\` in on
+            // Windows, and the buttons' actions below are spelled with `/`.
+            path: PathBuf::from(format!("/vaults/{name}")),
             name: name.to_owned(),
             open: false,
             last_opened: 0,
