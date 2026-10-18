@@ -183,7 +183,7 @@ mod linux {
         fn icon_pixmap(&self) -> Vec<ksni::Icon> {
             let (width, height, mut data) = super::tray_icon_rgba();
             // ksni wants ARGB; the decoder produces RGBA.
-            for px in data.chunks_exact_mut(4) {
+            for px in data.as_chunks_mut::<4>().0 {
                 px.rotate_right(1);
             }
             vec![ksni::Icon { width: width as i32, height: height as i32, data }]
