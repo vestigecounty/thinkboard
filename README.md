@@ -1,16 +1,10 @@
 <!-- Built with the website, from its page's text and a still of each demo; edits made here are lost on the next build. -->
-<div align="center">
-
-<img src="assets/thinkboard.svg" alt="" width="96" height="96">
-
-# ThinkBoard
+# <img src="assets/thinkboard.svg" alt="" width="32" height="32" align="absmiddle"> ThinkBoard
 
 Summon a board directly above your desktop with a hotkey or a gesture.
 
 [![CI](https://github.com/vestigecounty/thinkboard/actions/workflows/ci.yml/badge.svg)](https://github.com/vestigecounty/thinkboard/actions/workflows/ci.yml)
 &nbsp;·&nbsp; macOS · Windows · Linux &nbsp;·&nbsp; [Website](https://vestigecounty.github.io/thinkboard/) &nbsp;·&nbsp; [Issues and ideas on GitHub](https://github.com/vestigecounty/thinkboard/issues) &nbsp;·&nbsp; [Chat on Discord](https://discord.gg/pNyspdkP4)
-
-</div>
 
 <p align="center"><img src="docs/hero.webp" alt="A board about a trip to Kyoto, summoned over the desktop: cards, pictures, links, and three AI answers to &quot;What if it rains?&quot;" width="840"></p>
 
