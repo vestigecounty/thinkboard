@@ -1,0 +1,173 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>ThinkBoard</title>
+    <meta name="description" content="Your Obsidian canvas, over everything: a fast overlay for your vault's .canvas boards, summoned with a key and gone again with Esc." />
+    <link rel="icon" href="images/thinkboard.svg" type="image/svg+xml" />
+    <script type="module" crossorigin src="./assets/index-6_6hQwyt.js"></script>
+    <link rel="stylesheet" crossorigin href="./assets/index-BObgcXmp.css">
+  </head>
+  <body>
+    <main class="page">
+      <svg class="page-links" id="page-links" aria-hidden="true"></svg>
+
+      <header class="top">
+        <a class="brand" href="./"><img src="images/thinkboard.svg" alt="" width="24" height="24" /><span>ThinkBoard</span></a>
+        <nav class="chips">
+          <span class="chip-mono">v<span data-version></span></span>
+          <span class="chip-mono">MIT</span>
+          <a class="chip-mono" href="https://github.com/vestigecounty/thinkboard">github ↗</a>
+          <a class="chip-mono" href="https://discord.gg/pNyspdkP4">discord ↗</a>
+        </nav>
+      </header>
+
+      <section class="hero">
+        <div class="side">
+          <div class="page-card" id="intro">
+            <h1>Your Obsidian canvas, over everything.</h1>
+            <p class="lede">Summon a board directly above your desktop with a hotkey or a gesture.</p>
+            <p>
+              Similar to the old macOS Dashboard. Open your existing <strong>Obsidian</strong> vault's boards, or run
+              standalone. Cards, links, Markdown and pictures, saved straight back to the <code>.canvas</code> file.
+            </p>
+          </div>
+          <a class="page-card primary" id="download" href="https://github.com/vestigecounty/thinkboard/releases/latest">
+            <strong>Download for <span data-os>macOS</span> →</strong>
+            <span class="mono" data-file>Universal .app</span>
+          </a>
+          <p class="also">also for <span id="others"><a href="https://github.com/vestigecounty/thinkboard/releases/latest">Windows</a><a href="https://github.com/vestigecounty/thinkboard/releases/latest">Linux</a></span></p>
+        </div>
+        <div class="demo" id="hero-demo" data-recording="build/build"></div>
+        <div class="page-card yellow" id="open">Free and open source. Universal macOS app, Windows and Linux builds.</div>
+      </section>
+
+      <section class="feature">
+        <div class="demo" id="clusters-demo" data-recording="clusters/clusters"></div>
+        <div class="side">
+          <div class="page-card" id="clusters-copy">
+            <h2>Infinite space. Zero clutter.</h2>
+            <p>
+              Grow your board as far as you need. ThinkBoard uses smart clustering — zooming out collapses groups of
+              cards into single, named clusters. Pinch in and the cards come back.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="feature flip">
+        <div class="side">
+          <div class="page-card" id="ai-copy">
+            <h2>Built for AI: the board is the prompt.</h2>
+            <p>
+              If you hook up AI, choosing <em>Ask AI</em> on any card sends the entire chain of cards leading to it as
+              the prompt. Nothing to explain in a chat: the context is already on the board.
+            </p>
+          </div>
+        </div>
+        <div class="demo" id="ai-demo" data-recording="ai/ai"></div>
+      </section>
+
+      <section class="feature">
+        <div class="demo" id="layout-demo" data-recording="layout/layout"></div>
+        <div class="side">
+          <div class="page-card" id="layout-copy">
+            <h2>Think messy. Tidy in one click.</h2>
+            <p>
+              Dump your thoughts on the board, then select them and choose <em>Auto-layout</em> to tidy up in
+              left-to-right or top-to-bottom order.
+            </p>
+            <p>
+              Or turn on <em>Auto-layout</em> in the board's menu, and each card will place itself automatically.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <section class="feature flip">
+        <div class="side">
+          <div class="page-card" id="themes-copy">
+            <h2>Make it yours, a keystroke away.</h2>
+            <p>
+              <kbd>⌘K</kbd> opens the command palette with quick access to every function and every setting. Choose
+              from built-in themes — or let ThinkBoard pick up your vault's own Obsidian theme by itself.
+            </p>
+          </div>
+        </div>
+        <div class="demo" id="themes-demo" data-recording="themes/themes"></div>
+      </section>
+
+      <section class="features" id="features">
+        <p class="label"><span class="marker">##</span> features</p>
+        <h2 class="title">Features</h2>
+        <div class="map">
+          <div class="page-card purple root" id="f-root">ThinkBoard</div>
+          <div class="page-card small" id="f-summon" style="grid-row: 1">
+            <h3>Summon over anything</h3>
+            <p>An overlay above every window, on a global hotkey or a four-finger swipe. Esc puts it away.</p>
+          </div>
+          <div class="page-card small" id="f-build" style="grid-row: 2">
+            <h3>Fast to build</h3>
+            <p>Drag out of a card's edge to make the next one, type Markdown in place, auto-layout to tidy.</p>
+          </div>
+          <div class="page-card small" id="f-vault" style="grid-row: 3">
+            <h3>Your whole vault</h3>
+            <p><kbd>⌘O</kbd> lists every board in the vault, newest first, with fuzzy search. Its notes and pictures drop straight onto a board.</p>
+          </div>
+          <div class="page-card small" id="f-palette" style="grid-row: 4">
+            <h3>Command palette</h3>
+            <p><kbd>⌘K</kbd> or <kbd>⌘P</kbd> for every action and every setting, its shortcut beside it.</p>
+          </div>
+          <div class="page-card small right" id="f-mac" style="grid-row: 1">
+            <h3>macOS niceties</h3>
+            <p>Pinch to zoom, swipe with four fingers to summon, your wallpaper behind the board.</p>
+          </div>
+          <div class="page-card small right" id="f-keys" style="grid-row: 2">
+            <h3>Keyboard all the way</h3>
+            <p>Arrows move between cards by where they sit, Tab adds a linked one, Enter edits.</p>
+          </div>
+          <div class="page-card small right" id="f-themes" style="grid-row: 4">
+            <h3>Make it yours</h3>
+            <p>Ten built-in themes, previewed live — or your vault's own Obsidian theme, followed by itself.</p>
+          </div>
+        </div>
+
+        <div class="pair">
+          <div class="page-card">
+            <p class="label orange"><span class="marker">##</span> obsidian</p>
+            <h2>Plain .canvas files</h2>
+            <p>
+              Boards are Obsidian's own canvases. ThinkBoard edits them in place and keeps every field it doesn't use,
+              so the file stays as Obsidian writes it. Keep the same board open in both: a change on either side is
+              merged card by card, never written over, and a rename in Obsidian is followed.
+            </p>
+            <pre class="path">~/Vault/Trips/<span>Kyoto.canvas</span></pre>
+          </div>
+          <div class="page-card">
+            <p class="label violet"><span class="marker">##</span> ask ai (optional)</p>
+            <h2>Ask AI</h2>
+            <div class="chain">
+              <span class="chip">Learning Japanese</span><span class="to">→</span>
+              <span class="chip">Phrases</span><span class="to">→</span>
+              <span class="chip yellow">Where is the station?</span><span class="to">→</span>
+              <span class="chip violet">Eki wa doko desu ka?</span>
+            </div>
+            <p>
+              Off until you choose a provider. Run a model on your own machine with LM Studio or Ollama, or paste a
+              key for OpenAI, OpenRouter, Groq, Together AI, Fireworks AI, Mistral or DeepSeek.
+            </p>
+          </div>
+        </div>
+      </section>
+
+      <footer class="bottom">
+        <span class="links">
+          <a href="https://github.com/vestigecounty/thinkboard/issues">Issues and ideas on GitHub</a>
+          <a href="https://discord.gg/pNyspdkP4">Chat on Discord</a>
+        </span>
+        <span class="mono-note">MIT · v<span data-version></span></span>
+      </footer>
+    </main>
+  </body>
+</html>
