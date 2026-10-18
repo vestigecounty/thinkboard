@@ -2869,9 +2869,13 @@ fn canvas() {
                 rec.glide(&mut tour, to, secs(1, 0.6));
             }
             "drag" => {
-                // Out of a port, it's a link being drawn: said so in the
-                // recording, since the board's gesture isn't app state.
+                // Out of a port, it's a link being drawn; off every card, a
+                // marquee: said so in the recording, since the board's
+                // gestures aren't app state.
                 rec.connecting = card_at_port(&tour);
+                let world = tour.app.camera.to_world(tour.cursor);
+                let on_card = tour.app.nodes.iter().any(|node| arrange::node_world_rect(node).contains(world));
+                rec.marquee = (rec.connecting.is_none() && !on_card).then_some(tour.cursor);
                 rec.button(&mut tour, mouse::Button::Left, true);
                 // Through each place in turn, the time shared by distance; a
                 // bare number last is how long it all takes.
@@ -2889,6 +2893,7 @@ fn canvas() {
                 }
                 rec.button(&mut tour, mouse::Button::Left, false);
                 rec.connecting = None;
+                rec.marquee = None;
                 rec.wait(&mut tour, 0.05);
             }
             "click" | "rightclick" => {
@@ -3032,9 +3037,10 @@ fn card_at_port(tour: &Tour) -> Option<(String, &'static str)> {
 /// the board, the card being edited — its text, its caret and the editor's box
 /// — and the open menu; and what the board's own gestures don't leave in the
 /// app's state, which the scene knows instead: a button or a shortcut
-/// pressed, a link being drawn out of a port. What a gesture *does* is the app's to decide — where a
-/// card lands, how it grows, when an answer's cards restack — so a replay of
-/// it elsewhere is taken from here rather than worked out again.
+/// pressed, a link being drawn out of a port, a marquee being dragged. What a
+/// gesture *does* is the app's to decide — where a card lands, how it grows,
+/// when an answer's cards restack — so a replay of it elsewhere is taken from
+/// here rather than worked out again.
 #[derive(Default)]
 struct Recording {
     started: Option<Instant>,
@@ -3044,6 +3050,8 @@ struct Recording {
     /// The shortcut pressed since the last frame, as its keys are written.
     keys: Option<String>,
     connecting: Option<(String, &'static str)>,
+    /// Where a marquee being dragged began; the pointer is its other corner.
+    marquee: Option<Point>,
 }
 
 /// How long a frame is: a 60 Hz display's.
@@ -3322,7 +3330,23 @@ impl Recording {
                 ContextMenuKind::Node => "card",
                 ContextMenuKind::Link => "link",
             };
-            serde_json::json!({ "kind": kind, "x": menu.screen.x, "y": menu.screen.y })
+            // What it holds, off the conditions its view builds from: a
+            // card's menu varies with the selection, the board's toggles say
+            // whether they're on.
+            let items = match menu.kind {
+                ContextMenuKind::Canvas { .. } => serde_json::json!({
+                    "autoLayout": app.config.auto_layout,
+                    "snap": app.config.snap_to_grid,
+                }),
+                _ => serde_json::json!({
+                    "ai": app.config.ai_enabled(),
+                    "group": app.groupable_selection(),
+                    "background": app.selected_image_file().is_some(),
+                    "layout": app.selected.len() > 1,
+                    "count": app.selected.len(),
+                }),
+            };
+            serde_json::json!({ "kind": kind, "x": menu.screen.x, "y": menu.screen.y, "items": items })
         });
         serde_json::json!({
             "t": t,
@@ -3344,6 +3368,7 @@ impl Recording {
             "panel": panel,
             "theme": theme,
             "connecting": self.connecting.as_ref().map(|(id, side)| serde_json::json!({ "from": id, "side": side })),
+            "marquee": self.marquee.map(|start| [start.x, start.y]),
         })
     }
 
