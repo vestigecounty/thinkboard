@@ -1129,6 +1129,9 @@ pub struct TextRun {
     pub mono: bool,
     /// The link destination when this run is part of a link, else `None`.
     pub link: Option<String>,
+    /// The task whose box this run is, which a click toggles
+    /// (`markdown::Span::task`).
+    pub task: Option<u16>,
     /// Inside a blockquote: its line gets a bar.
     pub quote: bool,
 }
@@ -1330,6 +1333,7 @@ fn shape_markdown_logical(
                             italic: span.is_some_and(|s| s.italic),
                             mono: span.is_some_and(|s| s.code),
                             link: span.and_then(|s| s.url.clone()),
+                            task: span.and_then(|s| s.task),
                             quote: span.is_some_and(|s| s.quote),
                         });
                     }
@@ -1923,6 +1927,7 @@ mod measure_tests {
             italic: false,
             mono: false,
             link: None,
+            task: None,
             quote: false,
         };
         assert!(run_advance("Think", &run(true), &theme) > run_advance("Think", &run(false), &theme) + 1.0);
@@ -1958,6 +1963,7 @@ mod measure_tests {
             quote: false,
             muted: false,
             cell: None,
+            task: None,
         };
         let (prose, code) = (span(false), span(true));
         assert_eq!(span_attrs(&prose, 17.0, &theme).font_features.features, SINGLE_STOREY_A);

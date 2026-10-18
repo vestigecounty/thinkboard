@@ -38,6 +38,10 @@ pub struct Span {
     pub muted: bool,
     /// The table cell this span is in, if it's in one.
     pub cell: Option<Cell>,
+    /// A task's box: which task on the card it is, counting from 0 in reading
+    /// order — what a click on it ticks or clears ([`toggle_task`]). Only the
+    /// box carries it, not the item's text or its indent.
+    pub task: Option<u16>,
 }
 
 /// Where a span sits in a table. Cells come in reading order — the header row,
@@ -106,6 +110,11 @@ pub fn parse(source: &str) -> Vec<Span> {
     let mut code_block: Option<CodeLang> = None;
     let mut table: Option<Table> = None;
     let mut tables = 0u16;
+    // Tasks met so far: the next box's number, counted as `toggle_task`
+    // counts them.
+    let mut tasks = 0u16;
+    // A nested list just ended, its last item's line with it.
+    let mut nested_ended = false;
 
     let plain =
         |text: &str, code: bool, bold: bool, italic: bool, heading: u8, url: Option<String>| Span {
@@ -120,6 +129,7 @@ pub fn parse(source: &str) -> Vec<Span> {
             quote: false,
             muted: false,
             cell: None,
+            task: None,
         };
     // Quote, done-task and table-cell styling is a property of where a span
     // falls, so it is stamped on here rather than threaded through every
@@ -150,7 +160,15 @@ pub fn parse(source: &str) -> Vec<Span> {
                     link_url = Some(dest_url.to_string());
                 }
                 Tag::CodeBlock(kind) => code_block = Some(CodeLang::new(&kind)),
-                Tag::List(_) => list_depth += 1,
+                Tag::List(_) => {
+                    // A list inside an item starts on a line of its own. In a
+                    // tight list nothing else ends the item's text — no
+                    // paragraph closes — and the nested items ran on after it.
+                    if list_depth > 0 && out.last().is_some_and(|s| !s.text.ends_with('\n')) {
+                        push!(plain("\n", false, false, false, 0, None));
+                    }
+                    list_depth += 1;
+                }
                 Tag::BlockQuote(_) => quote_depth += 1,
                 Tag::Item => {
                     let indent = "    ".repeat(list_depth.saturating_sub(1));
@@ -195,6 +213,7 @@ pub fn parse(source: &str) -> Vec<Span> {
                                 quote: false,
                                 muted: false,
                                 cell: None,
+                                task: None,
                             });
                         }
                     }
@@ -202,12 +221,24 @@ pub fn parse(source: &str) -> Vec<Span> {
                 }
                 TagEnd::Item => {
                     task_done = false;
-                    push!(plain("\n", false, false, false, 0, None));
+                    // An item that ended on a nested list has ended its line
+                    // already, with that list's last item.
+                    let ended = std::mem::take(&mut nested_ended)
+                        && out.last().is_some_and(|s| s.text.ends_with('\n'));
+                    if !ended {
+                        push!(plain("\n", false, false, false, 0, None));
+                    }
                 }
                 TagEnd::BlockQuote(_) => quote_depth = quote_depth.saturating_sub(1),
                 TagEnd::List(_) => {
                     list_depth = list_depth.saturating_sub(1);
-                    push!(plain("\n", false, false, false, 0, None));
+                    // Only the outermost list closes a block; a nested one
+                    // hands back to the item it's in.
+                    if list_depth == 0 {
+                        push!(plain("\n", false, false, false, 0, None));
+                    } else {
+                        nested_ended = true;
+                    }
                 }
                 TagEnd::Paragraph => push!(plain("\n\n", false, false, false, 0, None)),
                 TagEnd::TableCell => {
@@ -239,16 +270,24 @@ pub fn parse(source: &str) -> Vec<Span> {
                 push!(plain("\u{2014}\u{2014}\u{2014}\n\n", false, false, false, 0, None))
             }
             // Arrives just after its item opened, so the bullet that item
-            // pushed is the last span: a box goes in its place.
+            // pushed is the last span: a box goes in its place — a span of
+            // its own, apart from a nested item's indent, so that a click
+            // finds the box and not the space before it.
             Event::TaskListMarker(checked) => {
-                if let Some(bullet) = out.last_mut().filter(|s| s.text.ends_with("\u{2022} ")) {
+                if let Some(bullet) = out.pop_if(|s| s.text.ends_with("\u{2022} ")) {
                     let indent = bullet.text.trim_end_matches("\u{2022} ").to_owned();
+                    if !indent.is_empty() {
+                        out.push(Span { text: indent, ..bullet.clone() });
+                    }
                     // □ and ☑ rather than the ☐ that pairs with ☑ by name:
                     // the system UI face has □ and ☑ at one size, and no ☐ —
                     // which fell back to Menlo, a size smaller and lighter.
-                    bullet.text = format!("{indent}{} ", if checked { '\u{2611}' } else { '\u{25A1}' });
-                    bullet.muted = checked;
+                    let text = format!("{} ", if checked { '\u{2611}' } else { '\u{25A1}' });
+                    out.push(Span { text, muted: checked, task: Some(tasks), ..bullet });
                 }
+                // Counted whether or not a box was drawn, to stay in step
+                // with `toggle_task`, which counts every marker.
+                tasks = tasks.saturating_add(1);
                 task_done = checked;
             }
             _ => {}
@@ -258,6 +297,30 @@ pub fn parse(source: &str) -> Vec<Span> {
     autolink_bare_urls(&mut out);
     trim_blank_edges(&mut out);
     out
+}
+
+/// `source` with its `n`th task — counting from 0, as [`Span::task`] does —
+/// ticked if it was open and cleared if it was ticked; `None` if it has no
+/// such task. The marker is found by the parser that drew the box, so a
+/// `[ ]` in code or mid-sentence is never taken for one, and only the marker
+/// changes: the rest of the text is left byte for byte.
+///
+/// Counted in the text trimmed, as a card's is before it's parsed for
+/// drawing: indented four spaces at the very start, a list is code until
+/// it's trimmed, and the two counts would disagree.
+pub fn toggle_task(source: &str, n: u16) -> Option<String> {
+    let trimmed = source.trim();
+    let start = source.len() - source.trim_start().len();
+    let (checked, range) = Parser::new_ext(trimmed, EXTENSIONS)
+        .into_offset_iter()
+        .filter_map(|(event, range)| match event {
+            Event::TaskListMarker(checked) => Some((checked, range)),
+            _ => None,
+        })
+        .nth(usize::from(n))?;
+    let mut out = source.to_owned();
+    out.replace_range(start + range.start..start + range.end, if checked { "[ ]" } else { "[x]" });
+    Some(out)
 }
 
 /// Splits any bare `http(s)://…` URL out of plain spans into its own link span,
@@ -510,6 +573,19 @@ mod tests {
     }
 
     #[test]
+    fn a_nested_list_is_on_lines_of_its_own() {
+        // Tight: nothing but the list itself ends the item's text.
+        assert_eq!(text_of(&parse("- one\n    - inner\n- two")), "\u{2022} one\n    \u{2022} inner\n\u{2022} two");
+        let tasks = text_of(&parse("- [ ] pack\n    - [x] passport\n- [ ] go"));
+        assert_eq!(tasks, "\u{25A1} pack\n    \u{2611} passport\n\u{25A1} go");
+        // Two levels in, then straight back out to the top.
+        assert_eq!(
+            text_of(&parse("- a\n    - b\n        - c\n- d")),
+            "\u{2022} a\n    \u{2022} b\n        \u{2022} c\n\u{2022} d"
+        );
+    }
+
+    #[test]
     fn task_items_get_a_box_in_place_of_the_bullet() {
         let spans = parse("- [ ] to do\n- [x] done\n- plain");
         let text = text_of(&spans);
@@ -521,6 +597,44 @@ mod tests {
         let done = spans.iter().find(|s| s.text == "done").unwrap();
         let open = spans.iter().find(|s| s.text == "to do").unwrap();
         assert!(done.muted && !open.muted, "a finished task is set back, an open one isn't");
+    }
+
+    #[test]
+    fn each_box_is_a_span_of_its_own_numbered_in_reading_order() {
+        let spans = parse("- [ ] pack\n    - [x] passport\n- plain\n- [ ] go");
+        let boxes: Vec<(&str, Option<u16>)> =
+            spans.iter().filter(|s| s.task.is_some()).map(|s| (s.text.as_str(), s.task)).collect();
+        assert_eq!(boxes, [("\u{25A1} ", Some(0)), ("\u{2611} ", Some(1)), ("\u{25A1} ", Some(2))]);
+        assert!(text_of(&spans).contains("    \u{2611} passport"), "the nested box keeps its indent, before it");
+        assert!(spans.iter().filter(|s| s.task.is_none()).all(|s| !s.text.contains('\u{25A1}')));
+    }
+
+    #[test]
+    fn toggling_a_task_flips_its_marker_and_nothing_else() {
+        let source = "Trip\n\n- [ ] pack\n    - [x] passport\n- [X] book";
+        assert_eq!(toggle_task(source, 0).unwrap(), "Trip\n\n- [x] pack\n    - [x] passport\n- [X] book");
+        assert_eq!(toggle_task(source, 1).unwrap(), "Trip\n\n- [ ] pack\n    - [ ] passport\n- [X] book");
+        assert_eq!(toggle_task(source, 2).unwrap(), "Trip\n\n- [ ] pack\n    - [x] passport\n- [ ] book");
+        assert_eq!(toggle_task(source, 3), None);
+        // Twice is where it started.
+        assert_eq!(toggle_task(&toggle_task(source, 0).unwrap(), 0).unwrap(), source);
+    }
+
+    #[test]
+    fn only_a_real_marker_is_toggled() {
+        // In code, mid-sentence and in a fence, `[ ]` is text, and the box
+        // numbered 0 is the one that's drawn.
+        let source = "say `- [ ]` and [ ] here\n\n```\n- [ ] not this\n```\n\n- [ ] this";
+        assert_eq!(parse(source).iter().filter(|s| s.task.is_some()).count(), 1);
+        assert_eq!(toggle_task(source, 0).unwrap(), source.replace("- [ ] this", "- [x] this"));
+    }
+
+    #[test]
+    fn tasks_are_counted_in_the_text_as_it_is_drawn() {
+        // Trimmed for drawing, these are a list; untrimmed, the first is code.
+        let source = "\n    - [ ] first\n- [ ] second\n";
+        assert_eq!(parse(source.trim()).iter().filter(|s| s.task.is_some()).count(), 2);
+        assert_eq!(toggle_task(source, 0).unwrap(), "\n    - [x] first\n- [ ] second\n");
     }
 
     #[test]

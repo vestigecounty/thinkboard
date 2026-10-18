@@ -602,6 +602,16 @@ impl Tour {
         self.release(mouse::Button::Left);
     }
 
+    /// A click as a hand makes one: the pointer drifts a pixel between the
+    /// press and the release, which `click`, holding perfectly still, never
+    /// does — and which a press on a card takes for the start of a drag.
+    fn hand_click(&mut self, at: Point) {
+        self.move_to(at);
+        self.press(mouse::Button::Left);
+        self.move_to(Point::new(at.x + 1.0, at.y + 0.5));
+        self.release(mouse::Button::Left);
+    }
+
     fn double_click(&mut self, at: Point) {
         self.click(at);
         self.click(at);
@@ -2578,6 +2588,80 @@ fn long_cards() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+/// Ticking tasks off by their boxes: on a card not yet selected, a nested
+/// one, and undo; a click on the words, two quick clicks on a box and a drag
+/// that starts on one, none of which may tick anything.
+fn tasks() {
+    let board = |_: &ColorTheme| {
+        use thinkboard_core::fixtures::node;
+        let list = "## Before we go\n\n- [x] Book the ryokan\n- [ ] Rail passes\n    - [ ] JR Pass or regional?\n- [ ] Pocket wifi";
+        CanvasDocument {
+            nodes: vec![CanvasNode { text: Some(list.to_owned()), width: 320.0, height: 220.0, ..node("list") }],
+            edges: vec![],
+            extra: serde_json::Map::new(),
+        }
+    };
+    let mut tour = Tour::new("tasks", first_launch(board));
+    let text = |tour: &Tour| tour.app.nodes[0].text.clone().unwrap_or_default();
+    tour.shot("start");
+
+    tour.hand_click(task_box(&tour, 0, 1));
+    assert!(text(&tour).contains("- [x] Rail passes"), "the first click ticks it: {:?}", text(&tour));
+    assert_eq!(tour.app.selected, [0], "and selects the card, as any click on it does");
+    tour.shot("ticked-on-the-first-click");
+
+    tour.hand_click(task_box(&tour, 0, 2));
+    assert!(text(&tour).contains("    - [x] JR Pass"), "a nested box: {:?}", text(&tour));
+    tour.shot("a-nested-one");
+    tour.chord(Modifiers::COMMAND, "z");
+    assert!(text(&tour).contains("    - [ ] JR Pass"), "one undo takes it back: {:?}", text(&tour));
+
+    // The words beside a box are only a click on the card.
+    let before = text(&tour);
+    let rail = task_box(&tour, 0, 1);
+    tour.click(Point::new(rail.x + 60.0, rail.y));
+    assert_eq!(text(&tour), before, "a click on the words ticks nothing");
+
+    // Two quick clicks on a box tick it and clear it, and open no editor.
+    let wifi = task_box(&tour, 0, 3);
+    tour.hand_click(wifi);
+    tour.hand_click(wifi);
+    assert_eq!(text(&tour), before, "ticked and cleared again");
+    assert!(tour.app.editing.is_none(), "a double-click on a box doesn't edit the card");
+
+    // A drag that starts on a box moves the card.
+    let x = tour.app.nodes[0].x;
+    let book = task_box(&tour, 0, 0);
+    tour.drag(book, Point::new(book.x + 80.0, book.y + 40.0));
+    assert!(tour.app.nodes[0].x > x, "the card moved");
+    assert_eq!(text(&tour), before, "and nothing was ticked");
+    tour.shot("dragged-by-a-box");
+}
+
+/// The middle of task `task`'s box on card `index`, found the way a click
+/// finds it: the board's own hit test, swept over the card.
+fn task_box(tour: &Tour, index: usize, task: u16) -> Point {
+    let board = tour.app.board(tour.app.camera);
+    let node = &tour.app.nodes[index];
+    let from = tour.app.camera.to_screen(Point::new(node.x, node.y));
+    let to = tour.app.camera.to_screen(Point::new(node.x + node.width, node.y + node.height));
+    let mut hits = Vec::new();
+    let mut y = from.y;
+    while y < to.y {
+        let mut x = from.x;
+        while x < to.x {
+            if board.task_at(index, Point::new(x, y)) == Some(task) {
+                hits.push(Point::new(x, y));
+            }
+            x += 2.0;
+        }
+        y += 2.0;
+    }
+    assert!(!hits.is_empty(), "task {task}'s box is on screen");
+    let n = hits.len() as f32;
+    Point::new(hits.iter().map(|p| p.x).sum::<f32>() / n, hits.iter().map(|p| p.y).sum::<f32>() / n)
+}
+
 /// Keyboard only: after launch, not one click — moving from card to card,
 /// editing, adding linked cards, nudging, zooming, colouring from the palette,
 /// finding and acting on what was found, and the settings form. What each key
@@ -3401,6 +3485,7 @@ const SCENES: &[(&str, fn())] = &[
     ("build_a_board", build_a_board),
     ("double_click_to_add", double_click_to_add),
     ("editing", editing),
+    ("tasks", tasks),
     ("overlapping", overlapping),
     ("settings", settings),
     ("pickers", pickers),

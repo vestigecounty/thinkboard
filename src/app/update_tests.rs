@@ -186,6 +186,24 @@ fn a_links_label_is_what_the_field_holds_when_the_menu_closes() {
 }
 
 #[test]
+fn a_tasks_box_toggles_in_the_cards_text_as_one_undo_step() {
+    let mut app = app_with(vec![text_node("a", "Before we go\n\n- [x] ryokan\n- [ ] rail passes")], vec![]);
+    send(&mut app, Message::ToggleTask { index: 0, task: 1 });
+    assert_eq!(app.nodes[0].text.as_deref(), Some("Before we go\n\n- [x] ryokan\n- [x] rail passes"));
+    assert!(app.doc_dirty, "saved as any edit is");
+    send(&mut app, Message::ToggleTask { index: 0, task: 0 });
+    assert_eq!(app.nodes[0].text.as_deref(), Some("Before we go\n\n- [ ] ryokan\n- [x] rail passes"));
+
+    send(&mut app, Message::Undo);
+    assert_eq!(app.nodes[0].text.as_deref(), Some("Before we go\n\n- [x] ryokan\n- [x] rail passes"));
+
+    // A task the card hasn't got changes nothing, and records no step.
+    send(&mut app, Message::ToggleTask { index: 0, task: 5 });
+    send(&mut app, Message::Undo);
+    assert_eq!(app.nodes[0].text.as_deref(), Some("Before we go\n\n- [x] ryokan\n- [ ] rail passes"));
+}
+
+#[test]
 fn deleting_a_link_from_its_menu_labels_nothing_else() {
     // The draft names its link by id: deleted, the next link slides into its
     // index, and must not inherit the half-typed label.

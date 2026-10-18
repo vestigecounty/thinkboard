@@ -123,6 +123,9 @@ pub struct Interaction {
     /// release if the press didn't turn into a drag. Held here (not on `Kind`,
     /// which is `Copy`) to keep the owned `String` off the interaction enum.
     pub(super) link: Option<String>,
+    /// The task whose box is under the current press on a card, selected or
+    /// not; toggled on release if the press didn't turn into a drag.
+    pub(super) task: Option<u16>,
     /// `tb_action` of a button node under the current press (e.g. the scratch
     /// board's "Create a board"); fired on release. Like `link`, an owned
     /// `String` kept off the `Copy` `Kind`.
@@ -433,14 +436,17 @@ impl Board<'_> {
             return Some(canvas::Action::publish(Message::CancelInertia).and_capture());
         }
 
+        // A task's box toggles on a click, the first one included, and never
+        // makes half of a double-click: two quick clicks on it tick it and
+        // clear it again, as in Obsidian, rather than opening the editor.
+        let task = hit.and_then(|index| self.task_at(index, position));
         let now = Instant::now();
-        let is_double_click = state
-            .last_click
-            .is_some_and(|(at, p)| {
+        let is_double_click = task.is_none()
+            && state.last_click.is_some_and(|(at, p)| {
                 now.duration_since(at) < DOUBLE_CLICK_TIME
                     && p.distance(position) < DOUBLE_CLICK_DISTANCE
             });
-        state.last_click = Some((now, position));
+        state.last_click = task.is_none().then_some((now, position));
 
         // Suggestion cards: the "×" dismisses; otherwise a press starts
         // a potential drag (a click accepts on release, a drag moves).
@@ -495,6 +501,7 @@ impl Board<'_> {
                         _ => self.link_at(index, position),
                     }
                 }).flatten();
+                state.task = task;
                 state.kind = Kind::Dragging {
                     index,
                     grab: world - Point::new(node.x, node.y),
@@ -618,12 +625,17 @@ impl Board<'_> {
         let background_press = state.background_press.take();
         if let Kind::Dragging { index, moved, .. } = state.kind {
             state.kind = Kind::Idle;
-            // A pending link released without a drag opens it; otherwise
-            // this was a node drag (or a plain click) — just end it.
+            // A pending link released without a drag opens it, and a task's
+            // box toggles; otherwise this was a node drag (or a plain click)
+            // — just end it.
             let open = state.link.take().filter(|_| !moved);
-            Some(match open {
-                Some(url) => canvas::Action::publish(Message::OpenUrl(url)).and_capture(),
-                None => canvas::Action::publish(Message::NodeDragEnd { index, moved })
+            let task = state.task.take().filter(|_| !moved);
+            Some(match (open, task) {
+                (Some(url), _) => canvas::Action::publish(Message::OpenUrl(url)).and_capture(),
+                (None, Some(task)) => {
+                    canvas::Action::publish(Message::ToggleTask { index, task }).and_capture()
+                }
+                (None, None) => canvas::Action::publish(Message::NodeDragEnd { index, moved })
                     .and_capture(),
             })
         } else if let (Some(start), Some(position)) = (background_press, position) {
@@ -724,7 +736,8 @@ impl Board<'_> {
             }
             return Some(canvas::Action::publish(Message::SelectNodes(selection)));
         }
-        let link_pending = state.link.is_some();
+        // A link or a task's box under the press: released, it's a click.
+        let click_pending = state.link.is_some() || state.task.is_some();
         match &mut state.kind {
             Kind::Panning { last, .. } => {
                 let delta = position - *last;
@@ -732,9 +745,11 @@ impl Board<'_> {
                 Some(canvas::Action::publish(Message::Pan { delta, track: true }))
             }
             Kind::Dragging { index, grab, press, moved } => {
-                // A press over a link stays a click until the cursor
-                // leaves the tolerance; after that it's a node drag.
-                if link_pending && !*moved && position.distance(*press) < DOUBLE_CLICK_DISTANCE {
+                // A press over a link or a task's box stays a click until
+                // the cursor leaves the tolerance; after that it's a node
+                // drag. A hand's click drifts a pixel between press and
+                // release, so without it the box never ticked.
+                if click_pending && !*moved && position.distance(*press) < DOUBLE_CLICK_DISTANCE {
                     None
                 } else {
                     *moved = true;
@@ -959,9 +974,26 @@ impl Board<'_> {
     }
 
     /// The URL of a link under the screen-space `point` within text node
-    /// `index`, if any. Reuses the cached Markdown layout, so hover and click
-    /// checks are cheap.
+    /// `index`, if any.
     pub(super) fn link_at(&self, index: usize, point: Point) -> Option<String> {
+        self.run_at(index, point, |run| run.link.clone())
+    }
+
+    /// The task whose box is under the screen-space `point` within text node
+    /// `index`, if any.
+    pub(crate) fn task_at(&self, index: usize, point: Point) -> Option<u16> {
+        self.run_at(index, point, |run| run.task)
+    }
+
+    /// What `pick` makes of the run of text node `index`'s Markdown under the
+    /// screen-space `point` — a link's URL, a task's number. Reuses the cached
+    /// Markdown layout, so hover and click checks are cheap.
+    fn run_at<T>(
+        &self,
+        index: usize,
+        point: Point,
+        pick: impl Fn(&crate::text_raster::TextRun) -> Option<T>,
+    ) -> Option<T> {
         let node = self.nodes.get(index)?;
         if !node.is_text() || self.editing == Some(index) {
             return None;
@@ -985,18 +1017,14 @@ impl Board<'_> {
             *self.theme,
             self.config.center_card_text,
             |runs| {
-                for run in runs {
-                    let Some(url) = &run.link else { continue };
+                runs.iter().find_map(|run| {
                     let origin = Point::new(frame.x + run.x * zoom, frame.y + run.y * zoom);
                     let size = Size::new(
                         run.width * zoom,
                         run.size * crate::text_raster::LINE_HEIGHT * zoom,
                     );
-                    if Rectangle::new(origin, size).contains(point) {
-                        return Some(url.clone());
-                    }
-                }
-                None
+                    Rectangle::new(origin, size).contains(point).then(|| pick(run)).flatten()
+                })
             },
         )
     }

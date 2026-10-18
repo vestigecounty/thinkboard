@@ -404,6 +404,13 @@ impl canvas::Program<Message> for Board<'_> {
                     mouse::Interaction::Pointer
                 } else if self
                     .hit_test(self.camera.to_world(position))
+                    .and_then(|index| self.task_at(index, position))
+                    .is_some()
+                {
+                    // Over a task's box, on any card: a click toggles it.
+                    mouse::Interaction::Pointer
+                } else if self
+                    .hit_test(self.camera.to_world(position))
                     .filter(|index| self.selected.contains(index))
                     .and_then(|index| self.link_at(index, position))
                     .is_some()

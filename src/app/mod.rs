@@ -363,6 +363,9 @@ pub(crate) enum Message {
     NodeDragEnd { index: usize, moved: bool },
     /// Open a link (from a card's text) in the default browser.
     OpenUrl(String),
+    /// Tick or clear task `task` (counting from 0) in text card `index`: a
+    /// click on its box.
+    ToggleTask { index: usize, task: u16 },
     Undo,
     Redo,
     ToggleOverlay,
@@ -1395,6 +1398,7 @@ impl App {
 
             // --- Window lifecycle ---
             Message::OpenUrl(url) => platform::open_url(&url),
+            Message::ToggleTask { index, task } => return self.toggle_task(index, task),
             Message::Noop => {}
             Message::FocusSettingsField { back } => {
                 use iced::advanced::widget::operation::focusable;

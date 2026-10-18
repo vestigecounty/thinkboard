@@ -150,7 +150,10 @@ always one update stale.
 **A point on a card's text is found the way it's drawn.** `board::text_frame`
 is where a card's Markdown is laid out — centred in the card, or, on a card that
 scrolls, top-aligned and shifted by its scroll — and the drawing, a link's hover
-and click, a double-click's caret and the find bar's scroll all go through it.
+and click, a task box's click, a double-click's caret and the find bar's scroll
+all go through it. A box ticks on the first click, selected card or not, and
+`markdown::toggle_task` finds its `[ ]` with the parser that drew it, counting
+boxes in the trimmed text as the drawing does.
 Link clicks ignored the scroll and hit another line's link. The caret is found
 in the *rendered* layout and traced back to the source (`edit::locate`), not by
 clicking the editor at the same point: the editor shows the source, with its
@@ -975,6 +978,12 @@ and returns with it still going, and `film_while` films until a condition
 says it's over. `click_label` finds a widget by its text, through iced's
 `Operation::text`, rather than by offsets into a menu that moves whenever it
 gains an item.
+
+**`click` holds perfectly still, and a hand doesn't.** A press on a card is a
+drag from its first move, except over a link or a task's box, which allow a
+few pixels — so a scene checking what a click on a card does uses
+`hand_click`, which drifts a pixel between press and release. The task boxes
+passed with `click` and never ticked in the app.
 
 The AI scenes ask a **`Provider`**: an OpenAI-compatible endpoint on a loopback
 port, answering from a script, so the real client is what runs — the streamed

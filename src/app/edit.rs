@@ -1,5 +1,6 @@
 //! The in-place card editor: opening and committing an edit session, the
-//! text-level undo inside it, and the Markdown marker toggles (Cmd+B/I).
+//! text-level undo inside it, and the Markdown marker toggles (Cmd+B/I, and a
+//! task's box clicked on the board, which needs no editor).
 //!
 //! The editor is a fixed-size widget clamped to the viewport, so a node hanging
 //! off an edge is brought fully into view before editing starts — and editing
@@ -637,6 +638,28 @@ impl App {
             None
         };
         self.commit_editor_text(edited);
+    }
+
+    /// A task's box clicked on the board, the editor closed: its `[ ]` ticked,
+    /// or its `[x]` cleared, in the card's own text — one undo step, saved as
+    /// any edit is. Only the marker changes, so the card keeps its size, and
+    /// is drawn again for the box and the shade of the item's text. It was a
+    /// click on a card, which puts the find bar away.
+    pub(super) fn toggle_task(&mut self, index: usize, task: u16) -> Task<Message> {
+        let toggled = self
+            .nodes
+            .get(index)
+            .and_then(|node| node.text.as_deref())
+            .and_then(|text| markdown::toggle_task(text, task));
+        let Some(toggled) = toggled else {
+            return Task::none();
+        };
+        self.push_undo();
+        self.nodes[index].text = Some(toggled);
+        self.mark_dirty();
+        self.invalidate_snapshot(index);
+        self.cache.clear();
+        Task::batch([self.close_search(false), self.refresh_snapshots()])
     }
 
     /// Applies a text-level undo (`redo = false`) or redo within the current
