@@ -183,6 +183,9 @@ pub(super) enum Kind {
         /// Press position, to tell a right-click (context menu) from a
         /// right-drag (pan) on release.
         start: Point,
+        /// The button holding the pan, whose release ends it: the right, or
+        /// the middle — Obsidian's own pan, which has no click to tell apart.
+        button: Button,
     },
     Dragging {
         index: usize,
@@ -304,15 +307,19 @@ impl Board<'_> {
         match event {
             mouse::Event::ButtonPressed(Button::Left) => self.press(state, position),
             mouse::Event::ButtonReleased(Button::Left) => self.release(state, position),
-            mouse::Event::ButtonPressed(Button::Right) => {
+            // Either drags the board. The middle button is how Obsidian's
+            // canvas pans, so a hand used to it finds the same here.
+            mouse::Event::ButtonPressed(button @ (Button::Right | Button::Middle)) => {
                 let position = position?;
                 state.kind = Kind::Panning {
                     last: position,
                     start: position,
+                    button,
                 };
                 Some(canvas::Action::publish(Message::CancelInertia).and_capture())
             }
             mouse::Event::ButtonReleased(Button::Right) => self.right_release(state, position),
+            mouse::Event::ButtonReleased(Button::Middle) => self.middle_release(state),
             mouse::Event::CursorMoved { .. } => self.cursor_moved(state, position),
             mouse::Event::WheelScrolled { delta } => self.wheel(state, delta, position),
             _ => None,
@@ -649,7 +656,7 @@ impl Board<'_> {
         state: &mut Interaction,
         position: Option<Point>,
     ) -> Option<canvas::Action<Message>> {
-        if let Kind::Panning { start, .. } = state.kind {
+        if let Kind::Panning { start, button: Button::Right, .. } = state.kind {
             state.kind = Kind::Idle;
             // A right-click that didn't drag opens the context menu;
             // a drag was a pan and coasts on release.
@@ -681,6 +688,16 @@ impl Board<'_> {
         } else {
             None
         }
+    }
+
+    /// A middle release: the end of its pan, which coasts on as a right-drag's
+    /// does. Without a move it was a click, which opens nothing.
+    fn middle_release(&self, state: &mut Interaction) -> Option<canvas::Action<Message>> {
+        let Kind::Panning { button: Button::Middle, .. } = state.kind else {
+            return None;
+        };
+        state.kind = Kind::Idle;
+        Some(canvas::Action::publish(Message::EndPan).and_capture())
     }
 
     /// A move: the gesture in progress follows it, and with none, whatever the
