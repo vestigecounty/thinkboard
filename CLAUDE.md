@@ -1059,6 +1059,22 @@ shot that lied:
 
 ## Releasing
 
-`git tag vX.Y.Z && git push --tags` runs `.github/workflows/release.yml`, which
-builds a universal macOS `.app`, a Windows zip and a Linux tarball. Tag releases
-for shipped user-facing features — not for internal refactors.
+`git tag vX.Y.Z && git push origin vX.Y.Z` runs `.github/workflows/release.yml`,
+which builds a universal macOS `.app`, a Windows zip and a Linux tarball. Push
+the one tag, not `--tags`: older tags exist only locally. Tag releases for
+shipped user-facing features — not for internal refactors.
+
+After publishing, it points the **Homebrew tap** (`vestigecounty/homebrew-tap`,
+checked out at `homebrew-tap/`, excluded like `demo/`) at the new Mac zip:
+`packaging/homebrew/thinkboard.rb` with the version and checksum filled in,
+pushed with a deploy key (the `HOMEBREW_TAP_KEY` secret). Change the formula
+there; the tap's copy is overwritten every release.
+
+**The `.app` is signed ad hoc** — sealed, but by nobody — so a download still
+meets Gatekeeper's first-launch warning; only a paid Developer ID and
+notarization remove it. A Homebrew install doesn't meet it, because Homebrew
+doesn't quarantine what a *formula* installs. That's why the tap has a formula
+rather than a cask: a cask is quarantined like any download, and Homebrew has
+dropped the flag that skipped it. Testing the formula locally, set
+`HOMEBREW_NO_AUTOREMOVE=1`: `brew uninstall` otherwise removes whatever
+dependencies it decides are unneeded, the user's included.

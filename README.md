@@ -70,9 +70,18 @@ Off until you choose a provider. Run a model on your own machine with LM Studio 
 
 ## Install
 
+**Homebrew** (macOS):
+
+```sh
+brew install vestigecounty/tap/thinkboard
+brew services start thinkboard   # now, and at every login
+```
+
 **Prebuilt binaries** — the latest release: [macOS](https://github.com/vestigecounty/thinkboard/releases/latest/download/thinkboard-macos-universal.zip) (Universal .app), [Windows](https://github.com/vestigecounty/thinkboard/releases/latest/download/thinkboard-windows-x86_64.zip) (x86-64 .zip), [Linux](https://github.com/vestigecounty/thinkboard/releases/latest/download/thinkboard-linux-x86_64.tar.gz) (x86-64 .tar.gz). Every release is on the [Releases](https://github.com/vestigecounty/thinkboard/releases) page.
 
-> macOS builds are unsigned, so the first launch needs a right-click → **Open** (or `xattr -dr com.apple.quarantine ThinkBoard.app`).
+> The Mac app isn't notarized by Apple yet, so macOS blocks the first launch of a download: open it once, then choose
+> **Open Anyway** in System Settings → Privacy & Security (or run `xattr -dr com.apple.quarantine ThinkBoard.app`).
+> Homebrew doesn't flag what it installs as downloaded, so installed that way it opens straight away.
 
 **From source** — with a recent Rust toolchain (2024 edition):
 
