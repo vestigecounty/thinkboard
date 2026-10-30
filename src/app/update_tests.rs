@@ -1671,7 +1671,7 @@ fn work_finished_for_a_board_since_left_is_dropped() {
     open_each(&mut app, &root, &["A.canvas"]);
     let for_a = app.board_epoch;
     let a_clusters = crate::cluster::compute(&app.nodes, &app.edges, &app.theme);
-    let a_bitmap = text_raster::snapshot_markdown("A", 250.0, 60.0, 230.0, 17.0, app.theme, false, 1.0).expect("a bitmap");
+    let a_bitmap = text_raster::snapshot_markdown("A.canvas", 250.0, 60.0, 230.0, 17.0, app.theme, false, 1.0).expect("a bitmap");
 
     // A's clustering and bitmaps, landing once B is on screen: neither is B's.
     open_each(&mut app, &root, &["B.canvas"]);
@@ -1688,7 +1688,7 @@ fn a_board_gone_back_to_keeps_its_bitmaps_unless_its_file_changed() {
     let root = boards_with_a_card("warm", &["A.canvas", "B.canvas"]);
     let mut app = app_with(Vec::new(), Vec::new());
     open_each(&mut app, &root, &["A.canvas"]);
-    let bitmap = text_raster::snapshot_markdown("A", 250.0, 60.0, 230.0, 17.0, app.theme, false, 1.0).expect("a bitmap");
+    let bitmap = text_raster::snapshot_markdown("A.canvas", 250.0, 60.0, 230.0, 17.0, app.theme, false, 1.0).expect("a bitmap");
     let epoch = app.board_epoch;
     send(&mut app, Message::SnapshotsReady(epoch, vec![(0, bitmap)]));
     assert!(app.rasters.text.contains_key(&0));
@@ -2606,6 +2606,50 @@ fn an_answers_cards_share_one_width() {
     assert_eq!(answer.len(), 2);
     assert_eq!(answer[0].width, answer[1].width, "one column, one edge");
     assert!(answer[1].height < answer[0].height, "each still as tall as its own text");
+}
+
+#[test]
+fn an_answers_card_widened_to_the_others_keeps_no_bitmap_of_it_narrow() {
+    // A `---` starts a batch of bitmaps partway through an answer, and the
+    // end widens its cards to one width: a bitmap of a card made before that
+    // was drawn stretched over it, its lines still wrapped at the old width.
+    use thinkboard_core::ai::Event;
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "http://localhost:1234/v1".to_owned();
+    send(&mut app, Message::SelectNode(Some(0)));
+    send(&mut app, Message::AskAi);
+    let id = app.ai.streams.keys().next().expect("asked").clone();
+    send(&mut app, Message::Ai(id.clone(), Event::Delta("Tram 28".to_owned())));
+    send(&mut app, Message::Ai(id.clone(), Event::Split));
+    // What the split's batch makes of the first card, as it stands.
+    let short = 2;
+    let bitmap_of = |app: &App, index: usize| {
+        let node = &app.nodes[index];
+        let text = node.text.as_deref().unwrap_or_default();
+        let wrap = text_raster::card_text_wrap(node.width);
+        let (theme, center, zoom) = (app.theme, app.config.center_card_text, app.camera.zoom);
+        text_raster::snapshot_markdown(text, node.width, node.height, wrap, FONT_SIZE, theme, center, zoom).expect("a bitmap")
+    };
+    let narrow = bitmap_of(&app, short);
+    let width = app.nodes[short].width;
+    let has_bitmap = |app: &App, index| app.rasters.text.contains_key(&index) || app.rasters.staging.contains_key(&index);
+
+    // Landed before the end, it's the card as it is, and goes on.
+    let epoch = app.board_epoch;
+    send(&mut app, Message::SnapshotsReady(epoch, vec![(short, narrow.clone())]));
+    assert!(has_bitmap(&app, short));
+    // Partway through the next card's text, a bitmap is made of it as it was.
+    send(&mut app, Message::Ai(id.clone(), Event::Delta("**Time Out Market** — a quick lunch, ".to_owned())));
+    let partway = bitmap_of(&app, short + 1);
+    send(&mut app, Message::Ai(id.clone(), Event::Delta("half the city's kitchens under one roof.".to_owned())));
+    send(&mut app, Message::Ai(id.clone(), Event::Done));
+    assert!(app.nodes[short].width > width, "widened to the other card");
+    assert!(!has_bitmap(&app, short), "the bitmap of it narrow is let go");
+
+    // Landed after, it's turned away — and so is one of a card's text before
+    // the rest of it came.
+    send(&mut app, Message::SnapshotsReady(epoch, vec![(short, narrow), (short + 1, partway)]));
+    assert!(!has_bitmap(&app, short) && !has_bitmap(&app, short + 1));
 }
 
 // --- The font picker ---

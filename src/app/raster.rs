@@ -14,6 +14,14 @@
 //! clusters' titles over the wrong cards, bitmaps keyed by index on cards
 //! they weren't made from — and to hold off the new board's own batch until
 //! it had.
+//!
+//! **A bitmap knows what it's of** — the text it was made from and the size
+//! it was laid out at (`Snapshot::depicts`). One for a card since changed is
+//! turned away as its batch lands, let go of when a refresh finds the card
+//! resized, and never drawn on a card of another size. Saying so at every
+//! change wasn't enough: an answer's cards were widened to one width without
+//! it, and a bitmap made partway through the answer was drawn stretched over
+//! the wider card, its lines still wrapped at the old width.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -24,6 +32,7 @@ use iced::widget::image;
 use super::{App, Message};
 use crate::canvas::text_raster;
 use crate::document::cluster;
+use crate::model::CanvasNode;
 use crate::theme::Theme as ColorTheme;
 
 /// How long a freshly rasterized text bitmap is drawn invisibly (warming
@@ -186,6 +195,16 @@ fn cluster_snapshots(
         .collect()
 }
 
+/// The text a card's bitmap is made from.
+fn bitmap_text(node: &CanvasNode) -> &str {
+    node.text.as_deref().unwrap_or("(no content)")
+}
+
+/// Whether `snapshot` is `node` as it is now.
+fn depicts(snapshot: &text_raster::Snapshot, node: &CanvasNode) -> bool {
+    snapshot.depicts(bitmap_text(node), node.width, node.height)
+}
+
 impl App {
     /// The initial clustering, computed synchronously at startup (there is no
     /// board on screen yet to keep responsive).
@@ -279,6 +298,12 @@ impl App {
         let editing = self.editing.as_ref().map(|editing| editing.index);
         let now = Instant::now();
         for (index, snapshot) in snapshots {
+            // Of a card changed while it was being made — more of an answer
+            // streamed in, a resize. Stretched over it, its lines kept the
+            // old card's wrap.
+            if !self.nodes.get(index).is_some_and(|node| depicts(&snapshot, node)) {
+                continue;
+            }
             // A node being edited, or holding a search hit, is drawn live — the
             // first so the editor owns its text, the second because the
             // highlight is painted by the live path and a bitmap has none baked
@@ -352,6 +377,22 @@ impl App {
         if !self.config.rasterize_text {
             return Task::none();
         }
+        // A bitmap of a card since resized goes, rather than wait to be
+        // replaced: resized by something that didn't say — an answer's cards
+        // were widened to one width without — it'd be drawn until the new
+        // one had faded in over it. The size only: this runs on every pan
+        // event, and a change of text says so where it's made, while a batch
+        // started before one is turned away as it lands (`snapshots_ready`).
+        let on_screen = self.rasters.text.iter().map(|(index, snapshot)| (*index, snapshot));
+        let warming = self.rasters.staging.iter().map(|(index, staged)| (*index, &staged.snapshot));
+        let resized: Vec<usize> = on_screen
+            .chain(warming)
+            .filter(|(index, snapshot)| !self.nodes.get(*index).is_some_and(|node| snapshot.fits(node.width, node.height)))
+            .map(|(index, _)| index)
+            .collect();
+        for index in resized {
+            self.rasters.invalidate(index);
+        }
         if self.rasters.pending {
             return Task::none();
         }
@@ -380,10 +421,7 @@ impl App {
                                 < 0.001
                     })
             })
-            .map(|(index, node)| {
-                let text = node.text.as_deref().unwrap_or("(no content)").to_owned();
-                (index, text, node.width, node.height)
-            })
+            .map(|(index, node)| (index, bitmap_text(node).to_owned(), node.width, node.height))
             .collect();
 
         if jobs.is_empty() {

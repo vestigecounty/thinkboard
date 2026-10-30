@@ -533,6 +533,32 @@ pub struct Snapshot {
     /// GPU texture footprint in bytes (pixel_width × pixel_height × 4), for the
     /// FPS meter's VMEM readout.
     pub bytes: usize,
+    /// What it's a picture of: the text it was made from (hashed), and the
+    /// size it was laid out at — the wrap width comes from it. A card changed
+    /// since would show it saying what it said before, or stretched over its
+    /// new size, its lines still wrapped at the old width.
+    made_of: (u64, f32, f32),
+}
+
+impl Snapshot {
+    /// Whether this is `text` laid out at `width` × `height`.
+    pub fn depicts(&self, text: &str, width: f32, height: f32) -> bool {
+        self.made_of == (text_hash(text), width, height)
+    }
+
+    /// Whether it was laid out at `width` × `height`. A card of any other
+    /// size would stretch it to fit — the cheap half of [`Snapshot::depicts`],
+    /// for drawing, which has no time to hash every card's text.
+    pub fn fits(&self, width: f32, height: f32) -> bool {
+        (self.made_of.1, self.made_of.2) == (width, height)
+    }
+}
+
+fn text_hash(text: &str) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut hasher = DefaultHasher::new();
+    text.hash(&mut hasher);
+    hasher.finish()
 }
 
 /// The raster scale (texture px per logical px) used for a node at the
@@ -1077,6 +1103,7 @@ pub fn snapshot_markdown(
             zoom,
             scale: k,
             bytes: (pixel_width as usize) * (pixel_height as usize) * 4,
+            made_of: (text_hash(text), width, height),
         })
     })
 }

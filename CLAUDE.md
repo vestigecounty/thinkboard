@@ -161,6 +161,15 @@ clicking the editor at the same point: the editor shows the source, with its
 markers and body-size headings, so the same point is a different line further
 down a card — and on a scrolled card, a paragraph that wasn't on screen.
 
+**A text bitmap knows what it's of** (`Snapshot::depicts`: the text, hashed,
+and the size it was laid out at). Batches run in the background, and a card can
+be rewritten or resized while one does — and by code that forgets to invalidate
+it: an answer's cards are widened to one width at its end, and a bitmap made
+at a `---` was drawn stretched over the wider card until something repainted
+it. So a stale one is turned away as it lands, a refresh lets go of one whose
+card was resized (size only — refresh runs on every pan event), and drawing
+never puts one on a card of another size.
+
 **A table is laid out as a grid, not as text.** A cosmic-text buffer has one
 wrap width and only uniform tab stops, so cells can't line up in it. A card's
 text is laid out by `text_raster::lay_out` as blocks stacked a blank line apart

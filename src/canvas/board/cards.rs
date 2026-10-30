@@ -459,8 +459,16 @@ impl Board<'_> {
                     );
                 } else {
                     let rasterize = self.config.rasterize_text;
-                    let active = rasterize.then(|| self.text_snapshots.get(&index)).flatten();
-                    let staged = rasterize.then(|| self.staging_snapshots.get(&index)).flatten();
+                    // Only a bitmap laid out at this card's size: one made
+                    // before it was resized — a batch in flight, a resize
+                    // that didn't say — would be stretched over it. Live text
+                    // until the fresh one lands.
+                    let fits = |snapshot: &&crate::text_raster::Snapshot| snapshot.fits(node.width, node.height);
+                    let active = rasterize.then(|| self.text_snapshots.get(&index)).flatten().filter(fits);
+                    let staged = rasterize
+                        .then(|| self.staging_snapshots.get(&index))
+                        .flatten()
+                        .filter(|staged| fits(&&staged.snapshot));
                     if let Some(snapshot) = active {
                         // Current bitmap; a re-rasterized one cross-fades in over it.
                         let mut image = canvas::Image::new(snapshot.handle.clone());
