@@ -185,6 +185,7 @@ impl App {
                 || self.theme_picker.is_some()
                 || self.font_picker.is_some()
                 || self.model_picker.is_some(),
+            switching: self.visits.strip.is_some(),
             context_menu: self.context_menu.is_some(),
             show_fps: self.show_fps,
             spawning: &self.spawning,
@@ -282,6 +283,9 @@ impl App {
         }
         if let Some(picker) = self.theme_picker.as_ref().filter(|picker| !picker.over_settings) {
             layers = layers.push(self.theme_picker_view(picker));
+        }
+        if let Some(strip) = self.strip_view() {
+            layers = layers.push(strip);
         }
         if self.settings_overlay {
             layers = layers.push(self.settings_overlay_view());

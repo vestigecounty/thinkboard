@@ -58,6 +58,7 @@ mod raster;
 mod search;
 mod settings;
 mod startup;
+mod switcher;
 mod sync;
 mod font_picker;
 mod model_picker;
@@ -357,8 +358,16 @@ pub(crate) enum Message {
     /// Write the board back to its file, which was moved or deleted outside
     /// the app — the board's "save it again".
     RestoreFile,
-    SnapshotsReady(Vec<(usize, text_raster::Snapshot)>),
-    ClustersReady(cluster::Clustering, HashMap<usize, text_raster::Snapshot>),
+    /// Background work finished — for the board opened `epoch`th, and
+    /// dropped if that's no longer the one on screen (see `raster`).
+    SnapshotsReady(u64, Vec<(usize, text_raster::Snapshot)>),
+    ClustersReady(u64, cluster::Clustering, HashMap<usize, text_raster::Snapshot>),
+    /// A cluster title's bitmap is on the GPU (or couldn't be put there), and
+    /// takes over from its live text.
+    ClusterTitleUploaded { epoch: u64, generation: u64, index: usize, allocation: Option<image::Allocation> },
+    /// An image on screen on a board being left, held on the GPU for coming
+    /// back to (see `switcher`).
+    ImagePinned(PathBuf, Option<image::Allocation>),
     /// A press on node `index` let go — after a drag when `moved`, else a click.
     NodeDragEnd { index: usize, moved: bool },
     /// Open a link (from a card's text) in the default browser.
@@ -397,6 +406,19 @@ pub(crate) enum Message {
     /// clicked; the browser's highlighted one (Enter).
     OpenListedBoard(PathBuf),
     OpenSelectedCanvas,
+    /// ⌘[ and ⌘]: a step back or forward through the boards visited (see
+    /// `switcher`) — or, while its strip is up, its highlight moved.
+    StepBoards(i32),
+    /// The board saw ⌘ (Ctrl elsewhere) let go: the strip, if it's up, lands
+    /// on the board it highlights.
+    CommandReleased,
+    /// The board saw ⌘ held by itself for `board::SHOW_SWITCHER_AFTER`: the
+    /// strip shows.
+    ShowSwitcher,
+    /// Esc, a click off the strip, or ⌘ put to another use: stay on this board.
+    CancelSwitch,
+    /// A board in the strip, clicked — by its place on the trail.
+    SwitchToVisited(usize),
     /// Cmd/Ctrl+O: the browser when a vault is set, the open dialog when not.
     SwitchCanvas,
     /// Theme picker (from the palette): the same panel over the themes, with
@@ -635,6 +657,12 @@ struct App {
     /// A vault walk is in flight, so the browser can say so rather than look
     /// like an empty vault.
     vault_scanning: bool,
+    /// The boards visited this session — where each was left, for going back
+    /// to it — and the strip that shows them while ⌘[ or ⌘] is held.
+    visits: switcher::Visits,
+    /// Counts the boards opened, so background work started for one since
+    /// left is told apart from work for the one on screen.
+    board_epoch: u64,
     /// The settings form rendered as an in-board modal (opened from the command
     /// palette), instead of the separate settings window (opened from the tray).
     settings_overlay: bool,
@@ -833,6 +861,7 @@ impl App {
         if !scratch {
             config.remember_board(&canvas_path);
         }
+        let visits = switcher::Visits::starting_at((!scratch).then(|| canvas_path.clone()));
 
         // The theme's OpenType features live in a global in the vendored
         // renderer, not on `self.theme` — see `install_theme`, which every later
@@ -911,6 +940,8 @@ impl App {
             model_picker: None,
             vault_canvases: Vec::new(),
             vault_scanning: false,
+            visits,
+            board_epoch: 0,
             settings_overlay: false,
             pending_board_create: None,
             hotkey_recording: false,
@@ -1223,10 +1254,14 @@ impl App {
 
             // --- Background results and the frame clock ---
             Message::Tick(now) => return self.tick(now),
-            Message::SnapshotsReady(snapshots) => return self.snapshots_ready(snapshots),
-            Message::ClustersReady(clustering, snapshots) => {
-                return self.clusters_ready(clustering, snapshots);
+            Message::SnapshotsReady(epoch, snapshots) => return self.snapshots_ready(epoch, snapshots),
+            Message::ClustersReady(epoch, clustering, snapshots) => {
+                return self.clusters_ready(epoch, clustering, snapshots);
             }
+            Message::ClusterTitleUploaded { epoch, generation, index, allocation } => {
+                self.title_uploaded(epoch, generation, index, allocation);
+            }
+            Message::ImagePinned(board, allocation) => self.visits.pin(&board, allocation),
 
             // --- The document on disk ---
             Message::SaveTick => {
@@ -1366,6 +1401,11 @@ impl App {
             Message::VaultScanned(entries, truncated) => self.vault_scanned(entries, truncated),
             Message::OpenListedBoard(path) => return self.open_listed_board(path),
             Message::OpenSelectedCanvas => return self.open_selected_canvas(),
+            Message::StepBoards(delta) => self.step_boards(delta),
+            Message::CommandReleased => return self.land_switch(),
+            Message::ShowSwitcher => self.show_switcher(),
+            Message::CancelSwitch => self.visits.strip = None,
+            Message::SwitchToVisited(index) => return self.go_to_visited(index),
             Message::ChooseVault => return self.choose_vault(),
             Message::OpenVaultDialog => return self.vault_dialog(),
             Message::VaultChosen(path) => return self.vault_chosen(path),
@@ -1579,7 +1619,9 @@ impl App {
     fn drop_text_bitmaps(&mut self) {
         crate::canvas::text_raster::clear_caches();
         self.rasters.clear();
-        self.clusters.snapshots.clear();
+        self.clusters.drop_titles();
+        // And the boards kept for coming back to, made the same way.
+        self.visits.forget_warm();
         self.cache.clear();
     }
 
@@ -2547,6 +2589,11 @@ impl App {
         }
         if self.theme_picker.is_some() {
             listeners.push(theme_picker::key_event);
+        }
+        // While the board switcher's strip is up, ⌘ put to another use puts
+        // it away; the rest of it — ⌘[ ⌘], Esc, ⌘'s release — is the board's.
+        if self.visits.strip.is_some() {
+            listeners.push(switcher::key_event);
         }
         // Esc closes the in-board settings modal — unless a picker is open
         // over it, whose own Esc would otherwise close both.

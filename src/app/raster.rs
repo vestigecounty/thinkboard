@@ -7,11 +7,19 @@
 //! quality band or its text changes; a fresh one is warmed invisibly and
 //! cross-faded in, because iced uploads large images on a worker thread and
 //! draws nothing until that finishes.
+//!
+//! **Each batch is for one board.** Both are tagged with the board they were
+//! started for (`App::board_epoch`), and a result landing after that board
+//! was left is dropped: it used to be installed on the next one — its
+//! clusters' titles over the wrong cards, bitmaps keyed by index on cards
+//! they weren't made from — and to hold off the new board's own batch until
+//! it had.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use iced::Task;
+use iced::widget::image;
 
 use super::{App, Message};
 use crate::canvas::text_raster;
@@ -57,6 +65,29 @@ pub(super) struct Rasters {
 }
 
 impl Rasters {
+    /// The bitmaps on screen, taken away with the board they were made for —
+    /// and no batch waiting, since any still being made is for that board.
+    pub(super) fn take(&mut self) -> HashMap<usize, text_raster::Snapshot> {
+        self.staging.clear();
+        self.pending = false;
+        std::mem::take(&mut self.text)
+    }
+
+    /// A board's bitmaps, back with it. One over the in-frame upload limit
+    /// is staged, as a fresh one is: the GPU let go of it when the board was
+    /// left, and installed straight away it would draw as nothing until
+    /// uploaded again.
+    pub(super) fn restore(&mut self, bitmaps: HashMap<usize, text_raster::Snapshot>) {
+        let now = Instant::now();
+        for (index, snapshot) in bitmaps {
+            if snapshot.bytes >= ASYNC_UPLOAD_BYTES {
+                self.staging.insert(index, StagedSnapshot { snapshot, since: now, opacity: 0.0 });
+            } else {
+                self.text.insert(index, snapshot);
+            }
+        }
+    }
+
     /// Drops every bitmap (e.g. when the document is swapped and the node
     /// indices they're keyed by no longer mean anything).
     pub(super) fn clear(&mut self) {
@@ -91,9 +122,34 @@ pub(super) struct Clusters {
     /// Cluster label bitmaps, keyed by cluster index — same rendering path as
     /// node labels. Rasterized once at the reference zoom.
     pub(super) snapshots: HashMap<usize, text_raster::Snapshot>,
+    /// Title bitmaps not yet on the GPU. A title is drawn live until its
+    /// bitmap's upload has finished, rather than as nothing: one this large
+    /// is uploaded off the frame that first draws it, and the titles went
+    /// blank for a moment after every recluster and every switch of board.
+    waiting: HashMap<usize, text_raster::Snapshot>,
+    /// Counts the clusterings installed, so a title uploaded for one that's
+    /// since been replaced isn't put on another's cluster.
+    generation: u64,
     pending: bool,
     /// A change arrived while a recluster was in flight; recompute again.
     dirty: bool,
+}
+
+impl Clusters {
+    /// Drops the title bitmaps — made in colours or a face that no longer
+    /// stand — and any on their way to the GPU.
+    pub(super) fn drop_titles(&mut self) {
+        self.snapshots.clear();
+        self.waiting.clear();
+        self.generation += 1;
+    }
+
+    /// Every title bitmap made for these clusters, on the GPU or not.
+    pub(super) fn into_titles(self) -> (Clusters, HashMap<usize, text_raster::Snapshot>) {
+        let Clusters { list, links, mut snapshots, waiting, generation, .. } = self;
+        snapshots.extend(waiting);
+        (Clusters { list, links, generation, ..Clusters::default() }, snapshots)
+    }
 }
 
 /// Rasterizes each text cluster's label into a bitmap (same Markdown path as
@@ -146,9 +202,57 @@ impl App {
             list: clustering.clusters,
             links: clustering.links,
             snapshots,
-            pending: false,
-            dirty: false,
+            ..Clusters::default()
         }
+    }
+
+    /// The clusters alone, computed now, their titles drawn live until a
+    /// background pass brings their bitmaps — for a board opened at a zoom
+    /// that shows clusters, which would otherwise draw every card until
+    /// that pass had finished.
+    pub(super) fn clusters_now(&mut self) -> Task<Message> {
+        let clustering = cluster::compute(&self.nodes, &self.edges, &self.theme);
+        self.clusters = Clusters { list: clustering.clusters, links: clustering.links, ..Clusters::default() };
+        // Again, for the titles: the fitting is cached, so it's cheap twice.
+        self.schedule_recluster()
+    }
+
+    /// Installs title bitmaps for the clusters on screen, each once it's on
+    /// the GPU — until then the title is drawn live. In live-text mode there
+    /// are none, and nothing to wait for.
+    pub(super) fn install_titles(&mut self, titles: HashMap<usize, text_raster::Snapshot>) -> Task<Message> {
+        self.clusters.generation += 1;
+        self.clusters.snapshots.clear();
+        let (epoch, generation) = (self.board_epoch, self.clusters.generation);
+        let uploads: Vec<Task<Message>> = titles
+            .iter()
+            .map(|(&index, title)| {
+                image::allocate(title.handle.clone()).map(move |allocation| Message::ClusterTitleUploaded {
+                    epoch,
+                    generation,
+                    index,
+                    allocation: allocation.ok(),
+                })
+            })
+            .collect();
+        self.clusters.waiting = titles;
+        self.cache.clear();
+        Task::batch(uploads)
+    }
+
+    /// A title's bitmap is on the GPU, and takes over from its live text.
+    /// The allocation is let go once it has: drawn every frame the clusters
+    /// show, the bitmap stays, and pinned it would hold GPU memory for every
+    /// cluster's title while zoomed in on the cards.
+    pub(super) fn title_uploaded(&mut self, epoch: u64, generation: u64, index: usize, allocation: Option<image::Allocation>) {
+        if epoch != self.board_epoch || generation != self.clusters.generation {
+            return;
+        }
+        if let Some(title) = self.clusters.waiting.remove(&index) {
+            self.clusters.snapshots.insert(index, title);
+            self.cache.clear();
+        }
+        drop(allocation);
     }
 
     /// Drops a node's cached bitmap so it draws live until a fresh raster
@@ -163,8 +267,14 @@ impl App {
     /// straight on screen, since there's nothing to preserve.
     pub(super) fn snapshots_ready(
         &mut self,
+        epoch: u64,
         snapshots: Vec<(usize, text_raster::Snapshot)>,
     ) -> Task<Message> {
+        // For a board since left: keyed by index, they'd go on whichever
+        // cards here have those places.
+        if epoch != self.board_epoch {
+            return Task::none();
+        }
         self.rasters.pending = false;
         let editing = self.editing.as_ref().map(|editing| editing.index);
         let now = Instant::now();
@@ -281,6 +391,7 @@ impl App {
         }
 
         self.rasters.pending = true;
+        let epoch = self.board_epoch;
         Task::perform(
             async move {
                 jobs.into_iter()
@@ -299,7 +410,7 @@ impl App {
                     })
                     .collect()
             },
-            Message::SnapshotsReady,
+            move |snapshots| Message::SnapshotsReady(epoch, snapshots),
         )
     }
 
@@ -320,6 +431,7 @@ impl App {
         let theme = self.theme;
         let center = self.config.center_card_text;
         let rasterize = self.config.rasterize_text;
+        let epoch = self.board_epoch;
         Task::perform(
             async move {
                 let clustering = cluster::compute(&nodes, &edges, &theme);
@@ -327,7 +439,7 @@ impl App {
                     cluster_snapshots(&clustering.clusters, cluster_zoom, theme, center, rasterize);
                 (clustering, snapshots)
             },
-            |(clustering, snapshots)| Message::ClustersReady(clustering, snapshots),
+            move |(clustering, snapshots)| Message::ClustersReady(epoch, clustering, snapshots),
         )
     }
 
@@ -335,17 +447,45 @@ impl App {
     /// changes arrived while it was in flight.
     pub(super) fn clusters_ready(
         &mut self,
+        epoch: u64,
         clustering: cluster::Clustering,
         snapshots: HashMap<usize, text_raster::Snapshot>,
     ) -> Task<Message> {
+        // For a board since left — whose titles over this one's cards were
+        // the flicker a switch used to show.
+        if epoch != self.board_epoch {
+            return Task::none();
+        }
         self.clusters.list = clustering.clusters;
         self.clusters.links = clustering.links;
-        self.clusters.snapshots = snapshots;
         self.clusters.pending = false;
-        self.cache.clear();
+        let titles = self.install_titles(snapshots);
         if self.clusters.dirty {
-            return self.schedule_recluster();
+            return Task::batch([titles, self.schedule_recluster()]);
         }
-        Task::none()
+        titles
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::update_tests::app_with;
+    use super::*;
+
+    #[test]
+    fn a_title_waits_for_its_upload_and_one_for_old_clusters_is_dropped() {
+        let mut app = app_with(Vec::new(), Vec::new());
+        let theme = app.theme;
+        let title = || text_raster::snapshot_markdown("Title", 600.0, 400.0, 560.0, 40.0, theme, true, 0.4).expect("a bitmap");
+        let _ = app.install_titles(HashMap::from([(0, title())]));
+        assert!(app.clusters.snapshots.is_empty(), "drawn live until it's on the GPU");
+        let (epoch, earlier) = (app.board_epoch, app.clusters.generation);
+
+        // Clustered again before that upload landed: it's for clusters gone.
+        let _ = app.install_titles(HashMap::from([(0, title())]));
+        app.title_uploaded(epoch, earlier, 0, None);
+        assert!(app.clusters.snapshots.is_empty());
+        app.title_uploaded(epoch, app.clusters.generation, 0, None);
+        assert!(app.clusters.snapshots.contains_key(&0));
     }
 }

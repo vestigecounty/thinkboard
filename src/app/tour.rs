@@ -272,8 +272,17 @@ impl Tour {
             Action::Clipboard(iced_runtime::clipboard::Action::Read { channel, .. }) => {
                 let _ = channel.send(None);
             }
-            // Window, system and image requests have no window to act on.
-            // Dropping one drops its reply channel, which ends the task cleanly.
+            // An image wanted on the GPU — a cluster title, which waits on it
+            // to take over from live text. The headless renderer has a GPU and
+            // allocates it as a window's would.
+            Action::Image(iced_runtime::image::Action::Allocate(handle, sender)) => {
+                use iced_runtime::core::Renderer as _;
+                self.renderer.allocate_image(&handle, move |allocation| {
+                    let _ = sender.send(allocation);
+                });
+            }
+            // Window and system requests have no window to act on. Dropping
+            // one drops its reply channel, which ends the task cleanly.
             _ => {}
         }
     }
@@ -383,12 +392,18 @@ impl Tour {
     /// Drawn twice. A bitmap over 2 MB — a large card's text — is uploaded by
     /// iced_wgpu on a worker thread and left out of the frame that asked for
     /// it; a window gets a redraw when the upload lands, and this gets one
-    /// [`UPLOAD_GRACE`] later instead.
+    /// [`UPLOAD_GRACE`] later instead. What that upload answers is taken in
+    /// between, as a window's redraw would: a cluster title waits on it to
+    /// replace its live text.
     fn shot(&mut self, name: &str) {
         self.settle();
         self.redraw();
         let _ = self.render();
         std::thread::sleep(UPLOAD_GRACE);
+        let _ = self.render();
+        if self.pump() {
+            self.draw();
+        }
         let (size, rgba) = self.render();
         self.shots += 1;
         let path = self.out.join(format!("{:02}-{name}.png", self.shots));
@@ -1069,6 +1084,10 @@ fn file_launch(path: &std::path::Path) -> App {
     app.canvas_path = path.to_owned();
     app.disk = sync::OnDisk::new(app.current_document(), path);
     app.scratch = false;
+    // Where a launch on a board starts what it remembers: the board, first
+    // among the recent ones and on the trail of those visited.
+    app.config.remember_board(path);
+    app.visits = switcher::Visits::starting_at(Some(path.to_owned()));
     app
 }
 
@@ -1671,6 +1690,58 @@ fn vault() {
     tour.type_text("theme");
     tour.shot("palette-no-board-matches");
     tour.named(key::Named::Escape);
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Back and forward through the boards visited: ⌘ held brings up the strip,
+/// [ moves along it, and letting ⌘ go lands on the board — where it was left.
+/// A tap goes straight there, with nothing on screen.
+fn switcher() {
+    let root = std::env::temp_dir().join(format!("thinkboard-tour-switcher-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    std::fs::create_dir_all(&root).expect("a vault");
+    let theme = ColorTheme::default();
+    for (name, board) in [
+        ("Lisbon trip", trip_board(&theme)),
+        ("Everything", sample_board(&theme)),
+        ("Theme sampler", theme_sampler(&theme)),
+    ] {
+        board.save(&root.join(format!("{name}.canvas"))).expect("a board");
+    }
+    let mut tour = Tour::new("switcher", file_launch(&root.join("Lisbon trip.canvas")));
+    tour.app.config.vault = root.display().to_string();
+    // Zoomed in on part of it, which is how it should be found again.
+    tour.wheel(Point::new(400.0, 450.0), 3.0);
+    tour.shot("trip-zoomed-in");
+    for name in ["everything", "sampler"] {
+        tour.chord(Modifiers::COMMAND, "k");
+        tour.type_text(name);
+        tour.named(key::Named::Enter);
+    }
+    tour.shot("on-the-sampler");
+    // The board times the hold; the frame it asked for is the shot's.
+    tour.hold(Modifiers::COMMAND);
+    tour.wait(board::SHOW_SWITCHER_AFTER);
+    tour.shot("held");
+    tour.key(Key::Character("[".into()), None);
+    tour.shot("held-back-one");
+    tour.key(Key::Character("[".into()), None);
+    tour.shot("held-back-two");
+    tour.hold(Modifiers::empty());
+    tour.shot("let-go-on-the-trip");
+    tour.chord(Modifiers::COMMAND, "]");
+    tour.shot("tapped-forward");
+    // Small enough that not every board fits beside the others.
+    tour.resize(Size::new(420.0, 700.0));
+    tour.hold(Modifiers::COMMAND);
+    tour.key(Key::Character("]".into()), None);
+    tour.wait(board::SHOW_SWITCHER_AFTER);
+    tour.shot("held-narrow");
+    // A chord made after hesitating on ⌘ still does what it does, and puts
+    // the strip away.
+    tour.key(Key::Character("=".into()), None);
+    tour.shot("zoomed-in-instead");
+    tour.hold(Modifiers::empty());
     let _ = std::fs::remove_dir_all(&root);
 }
 
@@ -3508,6 +3579,7 @@ const SCENES: &[(&str, fn())] = &[
     ("links", links),
     ("groups", groups),
     ("vault", vault),
+    ("switcher", switcher),
     ("big_board", big_board),
     ("overlay", overlay),
     ("themes", themes),

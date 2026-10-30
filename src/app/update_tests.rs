@@ -1585,6 +1585,237 @@ fn the_board_launched_on_counts_as_opened() {
     assert_eq!(app.config.recent_boards, [launched.to_string_lossy()]);
 }
 
+// --- Back and forward through the boards visited ---
+
+/// A vault of boards each holding one card, at a place of its own — so each,
+/// fitted to the view, is framed differently.
+fn boards_with_a_card(name: &str, boards: &[&str]) -> PathBuf {
+    let root = board_vault(name, boards);
+    for (at, board) in boards.iter().enumerate() {
+        let x = 1000 * at;
+        std::fs::write(
+            root.join(board),
+            format!(r#"{{"nodes":[{{"id":"n","type":"text","text":"{board}","x":{x},"y":0,"width":250,"height":60}}],"edges":[]}}"#),
+        )
+        .unwrap();
+    }
+    root
+}
+
+#[test]
+fn a_board_opens_where_it_was_left_however_it_is_gone_back_to() {
+    let root = boards_with_a_card("camera", &["A.canvas", "B.canvas"]);
+    let mut app = app_with(Vec::new(), Vec::new());
+    send(&mut app, Message::OpenListedBoard(root.join("A.canvas")));
+    // Somewhere on it, zoomed in.
+    app.camera.offset = iced::Vector::new(-321.0, 123.0);
+    app.camera.zoom = 2.5;
+
+    // A board not yet seen this session is framed as before.
+    send(&mut app, Message::OpenListedBoard(root.join("B.canvas")));
+    let mut fitted = app.camera;
+    fitted.fit(app.content_bounds());
+    assert_eq!((app.camera.offset, app.camera.zoom), (fitted.offset, fitted.zoom));
+
+    // Back by the palette (or the browser): where it was left, not zoomed
+    // out to all of it.
+    send(&mut app, Message::OpenListedBoard(root.join("A.canvas")));
+    assert_eq!((app.camera.offset, app.camera.zoom), (iced::Vector::new(-321.0, 123.0), 2.5));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn command_bracket_steps_back_and_letting_go_lands_there() {
+    let root = boards_with_a_card("steps", &["A.canvas", "B.canvas", "C.canvas"]);
+    let mut app = app_with(Vec::new(), Vec::new());
+    for board in ["A.canvas", "B.canvas", "C.canvas"] {
+        send(&mut app, Message::OpenListedBoard(root.join(board)));
+    }
+    let at_c = (app.camera.offset, app.camera.zoom);
+
+    // Held: each press moves the highlight.
+    for _ in 0..2 {
+        send(&mut app, Message::StepBoards(-1));
+    }
+    assert_eq!(app.visits.strip.as_ref().map(|strip| strip.highlight), Some(0));
+    assert_eq!(app.canvas_path, root.join("C.canvas"), "nothing moves until ⌘ is let go");
+    send(&mut app, Message::CommandReleased);
+    assert_eq!(app.canvas_path, root.join("A.canvas"));
+    assert!(app.visits.strip.is_none());
+
+    // Stepping keeps what's ahead: forward twice comes back to C, as it was.
+    send(&mut app, Message::StepBoards(1));
+    send(&mut app, Message::StepBoards(1));
+    send(&mut app, Message::CommandReleased);
+    assert_eq!(app.canvas_path, root.join("C.canvas"));
+    assert_eq!((app.camera.offset, app.camera.zoom), at_c);
+
+    // Past the last, round to the first.
+    send(&mut app, Message::StepBoards(1));
+    send(&mut app, Message::CommandReleased);
+    assert_eq!(app.canvas_path, root.join("A.canvas"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+/// Opens each of `boards`, under `root`, in turn.
+fn open_each(app: &mut App, root: &std::path::Path, boards: &[&str]) {
+    for board in boards {
+        send(app, Message::OpenListedBoard(root.join(board)));
+    }
+}
+
+#[test]
+fn work_finished_for_a_board_since_left_is_dropped() {
+    let root = boards_with_a_card("stale", &["A.canvas", "B.canvas"]);
+    let mut app = app_with(Vec::new(), Vec::new());
+    open_each(&mut app, &root, &["A.canvas"]);
+    let for_a = app.board_epoch;
+    let a_clusters = crate::cluster::compute(&app.nodes, &app.edges, &app.theme);
+    let a_bitmap = text_raster::snapshot_markdown("A", 250.0, 60.0, 230.0, 17.0, app.theme, false, 1.0).expect("a bitmap");
+
+    // A's clustering and bitmaps, landing once B is on screen: neither is B's.
+    open_each(&mut app, &root, &["B.canvas"]);
+    let b_cards = app.clusters.list.iter().map(|cluster| cluster.bounds).collect::<Vec<_>>();
+    send(&mut app, Message::ClustersReady(for_a, a_clusters, HashMap::new()));
+    send(&mut app, Message::SnapshotsReady(for_a, vec![(0, a_bitmap)]));
+    assert_eq!(app.clusters.list.iter().map(|cluster| cluster.bounds).collect::<Vec<_>>(), b_cards);
+    assert!(!app.rasters.text.contains_key(&0));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_board_gone_back_to_keeps_its_bitmaps_unless_its_file_changed() {
+    let root = boards_with_a_card("warm", &["A.canvas", "B.canvas"]);
+    let mut app = app_with(Vec::new(), Vec::new());
+    open_each(&mut app, &root, &["A.canvas"]);
+    let bitmap = text_raster::snapshot_markdown("A", 250.0, 60.0, 230.0, 17.0, app.theme, false, 1.0).expect("a bitmap");
+    let epoch = app.board_epoch;
+    send(&mut app, Message::SnapshotsReady(epoch, vec![(0, bitmap)]));
+    assert!(app.rasters.text.contains_key(&0));
+
+    // Back from B: what A had, without making it again.
+    open_each(&mut app, &root, &["B.canvas", "A.canvas"]);
+    assert!(app.rasters.text.contains_key(&0), "A's bitmap, kept while it was away");
+
+    // Changed while B was on screen: made afresh.
+    open_each(&mut app, &root, &["B.canvas"]);
+    std::thread::sleep(Duration::from_millis(20));
+    let text = std::fs::read_to_string(root.join("A.canvas")).unwrap();
+    std::fs::write(root.join("A.canvas"), text.replace("\"A.canvas\"", "\"A, changed\"")).unwrap();
+    open_each(&mut app, &root, &["A.canvas"]);
+    assert!(!app.rasters.text.contains_key(&0), "the file changed while it was away");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_board_opened_on_its_clusters_has_them_at_once() {
+    // Cards far apart: fitted, the view is zoomed out to where clusters show.
+    let root = board_vault("clusters", &["Wide.canvas"]);
+    let card = |id: &str, x: i32| format!(r#"{{"id":"{id}","type":"text","text":"Card {id}","x":{x},"y":0,"width":250,"height":60}}"#);
+    let cards: Vec<String> = (0..6).map(|at| card(&format!("n{at}"), at * 4000)).collect();
+    std::fs::write(root.join("Wide.canvas"), format!(r#"{{"nodes":[{}],"edges":[]}}"#, cards.join(","))).unwrap();
+    let mut app = app_with(Vec::new(), Vec::new());
+    open_each(&mut app, &root, &["Wide.canvas"]);
+    assert!(board::cluster_opacity(app.camera.zoom) > 0.0, "zoomed out to clusters: {}", app.camera.zoom);
+    let expected = crate::cluster::compute(&app.nodes, &app.edges, &app.theme);
+    assert!(!expected.clusters.is_empty());
+    assert_eq!(app.clusters.list.len(), expected.clusters.len(), "computed with the switch, not after it");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn command_held_by_itself_brings_up_the_strip_and_any_other_use_of_it_doesnt() {
+    use crate::canvas::board::{Interaction, SHOW_SWITCHER_AFTER};
+    use iced::keyboard::{self, Key, Modifiers, key};
+    use iced::widget::canvas::{Event, Program};
+    use std::time::Instant;
+    let app = app_with(Vec::new(), Vec::new());
+    let board = app.board(app.camera);
+    let bounds = iced::Rectangle::new(iced::Point::ORIGIN, app.camera.viewport);
+    let held = |modifiers| Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers));
+    let press = |letter: &str| {
+        let key = Key::Character(letter.into());
+        Event::Keyboard(keyboard::Event::KeyPressed {
+            key: key.clone(),
+            modified_key: key,
+            physical_key: key::Physical::Unidentified(key::NativeCode::Unidentified),
+            location: keyboard::Location::Standard,
+            modifiers: Modifiers::COMMAND,
+            text: None,
+            repeat: false,
+        })
+    };
+    let scroll = Event::Mouse(iced::mouse::Event::WheelScrolled { delta: iced::mouse::ScrollDelta::Lines { x: 0.0, y: 1.0 } });
+    // A frame past the one the board asks for — these are made before ⌘ is
+    // fed to it — or one sooner.
+    let due = || Event::Window(iced::window::Event::RedrawRequested(Instant::now() + 2 * SHOW_SWITCHER_AFTER));
+    let soon = || Event::Window(iced::window::Event::RedrawRequested(Instant::now()));
+    let shows = |events: Vec<Event>| {
+        let mut state = Interaction::default();
+        // The first event of all is taken to report the board's size.
+        let _ = board.update(&mut state, &soon(), bounds, iced::mouse::Cursor::Unavailable);
+        events.iter().filter_map(|event| board.update(&mut state, event, bounds, iced::mouse::Cursor::Unavailable)).any(
+            |action| matches!(action.into_inner().0, Some(Message::ShowSwitcher)),
+        )
+    };
+
+    assert!(shows(vec![held(Modifiers::COMMAND), due()]));
+    assert!(!shows(vec![held(Modifiers::COMMAND), soon()]), "not before its time");
+    assert!(shows(vec![held(Modifiers::COMMAND), press("["), press("["), due()]), "[ and ] are what it's for");
+    // ⌘ put to another use: a chord, a ⌘-scroll, another modifier with it.
+    assert!(!shows(vec![held(Modifiers::COMMAND), press("z"), due()]));
+    assert!(!shows(vec![held(Modifiers::COMMAND), scroll, due()]));
+    assert!(!shows(vec![held(Modifiers::COMMAND), held(Modifiers::COMMAND | Modifiers::SHIFT), due()]));
+    assert!(!shows(vec![held(Modifiers::COMMAND | Modifiers::SHIFT), due()]));
+    assert!(!shows(vec![held(Modifiers::COMMAND), held(Modifiers::empty()), due()]), "let go first");
+}
+
+#[test]
+fn held_with_no_step_the_strip_opens_on_this_board_and_stays_there() {
+    let root = boards_with_a_card("held", &["A.canvas", "B.canvas"]);
+    let mut app = app_with(Vec::new(), Vec::new());
+    send(&mut app, Message::OpenListedBoard(root.join("A.canvas")));
+    // A board alone has nowhere to go, so nothing shows.
+    send(&mut app, Message::ShowSwitcher);
+    assert!(app.visits.strip.is_none());
+
+    send(&mut app, Message::OpenListedBoard(root.join("B.canvas")));
+    send(&mut app, Message::ShowSwitcher);
+    assert_eq!(app.visits.strip.as_ref().map(|strip| strip.highlight), Some(1));
+    assert!(app.strip_view().is_some());
+    send(&mut app, Message::CommandReleased);
+    assert_eq!(app.canvas_path, root.join("B.canvas"));
+    assert!(app.visits.strip.is_none());
+
+    // A step taken before it shows is where it shows.
+    send(&mut app, Message::StepBoards(-1));
+    assert!(app.strip_view().is_none(), "a quick press shows nothing");
+    send(&mut app, Message::ShowSwitcher);
+    assert_eq!(app.visits.strip.as_ref().map(|strip| strip.highlight), Some(0));
+    send(&mut app, Message::CommandReleased);
+    assert_eq!(app.canvas_path, root.join("A.canvas"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn esc_or_a_click_off_the_strip_stays_put() {
+    let root = boards_with_a_card("cancel", &["A.canvas", "B.canvas"]);
+    let mut app = app_with(Vec::new(), Vec::new());
+    send(&mut app, Message::OpenListedBoard(root.join("A.canvas")));
+    send(&mut app, Message::OpenListedBoard(root.join("B.canvas")));
+    send(&mut app, Message::StepBoards(-1));
+    send(&mut app, Message::CancelSwitch);
+    send(&mut app, Message::CommandReleased);
+    assert_eq!(app.canvas_path, root.join("B.canvas"));
+
+    // A board in the strip can be clicked instead.
+    send(&mut app, Message::StepBoards(-1));
+    send(&mut app, Message::SwitchToVisited(0));
+    assert_eq!(app.canvas_path, root.join("A.canvas"));
+    assert!(app.visits.strip.is_none());
+    let _ = std::fs::remove_dir_all(&root);
+}
+
 #[test]
 fn a_search_finds_boards_in_a_section_that_leads_when_it_matches_better() {
     let mut app = app_with_vault(&["Projects/Roadmap.canvas", "Themes.canvas"]);
@@ -2533,7 +2764,8 @@ fn a_raster_in_flight_cannot_un_highlight_a_search_hit() {
         "ThinkBoard", 200.0, 100.0, 180.0, 17.0, app.theme, false, 1.0,
     )
     .expect("a bitmap");
-    send(&mut app, Message::SnapshotsReady(vec![(0, stale)]));
+    let epoch = app.board_epoch;
+    send(&mut app, Message::SnapshotsReady(epoch, vec![(0, stale)]));
 
     assert!(
         !app.rasters.text.contains_key(&0) && !app.rasters.staging.contains_key(&0),
@@ -2546,7 +2778,7 @@ fn a_raster_in_flight_cannot_un_highlight_a_search_hit() {
         "ThinkBoard", 200.0, 100.0, 180.0, 17.0, app.theme, false, 1.0,
     )
     .expect("a bitmap");
-    send(&mut app, Message::SnapshotsReady(vec![(0, fresh)]));
+    send(&mut app, Message::SnapshotsReady(epoch, vec![(0, fresh)]));
     assert!(app.rasters.text.contains_key(&0));
 }
 

@@ -105,6 +105,7 @@ rasterizer) stays desktop-side.
 | `picker` | the panel shell shared by the palette, vault browser and the pickers |
 | `theme_picker` / `font_picker` / `model_picker` | what fills that shell besides the palette |
 | `vault` | finding the vault's boards and switching between them |
+| `switcher` | back and forward through the boards visited (⌘[ ⌘]), and where each was left |
 | `search`, `clipboard`, `command`, `settings`, `startup`, `tray`, `sync` | as named |
 
 Related fields are grouped into sub-structs (`Ai`, `Ghosts`, `Rasters`,
@@ -680,6 +681,58 @@ selected, as does closing the find bar on a hit; undo keeps the selection by id.
 
 **Esc still dismisses the overlay** once nothing is open over it — the user's
 call. Deselecting first would make putting the board away a two-key job.
+
+## Going back to a board
+
+**A board opens where it was left** (`app::switcher`). Each board left this
+session keeps its camera, so going back to it — by ⌘[ ⌘], the palette or the
+browser — lands on the part being worked on; zoomed out to all of it, that
+part had to be found again every time. Only a board not yet seen this session
+is fitted. Session-only, like the palette's recent commands.
+
+**⌘[ and ⌘] go back and forward** along a browser-style trail of the boards
+visited, each on it once, wrapping round past either end: opening a board
+drops what was ahead and puts it last, stepping moves along it and changes
+nothing. A tap, or a few quick presses, switch with nothing on screen; with ⌘
+held `board::SHOW_SWITCHER_AFTER` (300 ms, from ⌘ going down — by itself or
+with [ and ]), a strip shows the trail as outlines (taken
+when each board was left, so nothing is read from disk), older to the left as
+`[` points, and letting ⌘ go lands on the highlight. Esc stays put.
+
+**⌘ held for anything else isn't a look at the boards** (`board::uses_command`):
+a chord, a ⌘-click or a ⌘-scroll while it's down keeps the strip from showing,
+or puts it away, and ⌘ pressed during a drag, an edit or a panel doesn't start
+the clock. The strip takes the pointer but **not the keys** (`Board::switching`,
+not `modal`), so a chord made after hesitating on ⌘ still does what it does.
+The hold is timed, and the release seen, by the **board widget**
+(`ShowSwitcher` from a `request_redraw_at`, `CommandReleased` on every ⌘
+release), not by a listener of the strip's: a tap's press and release, or ⌘
+and a chord's key, can arrive in one batch, before the subscription the press
+asked for exists. The tour waits the time out (`wait`) before its shot.
+
+**The last two boards left are kept warm** (`switcher::Warm`): their clusters
+and text bitmaps — moved out rather than freed, which took 10 ms off the
+switching frame — and their on-screen images, pinned on the GPU with
+`image::allocate`. Coming back to one whose file is unchanged recomputes
+nothing; otherwise it's worked out afresh, its clusters synchronously when
+the view opens on them (as at launch) rather than drawing every card live
+until a background pass lands. A board's bitmaps are kept only up to
+`WARM_BITMAPS` (128 MB): 800 cards fitted to the view bake at the 512 px floor
+and came to 388 MB. `drop_text_bitmaps` lets go of all of it.
+
+**Background work belongs to one board.** `SnapshotsReady` and `ClustersReady`
+carry the `board_epoch` they were started for and are dropped after a switch:
+they used to land on the next board — another board's cluster titles over its
+cards, bitmaps keyed by index on cards they weren't made from — and their
+`pending` flags held back the new board's own work until they had.
+
+**A cluster title is installed once it's on the GPU** (`install_titles`, then
+`ClusterTitleUploaded`), drawn live until then. Titles are big enough to
+upload off-frame, so installed at once they drew blank after every recluster
+and switch. The allocation is let go once installed — pinned, every title's
+texture would be held while zoomed in on the cards. The tour serves
+`image::allocate` through its headless renderer, and `shot` takes in an
+upload's answer between its two renders, as a window's redraw would.
 
 ## Link routing
 

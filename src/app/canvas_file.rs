@@ -11,7 +11,7 @@ use thinkboard_core::merge;
 
 use super::history::{committed_snapshot, text_bitmap_reusable};
 use super::sync::{self, OnDisk, changed_since, file_mtime};
-use super::{App, Message};
+use super::{App, Message, switcher};
 use crate::model::{CanvasEdge, CanvasDocument, CanvasNode, NodeKind};
 
 /// The embedded scratch board shown when no real canvas is configured. A
@@ -448,9 +448,17 @@ impl App {
     }
 
     /// Switches the live document to the canvas at `path`: leaves the scratch
-    /// board (or a previous file) behind, reframes the camera, and remembers
-    /// the choice so the next launch opens it directly.
+    /// board (or a previous file) behind, puts the camera where this board was
+    /// left (or frames it, the first time this session), and remembers the
+    /// choice so the next launch opens it directly.
     pub(super) fn open_canvas(&mut self, path: PathBuf) -> Task<Message> {
+        self.switch_board(path, None)
+    }
+
+    /// [`App::open_canvas`], or with `step`, a step along the trail of boards
+    /// visited (`switcher`) to that place on it — which leaves the trail as
+    /// it is, where opening one drops what was ahead.
+    pub(super) fn switch_board(&mut self, path: PathBuf, step: Option<usize>) -> Task<Message> {
         // Flush pending edits to the board we're leaving before switching, so a
         // drag-drop / open while mid-edit doesn't drop them. No-op for the
         // scratch board (which is never saved) and when there's nothing dirty.
@@ -466,7 +474,22 @@ impl App {
             }
         };
 
+        // What to come back to: where the camera was, the board as it stood,
+        // for the strip to draw, and what was computed from it.
+        let put_away = if self.scratch {
+            Task::none()
+        } else {
+            let outline = switcher::Outline::of(&self.nodes, &self.edges);
+            self.visits.remember(self.canvas_path.clone(), (self.camera.offset, self.camera.zoom), outline);
+            self.put_away()
+        };
+        // Whatever's still being worked out for the board left is for it.
+        self.board_epoch += 1;
         self.canvas_path = path;
+        match step {
+            Some(index) => self.visits.step_to(index),
+            None => self.visits.visit(&self.canvas_path),
+        }
         self.base_path = vault_root(
             &self.canvas_path,
             &document,
@@ -485,7 +508,19 @@ impl App {
         self.fresh_undo = None;
         self.doc_dirty = false;
         self.interacted = false;
-        self.camera.fit(self.content_bounds());
+        // A board left this session opens where it was left: zoomed back out to
+        // all of it, the part being worked on had to be found again each time.
+        // Whatever the camera was still doing belonged to the board left.
+        self.inertia = None;
+        self.zoom_animation = None;
+        self.camera_focus = None;
+        match self.visits.camera(&self.canvas_path) {
+            Some((offset, zoom)) => {
+                self.camera.offset = offset;
+                self.camera.zoom = zoom.clamp(self.camera.min_zoom, self.camera.max_zoom);
+            }
+            None => self.camera.fit(self.content_bounds()),
+        }
 
         // Remember the working board so the next launch skips the scratch board,
         // and among the recent ones the palette offers to switch back to.
@@ -493,7 +528,7 @@ impl App {
         self.config.remember_board(&self.canvas_path);
         self.persist_config();
 
-        Task::batch([self.refresh_snapshots(), self.schedule_recluster()])
+        Task::batch([put_away, self.bring_out()])
     }
 
     /// Takes in a change another program made to the board's file, merged
@@ -550,6 +585,7 @@ impl App {
             return Task::none();
         };
         self.config.rename_board(&self.canvas_path, &path);
+        self.visits.rename(&self.canvas_path, &path);
         self.canvas_path = path;
         // The next launch opens it under its new name.
         self.config.canvas = self.canvas_path.to_string_lossy().into_owned();

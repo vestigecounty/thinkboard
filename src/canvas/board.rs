@@ -61,6 +61,7 @@ pub use ai::{AiFlow, Ghost};
 pub use cards::{content_height, scroll_offset, scrolls, text_frame};
 pub(crate) use cards::{GROUP_LABEL_PAD, GROUP_LABEL_SIZE, group_header};
 pub use clusters::cluster_opacity;
+pub use input::{Interaction, SHOW_SWITCHER_AFTER, uses_command};
 pub use links::opposite_side;
 pub use search::{SearchView, hit_ranges, search_dim};
 
@@ -150,6 +151,11 @@ pub struct Board<'a> {
     /// An in-board modal (the settings panel) is up: board keyboard shortcuts
     /// are suppressed so the modal owns input.
     pub modal: bool,
+    /// The board switcher's strip is up (`app::switcher`), or a step through
+    /// it is waiting on ⌘'s release. It takes the pointer, and Esc, but not
+    /// the other keys: a chord made with the ⌘ that raised it is still the
+    /// board's, and puts it away.
+    pub switching: bool,
     /// A right-click menu is open: Esc closes it before it does anything else.
     pub context_menu: bool,
     pub show_fps: bool,
@@ -216,7 +222,30 @@ impl canvas::Program<Message> for Board<'_> {
         // exception — we keep tracking them so the chord that opened the modal
         // (e.g. Cmd+Shift+P) doesn't leave Command "stuck" once released, which
         // would make a later two-finger scroll zoom instead of pan.
-        if self.modal
+        // ⌘ held by itself brings up the board switcher, timed here rather
+        // than by the app: what else ⌘ is used for while it's down arrives
+        // here, in order — a chord's key can come in the same batch as ⌘.
+        // Ahead of the modal check, because the strip it raises is one.
+        if let Some(since) = state.command_held {
+            match event {
+                Event::Window(iced::window::Event::RedrawRequested(now)) => {
+                    if now.saturating_duration_since(since) >= SHOW_SWITCHER_AFTER {
+                        state.command_held = None;
+                        return Some(canvas::Action::publish(Message::ShowSwitcher));
+                    }
+                    // Asked again each frame: a redraw for anything else
+                    // meanwhile takes the place of the one asked for.
+                    if self.modal || self.switching {
+                        return Some(canvas::Action::request_redraw_at(since + SHOW_SWITCHER_AFTER));
+                    }
+                }
+                event if uses_command(event) => state.command_held = None,
+                _ => {}
+            }
+        }
+
+        let pointer = !matches!(event, Event::Keyboard(_));
+        if (self.modal || self.switching && pointer)
             && !matches!(event, Event::Keyboard(keyboard::Event::ModifiersChanged(_)))
         {
             return None;
@@ -224,8 +253,31 @@ impl canvas::Program<Message> for Board<'_> {
 
         match event {
             Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers)) => {
+                // ⌘ let go is where the board switcher (`app::switcher`)
+                // lands. Said from here, in order with the chord that raised
+                // it, because a tap's press and release can come in one batch
+                // — ahead of any listener the press could have asked for.
+                let pressed = !state.modifiers.command() && modifiers.command();
+                let released = state.modifiers.command() && !modifiers.command();
                 state.modifiers = *modifiers;
-                None
+                // By itself, and with nothing under way that it could be
+                // part of: a drag (⌘ makes a marquee additive), an edit, a
+                // panel or a menu.
+                let alone = *modifiers == keyboard::Modifiers::COMMAND
+                    && matches!(state.kind, Kind::Idle)
+                    && !self.modal
+                    && !self.switching
+                    && !self.context_menu
+                    && self.editing.is_none();
+                if pressed && alone {
+                    let now = Instant::now();
+                    state.command_held = Some(now);
+                    return Some(canvas::Action::request_redraw_at(now + SHOW_SWITCHER_AFTER));
+                }
+                if *modifiers != keyboard::Modifiers::COMMAND {
+                    state.command_held = None;
+                }
+                released.then(|| canvas::Action::publish(Message::CommandReleased))
             }
             Event::Keyboard(keyboard::Event::KeyPressed {
                 key: keyboard::Key::Named(keyboard::key::Named::Escape),
@@ -234,7 +286,9 @@ impl canvas::Program<Message> for Board<'_> {
                 // A menu is the nearest thing to dismiss. Without this Esc fell
                 // through to the cases below and, in the overlay, put the whole
                 // board away with the menu still on it.
-                if self.context_menu {
+                if self.switching {
+                    Some(canvas::Action::publish(Message::CancelSwitch).and_capture())
+                } else if self.context_menu {
                     Some(canvas::Action::publish(Message::CloseContextMenu).and_capture())
                 } else if self.editing.is_some() {
                     Some(canvas::Action::publish(Message::FinishEditing))
@@ -314,6 +368,8 @@ impl canvas::Program<Message> for Board<'_> {
                         cursor: Point::new(bounds.width / 2.0, bounds.height / 2.0),
                     },
                     Chord::Fit => Message::FitBoard,
+                    Chord::Back => Message::StepBoards(-1),
+                    Chord::Forward => Message::StepBoards(1),
                     Chord::Paste => Message::Paste {
                         // At the cursor, or the middle of the view when it is
                         // off-canvas.
@@ -339,13 +395,19 @@ impl canvas::Program<Message> for Board<'_> {
             // Keep frames coming while the snap animation is mid-flight,
             // even with the mouse holding still.
             Event::Window(iced::window::Event::RedrawRequested(_)) => {
-                let snap = state.snap?;
+                // ⌘ held by itself, waiting on the switcher's time.
+                let wait = state
+                    .command_held
+                    .map(|since| canvas::Action::request_redraw_at(since + SHOW_SWITCHER_AFTER));
+                let Some(snap) = state.snap else {
+                    return wait;
+                };
                 let now = Instant::now();
                 if snap.settled(now) {
                     if snap.direction < 0.0 {
                         state.snap = None;
                     }
-                    None
+                    wait
                 } else {
                     Some(canvas::Action::request_redraw())
                 }

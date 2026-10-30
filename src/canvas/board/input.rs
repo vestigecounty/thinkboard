@@ -21,10 +21,43 @@ pub(super) enum Chord {
     ZoomIn,
     ZoomOut,
     Fit,
+    Back,
+    Forward,
 }
 
 /// How far ⌘= and ⌘− zoom, per press.
 pub(super) const ZOOM_KEY_STEP: f32 = 1.25;
+
+/// How long ⌘ is held by itself before the board switcher's strip shows
+/// (`app::switcher`). Counted from ⌘ going down, so a tap of ⌘[, or ⌘[[ to go
+/// back two, is over before it and switches without anything flashing on
+/// screen. At 150 ms the ordinary lag between letting go of [ and of ⌘ was
+/// often longer.
+pub const SHOW_SWITCHER_AFTER: Duration = Duration::from_millis(300);
+
+/// Whether `event` puts a held ⌘ to some use besides the board switcher — a
+/// chord, a ⌘-click, a ⌘-scroll. That's what tells ⌘ held to make one from ⌘
+/// held to look through the boards: only the second brings the strip up, and
+/// once it's up, the first puts it away.
+pub fn uses_command(event: &Event) -> bool {
+    use keyboard::key::Named;
+    match event {
+        Event::Keyboard(keyboard::Event::KeyPressed { key, physical_key, .. }) => {
+            // A modifier's own press comes with its `ModifiersChanged`, which
+            // is where one joining ⌘ is seen — and ⌘'s own can follow it.
+            let modifier = matches!(
+                key,
+                keyboard::Key::Named(
+                    Named::Super | Named::Meta | Named::Control | Named::Shift | Named::Alt
+                        | Named::AltGraph | Named::Fn | Named::Hyper | Named::CapsLock
+                )
+            );
+            !modifier && !matches!(chord_key(key, *physical_key), Some('[' | ']'))
+        }
+        Event::Mouse(mouse::Event::ButtonPressed(_) | mouse::Event::WheelScrolled { .. }) => true,
+        _ => false,
+    }
+}
 
 /// The latin character a key stands for in a chord, whatever the layout: what
 /// it types, where that's latin — so on AZERTY ⌘, is the comma key wherever it
@@ -82,6 +115,10 @@ pub(super) fn chord(letter: char, shift: bool, has_selection: bool) -> Option<Ch
         ('=' | '+', _) => Chord::ZoomIn,
         ('-' | '_', _) => Chord::ZoomOut,
         ('0', _) => Chord::Fit,
+        // Back and forward through the boards visited, as a browser goes
+        // through pages (`app::switcher`).
+        ('[', false) => Chord::Back,
+        (']', false) => Chord::Forward,
         _ => return None,
     })
 }
@@ -134,6 +171,10 @@ pub struct Interaction {
     /// The off-screen group whose marker the cursor is over, by index — what
     /// shows its name; see [`Board::offscreen`].
     pub(super) marker: Option<usize>,
+    /// When ⌘ went down by itself, while it's held and nothing has used it
+    /// ([`uses_command`]): the board switcher's strip is due
+    /// [`SHOW_SWITCHER_AFTER`] from then.
+    pub(super) command_held: Option<Instant>,
 }
 
 /// A rubber-band selection in progress.
@@ -1285,6 +1326,12 @@ mod chord_tests {
         // Cmd+, opens settings; Cmd+Shift+, (Cmd+<) is someone else's.
         assert_eq!(chord(',', false, false), Some(Chord::Settings));
         assert_eq!(chord(',', true, false), None);
+
+        // Cmd+[ and Cmd+] step through the boards visited; with Shift they're
+        // the tab-switching chords other apps use, and not ours.
+        assert_eq!(chord('[', false, false), Some(Chord::Back));
+        assert_eq!(chord(']', false, false), Some(Chord::Forward));
+        assert_eq!(chord('[', true, false), None);
 
         // The rest don't care either way, and shouldn't start caring quietly.
         for shift in [false, true] {
