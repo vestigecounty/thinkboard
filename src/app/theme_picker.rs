@@ -215,6 +215,7 @@ impl App {
                 keys: Vec::new(),
                 enabled: true,
                 font: None,
+                glyph: None,
                 press: Message::PickTheme(theme.name.clone()),
             })
             .collect()

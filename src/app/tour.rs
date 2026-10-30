@@ -1656,6 +1656,20 @@ fn vault() {
     tour.shot("browser");
     tour.type_text("trip");
     tour.shot("filtered");
+    // Two boards opened, then the palette: the one before is listed first,
+    // above the commands, and a board's name finds the others.
+    tour.named(key::Named::Enter);
+    tour.chord(Modifiers::COMMAND, "o");
+    tour.type_text("q4");
+    tour.named(key::Named::Enter);
+    tour.chord(Modifiers::COMMAND, "k");
+    tour.shot("palette-recent");
+    tour.type_text("reno");
+    tour.shot("palette-found");
+    tour.named(key::Named::Escape);
+    tour.chord(Modifiers::COMMAND, "k");
+    tour.type_text("theme");
+    tour.shot("palette-no-board-matches");
     tour.named(key::Named::Escape);
     let _ = std::fs::remove_dir_all(&root);
 }

@@ -170,7 +170,7 @@ fn is_canvas(name: &str) -> bool {
 
 /// `path` expressed relative to `root` with `/` separators. `None` if it isn't
 /// under `root` at all.
-fn relative_to(root: &Path, path: &Path) -> Option<String> {
+pub fn relative_to(root: &Path, path: &Path) -> Option<String> {
     let rest = path.strip_prefix(root).ok()?;
     let parts: Vec<String> = rest
         .components()
@@ -189,9 +189,14 @@ pub fn rank(entries: &[CanvasEntry], query: &str) -> Vec<usize> {
     if query.is_empty() {
         return (0..entries.len()).collect();
     }
-    fuzzy::rank(entries, |entry| {
-        fuzzy::score_alias(query, entry.name(), Some(&entry.relative))
-    })
+    fuzzy::rank(entries, |entry| score(entry, query))
+}
+
+/// How well `query` matches one board, by [`rank`]'s rule — for the command
+/// palette, which ranks boards among its commands and has to rank them the
+/// way the browser does.
+pub fn score(entry: &CanvasEntry, query: &str) -> Option<i32> {
+    fuzzy::score_alias(query, entry.name(), Some(&entry.relative))
 }
 
 #[cfg(test)]

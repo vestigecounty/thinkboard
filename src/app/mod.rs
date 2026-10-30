@@ -393,8 +393,9 @@ pub(crate) enum Message {
     /// A background vault walk finished: its canvases, and whether it stopped
     /// early at the entry cap.
     VaultScanned(Vec<thinkboard_core::vault::CanvasEntry>, bool),
-    /// Open a canvas from the browser — clicked, or the highlighted one (Enter).
-    OpenVaultCanvas(PathBuf),
+    /// Open a board listed in a panel — the browser's, or the palette's —
+    /// clicked; the browser's highlighted one (Enter).
+    OpenListedBoard(PathBuf),
     OpenSelectedCanvas,
     /// Cmd/Ctrl+O: the browser when a vault is set, the open dialog when not.
     SwitchCanvas,
@@ -816,7 +817,7 @@ impl App {
     /// the images the document names.
     fn build(init: Init) -> Self {
         let Init {
-            config,
+            mut config,
             theme,
             document,
             canvas_path,
@@ -826,6 +827,12 @@ impl App {
             registered_hotkey,
             windowed,
         } = init;
+        // The board launched on is the latest one opened, however it was named
+        // — the config's own, or a path on the command line. Written with the
+        // next change rather than here, which does no I/O.
+        if !scratch {
+            config.remember_board(&canvas_path);
+        }
 
         // The theme's OpenType features live in a global in the vendored
         // renderer, not on `self.theme` — see `install_theme`, which every later
@@ -1291,7 +1298,12 @@ impl App {
             Message::OpenCommandPalette => {
                 let opened = self.open_panel(picker::Panel::Command);
                 self.command_palette = Some(picker::State::default());
-                return opened;
+                // Typing in it finds the vault's boards, as the browser does.
+                let scan = match self.vault_path() {
+                    Some(root) if !self.vault_scanning => self.rescan_vault(root),
+                    _ => Task::none(),
+                };
+                return Task::batch([opened, scan]);
             }
             // --- The type-to-narrow panels, which differ in what fills them and
             // not in how they are driven ---
@@ -1322,14 +1334,15 @@ impl App {
 
             Message::RunCommand(id) => return self.run_command(id),
             Message::RunSelectedCommand => {
-                let id = self
+                let action = self
                     .command_palette
                     .as_ref()
-                    .and_then(|p| command::filtered(self, &p.query).get(p.selected).map(|entry| entry.id));
-                if let Some(id) = id
-                    && id.is_enabled(self)
-                {
-                    return self.run_command(id);
+                    .and_then(|p| command::filtered(self, &p.query).into_iter().nth(p.selected))
+                    .map(|entry| entry.action);
+                match action {
+                    Some(command::Action::Run(id)) if id.is_enabled(self) => return self.run_command(id),
+                    Some(command::Action::Open(path)) => return self.open_listed_board(path),
+                    _ => {}
                 }
             }
 
@@ -1351,10 +1364,7 @@ impl App {
             Message::SwitchCanvas => return self.switch_canvas(),
             Message::OpenVaultBrowser => return self.open_vault_browser(),
             Message::VaultScanned(entries, truncated) => self.vault_scanned(entries, truncated),
-            Message::OpenVaultCanvas(path) => {
-                self.vault_browser = None;
-                return self.open_canvas(path);
-            }
+            Message::OpenListedBoard(path) => return self.open_listed_board(path),
             Message::OpenSelectedCanvas => return self.open_selected_canvas(),
             Message::ChooseVault => return self.choose_vault(),
             Message::OpenVaultDialog => return self.vault_dialog(),

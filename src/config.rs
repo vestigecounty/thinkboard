@@ -31,6 +31,12 @@ pub struct Config {
     /// also *is* the base that a canvas's `file` paths resolve against, which
     /// beats inferring one from the canvas's own location.
     pub vault: String,
+    /// The boards opened lately, latest first and the open one among them —
+    /// what the palette lists above its commands with nothing typed. Kept with
+    /// `canvas` rather than for the session, as the palette's recent commands
+    /// are, because a relaunch shouldn't forget where you were working. The
+    /// app keeps it; nobody's meant to edit it.
+    pub recent_boards: Vec<String>,
     /// Whether clicking empty space on the overlay dismisses the board.
     pub dismiss_on_background_click: bool,
     /// Whether double-clicking empty space adds a card there, as Obsidian's
@@ -252,6 +258,7 @@ impl Default for Config {
         Self {
             canvas: String::new(),
             vault: String::new(),
+            recent_boards: Vec::new(),
             dismiss_on_background_click: true,
             double_click_adds_card: false,
             persist_across_spaces: false,
@@ -519,7 +526,32 @@ impl OverlayBackdrop {
     }
 }
 
+/// How many boards [`Config::recent_boards`] remembers. More than the palette
+/// lists, so one since deleted or moved leaves room for the one before it.
+const RECENT_BOARDS: usize = 10;
+
 impl Config {
+    /// Puts `path` first among the recent boards, and nowhere else in them.
+    pub fn remember_board(&mut self, path: &Path) {
+        let path = path.to_string_lossy().into_owned();
+        self.recent_boards.retain(|recent| *recent != path);
+        self.recent_boards.insert(0, path);
+        self.recent_boards.truncate(RECENT_BOARDS);
+    }
+
+    /// A recent board was renamed: it keeps its place under the new name,
+    /// rather than leaving the old one to be dropped as missing.
+    pub fn rename_board(&mut self, from: &Path, to: &Path) {
+        let (from, to_name) = (from.to_string_lossy(), to.to_string_lossy());
+        // Whatever was remembered under the new name is gone; it's this now.
+        self.recent_boards.retain(|recent| *recent != to_name);
+        for recent in &mut self.recent_boards {
+            if *recent == from {
+                *recent = to.to_string_lossy().into_owned();
+            }
+        }
+    }
+
     /// The API key for the configured endpoint, or empty when it has none.
     pub fn ai_key(&self) -> &str {
         self.ai_api_keys
@@ -859,6 +891,31 @@ mod tests {
     fn missing_config_uses_defaults() {
         let config = Config::load(Some("/nonexistent/thinkboard.json"));
         assert!(config.dismiss_on_background_click);
+    }
+
+    #[test]
+    fn a_board_opened_again_moves_to_the_front_and_isnt_listed_twice() {
+        let mut config = Config::default();
+        for board in ["a", "b", "c", "a"] {
+            config.remember_board(Path::new(board));
+        }
+        assert_eq!(config.recent_boards, ["a", "c", "b"]);
+        for at in 0..2 * RECENT_BOARDS {
+            config.remember_board(Path::new(&at.to_string()));
+        }
+        assert_eq!(config.recent_boards.len(), RECENT_BOARDS, "the oldest fall off");
+    }
+
+    #[test]
+    fn a_renamed_board_keeps_its_place() {
+        let mut config = Config::default();
+        for board in ["stale", "a", "b"] {
+            config.remember_board(Path::new(board));
+        }
+        // Renamed onto a name that was remembered once: one entry, where the
+        // board renamed was.
+        config.rename_board(Path::new("a"), Path::new("stale"));
+        assert_eq!(config.recent_boards, ["b", "stale"]);
     }
 
     #[test]

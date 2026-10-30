@@ -851,10 +851,11 @@ impl App {
     /// change made here.
     ///
     /// The open board stays open whatever the file names — Reload is for
-    /// settings, not for switching boards.
+    /// settings, not for switching boards — and the recent ones stay ours.
     pub(super) fn reload_config(&mut self) -> Task<Message> {
         let mut fresh = Config::load(super::config_path_arg().as_deref());
         fresh.canvas = self.config.canvas.clone();
+        fresh.recent_boards = self.config.recent_boards.clone();
         // As at launch: the vault's Obsidian theme is resolved, not read.
         fresh.adopt_vault_theme();
         let before = std::mem::replace(&mut self.config, fresh);

@@ -103,11 +103,13 @@ pub(super) fn mix(a: Color, b: Color, t: f32) -> Color {
 }
 
 /// The small line drawings that open a floating bar: the find bar's
-/// magnifier, and the prompt (`>_`) the command palette opens with.
-#[derive(Clone, Copy)]
+/// magnifier, and the prompt (`>_`) the command palette opens with — and the
+/// board (two linked cards) that marks one among the palette's commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Glyph {
     Magnifier,
     Prompt,
+    Board,
 }
 
 /// A [`Glyph`], 14 px square, in one colour — a canvas, since the UI font has
@@ -146,6 +148,19 @@ impl<Message> iced::widget::canvas::Program<Message> for Icon {
                 });
                 frame.stroke(&chevron, stroke);
                 frame.stroke(&Path::line(Point::new(7.5, 10.0), Point::new(11.0, 10.0)), stroke);
+            }
+            Glyph::Board => {
+                // Lighter than the others: two boxes at 1.5 fill the square.
+                let stroke = stroke.with_width(1.3).with_line_join(LineJoin::Round);
+                let card = |x, y| Path::rounded_rectangle(Point::new(x, y), iced::Size::new(6.0, 4.5), 1.0.into());
+                frame.stroke(&card(1.0, 1.5), stroke);
+                frame.stroke(&card(7.0, 8.0), stroke);
+                let link = Path::new(|p| {
+                    p.move_to(Point::new(4.0, 6.0));
+                    p.line_to(Point::new(4.0, 10.25));
+                    p.line_to(Point::new(7.0, 10.25));
+                });
+                frame.stroke(&link, stroke);
             }
         }
         vec![frame.into_geometry()]

@@ -250,6 +250,9 @@ pub(super) struct Row<'a> {
     /// panel's. Only the font picker uses it, where a list of family names in
     /// one uniform face would tell you nothing about any of them.
     pub font: Option<iced::Font>,
+    /// A mark before the title, saying what kind of row it is where the list
+    /// mixes them: a board among the palette's commands.
+    pub glyph: Option<super::chrome::Glyph>,
     pub press: Message,
 }
 
@@ -474,13 +477,17 @@ fn list_row<'a>(entry: Row<'a>, selected: bool, look: Look, padding: iced::Paddi
         .line_height(LineHeight::Absolute(18.0.into()))
         .wrapping(text::Wrapping::None)
         .width(Length::Fill);
-    let mut line = row![title]
+    let mut line = row![]
         // A row is a fixed height, and `layout::padded` seats a button's
         // content against its padding rather than centring it — so the line
         // fills that height and centres itself within it.
         .height(Length::Fill)
         .spacing(10)
         .align_y(Alignment::Center);
+    if let Some(glyph) = entry.glyph {
+        line = line.push(canvas(super::chrome::Icon { glyph, color: ct.text_muted }).width(14).height(14));
+    }
+    line = line.push(title);
     // Only when there is one: an empty child would still take the row's
     // spacing, nudging every row without one off-centre.
     if !entry.detail.is_empty() {

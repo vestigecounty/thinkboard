@@ -71,7 +71,11 @@ impl App {
     /// Walks the vault off the UI thread, resolving to [`Message::VaultScanned`]
     /// — the same shape as the rasterizer's and the reclusterer's background
     /// work, which is CPU-bound in a `Task::perform` too.
-    fn rescan_vault(&mut self, root: PathBuf) -> Task<Message> {
+    ///
+    /// The command palette asks for one as well, since typing in it finds
+    /// boards: the browser's bargain, the last scan at once and a fresh one
+    /// behind it.
+    pub(super) fn rescan_vault(&mut self, root: PathBuf) -> Task<Message> {
         self.vault_scanning = true;
         Task::perform(
             async move { vault::scan(&root) },
@@ -81,7 +85,9 @@ impl App {
 
     /// Adopts a finished scan. The highlight is reset rather than carried over:
     /// it indexed the old list, and the row under it may now be a different
-    /// board entirely.
+    /// board entirely. So is the palette's while a search is typed, whose
+    /// boards came from the old list; with nothing typed it lists only the
+    /// recent ones, which no scan changes.
     pub(super) fn vault_scanned(&mut self, entries: Vec<vault::CanvasEntry>, truncated: bool) {
         if truncated {
             eprintln!(
@@ -93,6 +99,11 @@ impl App {
         self.vault_canvases = entries;
         self.vault_scanning = false;
         if let Some(state) = &mut self.vault_browser {
+            state.reset();
+        }
+        if let Some(state) = &mut self.command_palette
+            && !state.query.trim().is_empty()
+        {
             state.reset();
         }
     }
@@ -113,12 +124,17 @@ impl App {
     /// Opens the highlighted canvas (Enter).
     pub(super) fn open_selected_canvas(&mut self) -> Task<Message> {
         match self.selected_canvas() {
-            Some(path) => {
-                self.vault_browser = None;
-                self.open_canvas(path)
-            }
+            Some(path) => self.open_listed_board(path),
             None => Task::none(),
         }
+    }
+
+    /// Opens a board picked from a list — the browser's or the palette's —
+    /// closing whichever listed it.
+    pub(super) fn open_listed_board(&mut self, path: PathBuf) -> Task<Message> {
+        self.vault_browser = None;
+        self.command_palette = None;
+        self.open_canvas(path)
     }
 
     /// Asks for the vault folder. Like the board dialogs, the always-on-top
@@ -293,7 +309,8 @@ impl App {
                 keys: Vec::new(),
                 enabled: true,
                 font: None,
-                press: Message::OpenVaultCanvas(entry.path.clone()),
+                glyph: None,
+                press: Message::OpenListedBoard(entry.path.clone()),
             })
             .collect();
 

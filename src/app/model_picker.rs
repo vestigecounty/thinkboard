@@ -198,6 +198,7 @@ impl App {
                 keys: Vec::new(),
                 enabled: true,
                 font: None,
+                glyph: None,
                 press: Message::PickModel(model.id.clone()),
             })
             .collect();

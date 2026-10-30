@@ -1435,7 +1435,7 @@ fn switch_canvas_is_only_offered_once_there_is_a_vault() {
 /// The palette with nothing typed: its rows by id, and its sections' labels.
 fn browsed(app: &App) -> (Vec<command::CommandId>, Vec<&'static str>) {
     let listing = command::listing(app, "");
-    (listing.entries.iter().map(|entry| entry.id).collect(), listing.headers.iter().map(|(_, label)| *label).collect())
+    (listing.entries.iter().filter_map(command::Entry::command).collect(), listing.headers.iter().map(|(_, label)| *label).collect())
 }
 
 #[test]
@@ -1465,7 +1465,7 @@ fn what_was_run_last_comes_first_and_only_once() {
     send(&mut app, Message::RunCommand(CommandId::ChooseFont));
     send(&mut app, Message::RunCommand(CommandId::FitBoard));
     let (ids, sections) = browsed(&app);
-    assert_eq!(sections.first(), Some(&"Recent"));
+    assert_eq!(sections.first(), Some(&"Recent commands"));
     assert_eq!(ids[..2], [CommandId::FitBoard, CommandId::ChooseFont], "latest first");
     assert_eq!(ids.iter().filter(|&&id| id == CommandId::FitBoard).count(), 1, "not again under Board");
 
@@ -1481,10 +1481,10 @@ fn enter_runs_the_row_highlighted_under_the_headers() {
     let mut app = app_with(two_nodes(), Vec::new());
     send(&mut app, Message::OpenCommandPalette);
     send(&mut app, Message::PanelNav(picker::Panel::Command, picker::Nav::Step(1)));
-    let highlighted = command::filtered(&app, "")[1].id;
-    assert_eq!(highlighted, command::CommandId::FitBoard);
+    let highlighted = command::filtered(&app, "")[1].command();
+    assert_eq!(highlighted, Some(command::CommandId::FitBoard));
     send(&mut app, Message::RunSelectedCommand);
-    assert_eq!(app.recent_commands.first(), Some(&highlighted));
+    assert_eq!(app.recent_commands.first().copied(), highlighted);
 }
 
 #[test]
@@ -1493,10 +1493,120 @@ fn a_search_lists_what_cant_run_last_and_says_why() {
     // "card" finds the selection's commands, which can't run with nothing
     // selected, and "Add card", which can — first, whatever the ranking.
     let found = command::filtered(&app, "card");
-    let first_waiting = found.iter().position(|entry| !entry.id.is_enabled(&app)).expect("one is waiting");
-    assert!(found[..first_waiting].iter().any(|entry| entry.id == command::CommandId::AddNode));
-    assert!(found[first_waiting..].iter().all(|entry| !entry.id.is_enabled(&app)));
+    let first_waiting = found.iter().position(|entry| !entry.is_enabled(&app)).expect("one is waiting");
+    assert!(found[..first_waiting].iter().any(|entry| entry.command() == Some(command::CommandId::AddNode)));
+    assert!(found[first_waiting..].iter().all(|entry| !entry.is_enabled(&app)));
     assert!(command::listing(&app, "card").headers.is_empty(), "a search has no sections");
+}
+
+// --- Boards in the palette ---
+
+/// A vault of real, empty boards at `relative` paths, for tests that open
+/// them — the palette offers a recent board only while its file is there.
+fn board_vault(name: &str, relative: &[&str]) -> PathBuf {
+    let root = std::env::temp_dir().join(format!("tb-boards-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&root);
+    for path in relative {
+        let file = root.join(path);
+        std::fs::create_dir_all(file.parent().expect("a folder")).unwrap();
+        std::fs::write(&file, r#"{"nodes":[],"edges":[]}"#).unwrap();
+    }
+    root
+}
+
+/// What the palette lists for `query`: each row's title and detail, and its
+/// sections' labels.
+fn palette_rows(app: &App, query: &str) -> (Vec<(String, String)>, Vec<&'static str>) {
+    let listing = command::listing(app, query);
+    let rows = listing.entries.iter().map(|entry| (entry.title.to_string(), entry.detail.to_string())).collect();
+    (rows, listing.headers.iter().map(|(_, label)| *label).collect())
+}
+
+#[test]
+fn the_boards_opened_last_come_first_and_enter_switches_back() {
+    let boards = ["Work/Kanban.canvas", "Reading.canvas", "Trips/Lisbon.canvas"];
+    let root = board_vault("recent", &boards);
+    let mut app = app_with(Vec::new(), Vec::new());
+    app.config.vault = root.to_string_lossy().into_owned();
+    for board in boards {
+        send(&mut app, Message::OpenListedBoard(root.join(board)));
+    }
+    send(&mut app, Message::RunCommand(command::CommandId::FitBoard));
+    send(&mut app, Message::OpenCommandPalette);
+
+    let (rows, sections) = palette_rows(&app, "");
+    assert_eq!(sections[..2], ["Recent boards", "Recent commands"]);
+    // Latest first, by the folder they're in — and not the one that's open,
+    // which there's nothing to switch to.
+    let named = |name: &str, folder: &str| (name.to_owned(), folder.to_owned());
+    assert_eq!(rows[..3], [named("Reading", ""), named("Kanban", "Work"), named("Fit board to view", "")]);
+    let state = app.command_palette.as_ref().expect("the palette");
+    assert_eq!(command::rows(&app, state).0[0].glyph, Some(chrome::Glyph::Board), "marked as a board");
+
+    // So the board before this one is the palette and Enter away, and the
+    // same again comes back.
+    send(&mut app, Message::RunSelectedCommand);
+    assert_eq!(app.canvas_path, root.join("Reading.canvas"));
+    assert!(app.command_palette.is_none());
+    send(&mut app, Message::OpenCommandPalette);
+    send(&mut app, Message::RunSelectedCommand);
+    assert_eq!(app.canvas_path, root.join("Trips/Lisbon.canvas"));
+    assert_eq!(app.recent_commands.first(), Some(&command::CommandId::FitBoard), "opening a board isn't a command");
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn a_board_since_deleted_or_moved_isnt_offered() {
+    let root = board_vault("gone", &["Old.canvas", "New.canvas"]);
+    let mut app = app_with(Vec::new(), Vec::new());
+    send(&mut app, Message::OpenListedBoard(root.join("Old.canvas")));
+    send(&mut app, Message::OpenListedBoard(root.join("New.canvas")));
+    assert_eq!(palette_rows(&app, "").1.first(), Some(&"Recent boards"));
+
+    std::fs::remove_file(root.join("Old.canvas")).unwrap();
+    assert_ne!(palette_rows(&app, "").1.first(), Some(&"Recent boards"));
+    let _ = std::fs::remove_dir_all(&root);
+}
+
+#[test]
+fn the_board_launched_on_counts_as_opened() {
+    let launched = PathBuf::from("/boards/Launch.canvas");
+    let app = App::build(Init {
+        config: config::Config::default(),
+        theme: ColorTheme::default(),
+        document: CanvasDocument { nodes: Vec::new(), edges: Vec::new(), extra: serde_json::Map::new() },
+        canvas_path: launched.clone(),
+        base_path: PathBuf::from("/boards"),
+        scratch: false,
+        hotkey_manager: None,
+        registered_hotkey: None,
+        windowed: true,
+    });
+    assert_eq!(app.config.recent_boards, [launched.to_string_lossy()]);
+}
+
+#[test]
+fn a_search_finds_boards_in_a_section_that_leads_when_it_matches_better() {
+    let mut app = app_with_vault(&["Projects/Roadmap.canvas", "Themes.canvas"]);
+    // A board's name is the better match: it leads, and Enter would open it.
+    let (rows, sections) = palette_rows(&app, "road");
+    assert_eq!(sections.first(), Some(&"Boards"));
+    assert_eq!(rows[0], ("Roadmap".to_owned(), "Projects".to_owned()));
+    assert_eq!(command::filtered(&app, "road")[0].action, command::Action::Open(PathBuf::from("/vault/Projects/Roadmap.canvas")));
+
+    // A tie goes to the commands, so a command typed by name still runs.
+    let (rows, sections) = palette_rows(&app, "theme");
+    assert_eq!(sections, ["Commands", "Boards"]);
+    assert_eq!(rows[0].0, "Change theme…");
+
+    // Nothing but commands matching is the search it always was.
+    assert!(palette_rows(&app, "undo").1.is_empty());
+
+    // The board that's open isn't found — there's nothing to switch to — and
+    // with no board left, no sections either.
+    app.canvas_path = PathBuf::from("/vault/Themes.canvas");
+    app.scratch = false;
+    assert!(palette_rows(&app, "theme").1.is_empty());
 }
 
 // --- Following the vault's Obsidian theme ---
@@ -2119,7 +2229,7 @@ fn the_palette_finds_a_settings_choice_and_applies_it() {
     let first = hits.first().expect("a hit");
     assert_eq!(first.title, "Link style › Mermaid");
     assert_eq!(first.detail, "", "not the one in force yet");
-    run(&mut app, first.id);
+    run(&mut app, first.command().expect("a command"));
     assert_eq!(crate::config::LinkStyle::of(&app.config), crate::config::LinkStyle::Mermaid);
 
     // Searched by the setting, every choice is there, the one in force marked.
@@ -2135,13 +2245,13 @@ fn the_palette_flips_a_switch_and_opens_the_form_at_anything_else() {
     // A switch says its state, and flips.
     let scrollbars = command::filtered(&app, "card scrollbars").into_iter().next().expect("a hit");
     assert_eq!((scrollbars.title.as_ref(), scrollbars.detail.as_ref()), ("Card scrollbars", "Off"));
-    run(&mut app, scrollbars.id);
+    run(&mut app, scrollbars.command().expect("a command"));
     assert!(app.config.card_scrollbars);
 
     // A number is set in the form: it opens there, on its tab, its row focused.
     let inertia = command::filtered(&app, "pan inertia").into_iter().next().expect("a hit");
     assert_eq!(inertia.detail, "Canvas");
-    run(&mut app, inertia.id);
+    run(&mut app, inertia.command().expect("a command"));
     assert!(app.settings_overlay);
     assert_eq!(app.settings_tab, settings::Tab::Canvas);
     assert_eq!(app.settings_focus, Some(settings::Field::PanInertia));
@@ -2152,14 +2262,14 @@ fn settings_join_a_search_not_the_bare_palette() {
     let app = app_with(two_nodes(), Vec::new());
     // Nothing typed: the commands, as a list to browse.
     assert!(command::filtered(&app, "").iter().all(|entry| !matches!(
-        entry.id,
-        command::CommandId::Setting(_) | command::CommandId::Choice(..)
+        entry.command(),
+        Some(command::CommandId::Setting(_) | command::CommandId::Choice(..))
     )));
     // A setting that can't act yet says what would let it.
     let mut app = app;
     app.config.ai_url.clear();
     let thinking = command::filtered(&app, "think first").into_iter().next().expect("a hit");
-    assert!(thinking.id.unavailable(&app).is_some_and(|why| why.contains("AI provider")));
+    assert!(thinking.unavailable(&app).is_some_and(|why| why.contains("AI provider")));
 }
 
 #[test]

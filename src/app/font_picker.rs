@@ -192,6 +192,7 @@ impl App {
                     weight: crate::theme::iced_weight(entry.weight),
                     ..iced::Font::DEFAULT
                 }),
+                glyph: None,
                 press: Message::PickFont(entry.name.clone()),
             })
             .collect();

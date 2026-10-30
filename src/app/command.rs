@@ -15,17 +15,27 @@
 //!
 //! **With nothing typed it's a menu; with something typed, a search.** Empty,
 //! it lists what can run now in sections ([`Section`]) — the selection's own
-//! commands first when there is one, then the last few run, then the rest by
-//! topic — and leaves out what can't run, which a menu would only grey. Typed
-//! into, the sections fall away for one ranked list, and what can't run comes
-//! back, last, saying why: searched for by name, it should say what it needs.
+//! commands first when there is one, then the boards opened last and the
+//! commands run last, then the rest by topic — and leaves out what can't run,
+//! which a menu would only grey. Typed into, the sections fall away for one
+//! ranked list, and what can't run comes back, last, saying why: searched for
+//! by name, it should say what it needs.
+//!
+//! **Boards are found here too**, so switching back to one is the palette
+//! and Enter rather than the browser and its name. A search ranks them the
+//! way the browser does — the recent ones and the vault's — in a section of
+//! their own, which comes first when it holds the better match: a board typed
+//! by name opens, and a command typed by name still runs.
 
 use std::borrow::Cow;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
 use iced::Element;
+use thinkboard_core::vault;
 
 use super::App;
+use super::chrome::Glyph;
 use super::picker::{self, Panel, Row, Shell};
 use super::settings::{self, Field, Kind};
 use crate::Message;
@@ -283,26 +293,60 @@ static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
     ]
 });
 
-/// How many of the commands run last are listed first.
+/// How many of the commands run last are listed first — and of the boards
+/// opened last, above them.
 pub(crate) const RECENT: usize = 3;
 
-/// One row of the palette: a command, or a setting from the index.
+/// How many boards a search lists. It finds a board rather than browsing
+/// them — "Switch board…" lists every one — and a vault's hundreds would bury
+/// the commands under any short query.
+const BOARDS_FOUND: usize = 5;
+
+/// What a row does when it's chosen.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) enum Action {
+    Run(CommandId),
+    /// Opens the board at this path.
+    Open(PathBuf),
+}
+
+/// One row of the palette: a command, a setting from the index, or a board.
 pub(crate) struct Entry {
-    pub id: CommandId,
+    pub action: Action,
     pub title: Cow<'static, str>,
     /// Terms it's found by but doesn't show.
     pub keywords: Cow<'static, str>,
     /// What the right of the row says: a switch's state; "current" on the
-    /// choice in force; the tab a row opens on.
+    /// choice in force; the tab a row opens on; the folder a board is in.
     pub detail: Cow<'static, str>,
     /// A command's shortcut, as caps.
     pub keys: Vec<&'static str>,
 }
 
+impl Entry {
+    /// The command it runs — `None` for a board.
+    pub(crate) fn command(&self) -> Option<CommandId> {
+        match self.action {
+            Action::Run(id) => Some(id),
+            Action::Open(_) => None,
+        }
+    }
+
+    /// Why it can't act now, or `None` when it can. A board always can: one
+    /// that's gone isn't listed.
+    pub(super) fn unavailable(&self, app: &App) -> Option<&'static str> {
+        self.command().and_then(|id| id.unavailable(app))
+    }
+
+    pub(super) fn is_enabled(&self, app: &App) -> bool {
+        self.unavailable(app).is_none()
+    }
+}
+
 impl Command {
     fn entry(&self) -> Entry {
         Entry {
-            id: self.id,
+            action: Action::Run(self.id),
             title: self.title.into(),
             keywords: self.keywords.into(),
             detail: "".into(),
@@ -324,7 +368,7 @@ fn setting_entries(app: &App) -> Vec<Entry> {
         let keywords = format!("setting settings {tab} {}", field.keywords());
         match field.kind() {
             Kind::Switch => entries.push(Entry {
-                id: CommandId::Setting(field),
+                action: Action::Run(CommandId::Setting(field)),
                 title: field.name().into(),
                 keywords: keywords.into(),
                 detail: if app.setting_bool(field) { "On" } else { "Off" }.into(),
@@ -333,7 +377,7 @@ fn setting_entries(app: &App) -> Vec<Entry> {
             Kind::Choice => {
                 for (at, choice) in app.choices(field).into_iter().enumerate() {
                     entries.push(Entry {
-                        id: CommandId::Choice(field, at as u8),
+                        action: Action::Run(CommandId::Choice(field, at as u8)),
                         title: format!("{} › {}", field.name(), choice.label).into(),
                         keywords: format!("{keywords} {}", choice.keywords).into(),
                         detail: if choice.current { "current" } else { "" }.into(),
@@ -344,7 +388,7 @@ fn setting_entries(app: &App) -> Vec<Entry> {
             // Each has its own command ("Change theme…"), which opens it.
             Kind::Picker => {}
             Kind::Row => entries.push(Entry {
-                id: CommandId::Setting(field),
+                action: Action::Run(CommandId::Setting(field)),
                 title: field.name().into(),
                 keywords: keywords.into(),
                 detail: tab.into(),
@@ -355,13 +399,17 @@ fn setting_entries(app: &App) -> Vec<Entry> {
     entries
 }
 
-/// `entries` matching `query`, best first. Title first, keywords behind it —
-/// the shape every panel here ranks by — and a stable sort, so the order
-/// they're given in breaks ties.
+/// How well `query` matches `entry`: on its title, falling back to its
+/// keywords — the shape every panel here ranks by. A board's keywords are its
+/// path in the vault, so it scores here as it does in the browser.
+fn score(query: &str, entry: &Entry) -> Option<i32> {
+    thinkboard_core::fuzzy::score_alias(query, &entry.title, Some(&entry.keywords))
+}
+
+/// `entries` matching `query`, best first, by [`score`] — and a stable sort,
+/// so the order they're given in breaks ties.
 fn rank(entries: Vec<Entry>, query: &str) -> Vec<Entry> {
-    let order = thinkboard_core::fuzzy::rank(&entries, |entry| {
-        thinkboard_core::fuzzy::score_alias(query, &entry.title, Some(&entry.keywords))
-    });
+    let order = thinkboard_core::fuzzy::rank(&entries, |entry| score(query, entry));
     let mut entries: Vec<Option<Entry>> = entries.into_iter().map(Some).collect();
     order.into_iter().filter_map(|at| entries.get_mut(at).and_then(Option::take)).collect()
 }
@@ -386,7 +434,7 @@ impl Listing {
 
     /// Whether `id` is listed already: no row appears twice.
     fn has(&self, id: CommandId) -> bool {
-        self.entries.iter().any(|entry| entry.id == id)
+        self.entries.iter().any(|entry| entry.command() == Some(id))
     }
 }
 
@@ -403,7 +451,7 @@ pub(crate) fn filtered(app: &App, query: &str) -> Vec<Entry> {
 
 /// Nothing typed: what can run now, in sections. The settings join a search,
 /// not the list someone browses to see what the app does — except one run
-/// lately, which comes back under Recent.
+/// lately, which comes back under Recent commands.
 fn browse(app: &App) -> Listing {
     let mut listing = Listing::default();
     let runnable = |command: &&Command| command.id.is_enabled(app);
@@ -413,6 +461,8 @@ fn browse(app: &App) -> Listing {
         let entries = of(Section::Selection).filter(runnable).map(Command::entry).collect();
         listing.push(Section::Selection.label(), entries);
     }
+    let boards = recent_boards(app).iter().take(RECENT).map(board_entry).collect();
+    listing.push("Recent boards", boards);
     let recent = app
         .recent_commands
         .iter()
@@ -420,7 +470,7 @@ fn browse(app: &App) -> Listing {
         .filter_map(|&id| entry_for(app, id))
         .take(RECENT)
         .collect();
-    listing.push("Recent", recent);
+    listing.push("Recent commands", recent);
     for topic in Section::TOPICS {
         let entries = of(topic).filter(runnable).filter(|command| !listing.has(command.id)).map(Command::entry).collect();
         listing.push(topic.label(), entries);
@@ -430,19 +480,94 @@ fn browse(app: &App) -> Listing {
 
 /// Something typed: commands and settings ranked together, with what can't
 /// run now after what can — each keeping its rank — so it's found, and says
-/// why, but isn't the first thing Enter would do.
+/// why, but isn't the first thing Enter would do. Boards that match are a
+/// section of their own, and then the commands are one too.
 fn search(app: &App, query: &str) -> Listing {
     let mut entries: Vec<Entry> = command_entries().collect();
     entries.extend(setting_entries(app));
-    let (ready, waiting): (Vec<Entry>, Vec<Entry>) = rank(entries, query).into_iter().partition(|entry| entry.id.is_enabled(app));
-    Listing { entries: ready.into_iter().chain(waiting).collect(), headers: Vec::new() }
+    let (ready, waiting): (Vec<Entry>, Vec<Entry>) = rank(entries, query).into_iter().partition(|entry| entry.is_enabled(app));
+    let commands: Vec<Entry> = ready.into_iter().chain(waiting).collect();
+
+    // Ranked before any becomes a row: a vault can hold thousands, and only a
+    // few are listed.
+    let recent = recent_boards(app);
+    let rest = app.vault_canvases.iter().filter(|board| {
+        !is_open(app, &board.path) && !recent.iter().any(|seen| seen.path == board.path)
+    });
+    let candidates: Vec<&vault::CanvasEntry> = recent.iter().chain(rest).collect();
+    let order = thinkboard_core::fuzzy::rank(&candidates, |board| vault::score(board, query));
+    let boards: Vec<Entry> = order.into_iter().take(BOARDS_FOUND).map(|at| board_entry(candidates[at])).collect();
+    if boards.is_empty() {
+        return Listing { entries: commands, headers: Vec::new() };
+    }
+
+    // The better match first, so that Enter does what was typed. A tie goes
+    // to the commands, which is all the palette found before it found boards;
+    // one that can't run is no match for Enter's purposes.
+    let best = |entries: &[Entry]| entries.first().filter(|entry| entry.is_enabled(app)).and_then(|entry| score(query, entry));
+    let mut listing = Listing::default();
+    if best(&boards) > best(&commands) {
+        listing.push("Boards", boards);
+        listing.push("Commands", commands);
+    } else {
+        listing.push("Commands", commands);
+        listing.push("Boards", boards);
+    }
+    listing
 }
 
 /// The row a command or setting is listed as — for Recent, which holds ids.
 fn entry_for(app: &App, id: CommandId) -> Option<Entry> {
     match id {
-        CommandId::Setting(_) | CommandId::Choice(..) => setting_entries(app).into_iter().find(|entry| entry.id == id),
+        CommandId::Setting(_) | CommandId::Choice(..) => {
+            setting_entries(app).into_iter().find(|entry| entry.action == Action::Run(id))
+        }
         _ => COMMANDS.iter().find(|command| command.id == id).map(Command::entry),
+    }
+}
+
+/// Whether `path` is the board on screen — which there's nothing to switch to.
+fn is_open(app: &App, path: &Path) -> bool {
+    !app.scratch && path == app.canvas_path
+}
+
+/// The boards opened lately that the palette can switch to, latest first,
+/// each named as the vault's walk would name it. Not the open one, nor one
+/// since deleted or moved, which would only fail to open.
+fn recent_boards(app: &App) -> Vec<vault::CanvasEntry> {
+    let root = app.vault_path();
+    app.config
+        .recent_boards
+        .iter()
+        .map(PathBuf::from)
+        .filter(|path| !is_open(app, path) && path.is_file())
+        .map(|path| board_named(path, root.as_deref()))
+        .collect()
+}
+
+/// `path` as the vault's walk would have found it: by its place in the vault
+/// when it's in one, and otherwise by its file under the folder it's in —
+/// which is what tells two boards of the same name apart.
+fn board_named(path: PathBuf, vault: Option<&Path>) -> vault::CanvasEntry {
+    let relative = vault.and_then(|root| vault::relative_to(root, &path)).unwrap_or_else(|| {
+        let file = path.file_name().unwrap_or_default().to_string_lossy();
+        match path.parent().and_then(Path::file_name) {
+            Some(folder) => format!("{}/{file}", folder.to_string_lossy()),
+            None => file.into_owned(),
+        }
+    });
+    vault::CanvasEntry { path, relative, modified: None }
+}
+
+/// A board as a palette row: its name, and the folder it's in, as the
+/// browser lists it.
+fn board_entry(board: &vault::CanvasEntry) -> Entry {
+    Entry {
+        action: Action::Open(board.path.clone()),
+        title: board.name().to_owned().into(),
+        keywords: board.relative.clone().into(),
+        detail: board.folder().to_owned().into(),
+        keys: Vec::new(),
     }
 }
 
@@ -464,7 +589,11 @@ pub(super) fn rows<'a>(app: &'a App, state: &picker::State) -> (Vec<Row<'a>>, Ve
     let rows = entries
         .into_iter()
         .map(|entry| {
-            let unavailable = entry.id.unavailable(app);
+            let unavailable = entry.unavailable(app);
+            let (glyph, press) = match entry.action {
+                Action::Run(id) => (None, Message::RunCommand(id)),
+                Action::Open(path) => (Some(Glyph::Board), Message::OpenListedBoard(path)),
+            };
             Row {
                 matched: thinkboard_core::fuzzy::matched(&state.query, &entry.title),
                 title: entry.title,
@@ -474,7 +603,8 @@ pub(super) fn rows<'a>(app: &'a App, state: &picker::State) -> (Vec<Row<'a>>, Ve
                 keys: if unavailable.is_some() { Vec::new() } else { entry.keys },
                 enabled: unavailable.is_none(),
                 font: None,
-                press: Message::RunCommand(entry.id),
+                glyph,
+                press,
             }
         })
         .collect();
@@ -484,15 +614,23 @@ pub(super) fn rows<'a>(app: &'a App, state: &picker::State) -> (Vec<Row<'a>>, Ve
 /// The palette panel: a focused input over the listing.
 pub(super) fn view<'a>(app: &'a App, state: &'a picker::State) -> Element<'a, Message> {
     let (rows, headers) = rows(app, state);
+    // It says it finds boards only where it has some to find.
+    let placeholder = if app.has_vault() || !recent_boards(app).is_empty() {
+        "Type a command or board"
+    } else {
+        "Run a command…"
+    };
+    // The foot names what Enter does, and on a board that's opening it.
+    let opens = rows.get(state.selected).is_some_and(|row| matches!(row.press, Message::OpenListedBoard(_)));
     picker::view(
         app,
         state,
         Shell {
             panel: Panel::Command,
-            placeholder: "Run a command…",
-            glyph: super::chrome::Glyph::Prompt,
+            placeholder,
+            glyph: Glyph::Prompt,
             on_submit: Message::RunSelectedCommand,
-            verb: "Run",
+            verb: if opens { "Open" } else { "Run" },
             empty: "No matching command".into(),
             headers,
         },
@@ -505,7 +643,7 @@ mod tests {
     use super::*;
 
     fn commands(query: &str) -> Vec<CommandId> {
-        rank(command_entries().collect(), query).into_iter().map(|entry| entry.id).collect()
+        rank(command_entries().collect(), query).iter().filter_map(Entry::command).collect()
     }
 
     #[test]

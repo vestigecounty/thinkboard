@@ -487,8 +487,10 @@ impl App {
         self.interacted = false;
         self.camera.fit(self.content_bounds());
 
-        // Remember the working board so the next launch skips the scratch board.
+        // Remember the working board so the next launch skips the scratch board,
+        // and among the recent ones the palette offers to switch back to.
         self.config.canvas = self.canvas_path.to_string_lossy().into_owned();
+        self.config.remember_board(&self.canvas_path);
         self.persist_config();
 
         Task::batch([self.refresh_snapshots(), self.schedule_recluster()])
@@ -547,6 +549,7 @@ impl App {
             self.disk.missing = true;
             return Task::none();
         };
+        self.config.rename_board(&self.canvas_path, &path);
         self.canvas_path = path;
         // The next launch opens it under its new name.
         self.config.canvas = self.canvas_path.to_string_lossy().into_owned();

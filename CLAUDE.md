@@ -330,6 +330,16 @@ search-only; listed, they were half the selection's section. A shortcut is
 written once (`command::Keys`) and drawn as the platform spells it — ⇧⌘Z on a
 Mac, Ctrl Shift Z elsewhere — and only shortcuts that exist are drawn.
 
+**Boards are found in the palette too.** Empty, the boards opened last come
+before the commands run last — never the open one, so ⌘K ↵ is back to the board
+before. They're `config.recent_boards`, kept across launches as `canvas` is
+(recorded in `open_canvas`, at launch, and on a followed rename), unlike the
+session's recent commands. A search ranks the recent and the vault's boards by
+the browser's rule (`vault::score`) into a section of their own, at most five,
+which leads only when it holds the better match: a tie goes to the commands, so
+a command typed by name still runs. With no board matching, it's the search it
+always was, with no sections.
+
 **`picker::Panel` names which panel a message is about.** Typing, arrowing,
 scrolling and dismissing are the same four interactions everywhere, so they are
 one message each (`PanelInput`, `PanelNav`, `PanelScrolled`, `ClosePanel`)
