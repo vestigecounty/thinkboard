@@ -71,6 +71,9 @@ ksni = "0.3"
 # our graph routes onto Tokio. See pick_canvas_file in app/startup.rs. (net/time
 # drivers come from zbus's own tokio features via unification.)
 tokio = { version = "1", features = ["rt-multi-thread"] }
+# The summon shortcut under Wayland, through the desktop's GlobalShortcuts
+# portal (app/summon.rs). Already in the graph for rfd's file dialogs.
+ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

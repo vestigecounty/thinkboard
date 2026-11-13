@@ -66,7 +66,7 @@ fn finish_welcome(document: &mut CanvasDocument, vaults: &[thinkboard_core::obsi
         }
     }
     // Off macOS the hotkey *is* the way in, said in the one card; the second
-    // has nothing left to add.
+    // has nothing left to add — unless the desktop keeps the key (Wayland).
     if hotkey.is_none() {
         document.nodes.retain(|node| node.id != "tip_summon_hotkey");
         document.edges.retain(|edge| edge.from_node != "tip_summon_hotkey" && edge.to_node != "tip_summon_hotkey");
@@ -164,6 +164,19 @@ fn summon_tip() -> (&'static str, Option<&'static str>) {
     }
     #[cfg(not(target_os = "macos"))]
     {
+        // Under Wayland the desktop keeps the shortcut and confirms it the
+        // first time, so it's changed there, not in Settings — and where it
+        // can't keep one, a key the desktop binds to a command does.
+        if super::summon::on_wayland() {
+            return (
+                "Press **Pause** anytime to summon or dismiss the board over whatever you're doing. \
+                 Your desktop asks you to confirm it, or choose another, the first time.",
+                Some(
+                    "Your desktop keeps the shortcut: change it in its keyboard settings. Where it \
+                     can't keep one, bind `thinkboard --toggle` there instead, or use the tray icon.",
+                ),
+            );
+        }
         (
             "Press **Pause** anytime to summon or dismiss the board over whatever you're doing. \
              Set your own shortcut in Settings.",
@@ -908,6 +921,11 @@ mod tests {
             // them to do something impossible. The hotkey is the aside.
             assert!(tip.starts_with("Swipe") && tip.contains("four fingers"), "{tip}");
             assert!(hotkey.is_some_and(|hotkey| hotkey.contains("Pause")), "the hotkey, beside it");
+        } else if super::super::summon::on_wayland() {
+            // The desktop keeps the shortcut, so the aside says where it's
+            // changed, and what to do where it can't keep one.
+            assert!(tip.contains("Pause") && tip.contains("confirm"), "{tip}");
+            assert!(hotkey.is_some_and(|hotkey| hotkey.contains("--toggle")), "the way in without the portal");
         } else {
             assert!(tip.contains("Pause"), "{tip}");
             assert!(!tip.contains("four fingers"), "no trackpad gesture off macOS: {tip}");

@@ -31,6 +31,7 @@ use iced::{Alignment, Border, Color, Element, Fill, Font, Padding, Point, Rectan
 
 use super::{FILE_ONLY, Field, Msg, PROVIDER_OFF, Tab, current_preset, hand_picked_css, is_local};
 use crate::app::chrome::mix;
+use crate::app::summon::Portal;
 use crate::app::{App, Message};
 use crate::config::{ArrowTip, Config, LinkStyle, OverlayBackdrop};
 use crate::platform::BackdropPicture;
@@ -274,13 +275,16 @@ fn general(app: &App, look: Look) -> Vec<Element<'_, Message>> {
         if overlay { setting } else { setting.enabled(false).note(quiet(look, "Overlay only.")) }
     };
 
+    let mut hotkey_row = setting(Field::SummonHotkey)
+        .control(hotkey(app, look))
+        .desc("Shows and hides the board from any app.");
+    // Where the desktop keeps the shortcut, there's nothing here to change it
+    // with, so where it can be changed is said always rather than on focus.
+    if let Some(portal) = &app.summon_portal {
+        hotkey_row = hotkey_row.note(quiet(look, portal_words(portal)));
+    }
     #[cfg_attr(not(target_os = "macos"), allow(unused_mut))]
-    let mut summon = vec![
-        setting(Field::SummonHotkey)
-            .control(hotkey(app, look))
-            .desc("Shows and hides the board from any app.")
-            .build(app, look),
-    ];
+    let mut summon = vec![hotkey_row.build(app, look)];
     // Raw-trackpad gesture, macOS-only (uses a private framework).
     #[cfg(target_os = "macos")]
     summon.push(
@@ -1036,8 +1040,16 @@ fn hotkey<'a>(app: &App, look: Look) -> Element<'a, Message> {
             .center_y(CONTROL)
             .into();
     }
-    let current = app.config.summon_hotkey.trim();
-    let shown = if current.is_empty() { "None".to_owned() } else { current.to_owned() };
+    let suggested = app.config.summon_hotkey.trim();
+    let shown = match &app.summon_portal {
+        // The desktop's own name for the key, once it has one.
+        Some(Portal::Bound(key)) if !key.is_empty() => key.as_str(),
+        Some(Portal::Bound(_) | Portal::Missing) => "",
+        // While asking, the key suggested to it.
+        Some(Portal::Asking) => app.summon_suggested.trim(),
+        None => suggested,
+    };
+    let shown = if shown.is_empty() { "None".to_owned() } else { shown.to_owned() };
     let cap = container(say(shown, Type::Small, look.mono, look.text))
         .padding([0, 8])
         .height(CONTROL)
@@ -1046,6 +1058,9 @@ fn hotkey<'a>(app: &App, look: Look) -> Element<'a, Message> {
             border: Border { color: Color { a: 0.2, ..look.text }, width: 1.0, radius: 5.0.into() },
             ..container::Style::default()
         });
+    if app.summon_portal.is_some() {
+        return cap.into();
+    }
     row![
         cap,
         act(look, "Record…", Message::RecordHotkey, plain(look)),
@@ -1053,6 +1068,19 @@ fn hotkey<'a>(app: &App, look: Look) -> Element<'a, Message> {
     .spacing(8)
     .align_y(Alignment::Center)
     .into()
+}
+
+/// What the summon row says where the desktop keeps the shortcut (Wayland).
+fn portal_words(portal: &Portal) -> &'static str {
+    match portal {
+        Portal::Asking => "Waiting for your desktop to confirm it.",
+        Portal::Bound(key) if key.is_empty() => "Not set. Give ThinkBoard one in your desktop's keyboard settings.",
+        Portal::Bound(_) => "Kept by your desktop. Change it in its keyboard settings.",
+        Portal::Missing => {
+            "Your desktop doesn't give apps a shortcut. Bind the command thinkboard --toggle in its \
+             keyboard settings, or use the tray icon."
+        }
+    }
 }
 
 /// Two or three choices side by side, the chosen one raised.

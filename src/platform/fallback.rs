@@ -1,7 +1,7 @@
 //! No-op platform backend for targets without a desktop-overlay implementation
 //! (Linux/BSD, for now). The app runs as an ordinary window; the summon hotkey
-//! and canvas still work — only the always-on-top, all-workspaces overlay
-//! treatment is skipped.
+//! (under X11; Wayland asks the desktop for it, `app::summon`) and canvas still
+//! work — only the always-on-top, all-workspaces overlay treatment is skipped.
 
 /// No workspace-change notifications, so the overlay never auto-dismisses.
 pub const WATCHES_WORKSPACE: bool = false;

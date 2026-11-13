@@ -1475,6 +1475,25 @@ fn overlapping() {
 }
 
 /// The settings panel, opened from the palette and scrolled through.
+/// The summon row where the desktop keeps the shortcut (Wayland), in each
+/// thing the desktop can say. The portal is Linux's, so the states are set
+/// by hand: nothing here could ask it.
+fn wayland_summon() {
+    use super::summon::Portal;
+    let mut tour = Tour::new("wayland_summon", first_launch(canvas_file::scratch_document));
+    tour.app.summon_suggested = tour.app.config.summon_hotkey.clone();
+    tour.chord(Modifiers::COMMAND, ",");
+    for (name, portal) in [
+        ("asking", Portal::Asking),
+        ("bound", Portal::Bound("Ctrl+Alt+T".to_owned())),
+        ("unset", Portal::Bound(String::new())),
+        ("missing", Portal::Missing),
+    ] {
+        tour.app.summon_portal = Some(portal);
+        tour.shot(name);
+    }
+}
+
 fn settings() {
     let mut tour = Tour::new("settings", first_launch(canvas_file::scratch_document));
     // By its shortcut, through the board as a keypress reaches it.
@@ -3573,6 +3592,7 @@ const SCENES: &[(&str, fn())] = &[
     ("tasks", tasks),
     ("overlapping", overlapping),
     ("settings", settings),
+    ("wayland_summon", wayland_summon),
     ("pickers", pickers),
     ("palette_settings", palette_settings),
     ("find", find),

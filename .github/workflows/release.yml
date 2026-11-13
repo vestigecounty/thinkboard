@@ -75,7 +75,7 @@ jobs:
           # Desktop integration: a launcher, icons (scalable SVG + 256px PNG),
           # and a user-level installer that drops them into the right XDG dirs.
           install -m755 packaging/linux/install.sh "$STAGE/install.sh"
-          cp packaging/linux/thinkboard.desktop "$STAGE/"
+          cp packaging/linux/com.vestigecounty.ThinkBoard.desktop "$STAGE/"
           cp assets/thinkboard.svg assets/thinkboard.png "$STAGE/"
           cp README* LICENSE* "$STAGE/" 2>/dev/null || true
           tar -C "$PWD" -czf "dist/${STAGE}.tar.gz" "$STAGE"

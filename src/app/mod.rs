@@ -58,6 +58,7 @@ mod raster;
 mod search;
 mod settings;
 mod startup;
+mod summon;
 mod switcher;
 mod sync;
 mod font_picker;
@@ -378,6 +379,9 @@ pub(crate) enum Message {
     Undo,
     Redo,
     ToggleOverlay,
+    /// What the desktop says about the summon shortcut it keeps (Wayland).
+    #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+    SummonPortal(summon::Portal),
     WindowShown,
     SpaceChanged,
     /// Open (or focus) the in-board find bar (Cmd/Ctrl+F).
@@ -680,6 +684,13 @@ struct App {
     /// The hotkey currently registered with `hotkey_manager`, to unregister on
     /// change.
     registered_hotkey: Option<HotKey>,
+    /// Where the desktop keeps the summon shortcut instead (the overlay under
+    /// Wayland), what it last said about it. `None` where the hotkey above is
+    /// the way in.
+    summon_portal: Option<summon::Portal>,
+    /// The key suggested to the desktop: the config's at launch, kept apart
+    /// from it so the portal is asked once a run (`summon::portal`).
+    summon_suggested: String,
     show_fps: bool,
     /// Vertical scroll offset (world px from the top) per node id, for nodes
     /// resized below their content while `card_scrollbars` is on. Clamped to the
@@ -825,7 +836,7 @@ impl App {
         // not `iced::font::load`.)
         text_raster::warm_up();
 
-        let app = Self::build(Init {
+        let mut app = Self::build(Init {
             config,
             theme,
             document,
@@ -836,6 +847,12 @@ impl App {
             registered_hotkey,
             windowed,
         });
+        // Under Wayland the desktop is asked for the shortcut instead, as the
+        // subscription starts (see `summon`).
+        if !windowed && summon::on_wayland() {
+            app.summon_portal = Some(summon::Portal::Asking);
+            app.summon_suggested = app.config.summon_hotkey.clone();
+        }
         (app, Task::none())
     }
 
@@ -947,6 +964,8 @@ impl App {
             hotkey_recording: false,
             hotkey_manager,
             registered_hotkey,
+            summon_portal: None,
+            summon_suggested: String::new(),
             show_fps: std::env::args().any(|arg| arg == "--fps"),
             node_scroll: HashMap::new(),
             ai: Ai::default(),
@@ -1476,6 +1495,7 @@ impl App {
             // pressing the current hotkey can be re-bound instead of summoning.
             Message::ToggleOverlay if self.hotkey_recording => {}
             Message::ToggleOverlay => return self.toggle_overlay(),
+            Message::SummonPortal(portal) => self.summon_portal = Some(portal),
             Message::WindowShown => {
                 // Re-raise and re-frame the overlay window (also re-adapts
                 // to display changes while hidden).
@@ -2629,6 +2649,12 @@ impl App {
         subscriptions.extend(self.event_listeners().into_iter().map(iced::event::listen_with));
         if self.overlay {
             subscriptions.push(Subscription::run(hotkey_toggles));
+            #[cfg(target_os = "linux")]
+            if self.summon_portal.is_some() {
+                subscriptions.push(Subscription::run_with(self.summon_suggested.clone(), summon::portal));
+            }
+            #[cfg(unix)]
+            subscriptions.push(Subscription::run(summon::toggle_requests));
             // Tray menu clicks (Show/Hide, Quit) where a tray exists.
             #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
             subscriptions.push(Subscription::run(tray::events));

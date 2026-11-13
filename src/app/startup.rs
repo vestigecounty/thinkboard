@@ -45,6 +45,7 @@ ThinkBoard — an Obsidian .canvas viewer/editor
 
 Usage:
   thinkboard [file.canvas] [--windowed] [--config <path>]
+  thinkboard --toggle
 
 Arguments:
   [file.canvas]      Canvas to open. If omitted, opens the configured canvas,
@@ -53,6 +54,8 @@ Arguments:
 Options:
   --windowed         Run as an ordinary window (no desktop overlay)
   --config <path>    Use a specific config file
+  --toggle           Show or hide the running board, or start one (macOS,
+                     Linux) — for a shortcut set in the desktop's settings
   --help, -h         Show this help";
 
 /// Parses a hotkey spec (e.g. `Alt+F12`, `Cmd+Shift+K`, `Ctrl+Space`) into a
@@ -79,13 +82,18 @@ pub(super) fn summon_hotkey(spec: &str) -> Option<HotKey> {
 
 /// Creates the global-hotkey manager and registers the summon shortcut. The app
 /// keeps the manager so the shortcut can be re-registered when it changes in
-/// settings. Returns `(None, _)` in windowed mode or where a manager can't be
-/// created (e.g. Wayland has no global-hotkey support).
+/// settings. Returns `(None, _)` in windowed mode, under Wayland, or where a
+/// manager can't be created.
 pub(super) fn register_summon_hotkey(
     spec: &str,
     windowed: bool,
 ) -> (Option<GlobalHotKeyManager>, Option<HotKey>) {
     if windowed {
+        return (None, None);
+    }
+    // The grab would land on XWayland, which hears nothing while a Wayland
+    // window has focus, ours included; the desktop is asked instead (`summon`).
+    if super::summon::on_wayland() {
         return (None, None);
     }
     let manager = match GlobalHotKeyManager::new() {
@@ -130,6 +138,13 @@ pub(crate) fn run() -> iced::Result {
 
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
         println!("{USAGE}");
+        return Ok(());
+    }
+    // A running copy shows or hides and this one is done; with none running,
+    // this one starts, and comes up shown. Asked before the next line, which
+    // would kill the copy it's asking.
+    #[cfg(unix)]
+    if std::env::args().any(|arg| arg == "--toggle") && super::summon::send_toggle() {
         return Ok(());
     }
     crate::platform::kill_previous_instances();
@@ -256,7 +271,24 @@ pub(super) fn settings_window_settings() -> window::Settings {
         transparent: false,
         exit_on_close_request: false,
         icon: window_icon(),
+        platform_specific: platform_specific(),
         ..window::Settings::default()
+    }
+}
+
+/// On Linux, the app id a window is matched to its `.desktop` file by, which
+/// is also the one the summon shortcut is filed under (`summon::APP_ID`).
+fn platform_specific() -> window::settings::PlatformSpecific {
+    #[cfg(target_os = "linux")]
+    {
+        window::settings::PlatformSpecific {
+            application_id: super::summon::APP_ID.to_owned(),
+            ..Default::default()
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        window::settings::PlatformSpecific::default()
     }
 }
 
@@ -283,6 +315,7 @@ pub(super) fn window_settings(config: &crate::config::Config, windowed: bool) ->
         // autosave before quitting.
         exit_on_close_request: false,
         icon: window_icon(),
+        platform_specific: platform_specific(),
         ..window::Settings::default()
     };
     if !windowed {

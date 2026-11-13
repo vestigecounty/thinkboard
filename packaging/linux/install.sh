@@ -17,9 +17,12 @@ cp "$here/thinkboard.svg" "$icons/scalable/apps/thinkboard.svg"
 cp "$here/thinkboard.png" "$icons/256x256/apps/thinkboard.png"
 
 # Point the launcher's Exec at the installed binary (absolute path, so it works
-# whether or not ~/.local/bin is on PATH).
-sed "s|^Exec=.*|Exec=$bindir/thinkboard|" "$here/thinkboard.desktop" \
-  > "$appdir/thinkboard.desktop"
+# whether or not ~/.local/bin is on PATH), keeping its arguments. Named for the
+# app id, which is what the summon shortcut is filed under on Wayland; an
+# earlier install's launcher, under the old name, is replaced.
+desktop="com.vestigecounty.ThinkBoard.desktop"
+sed "s|^Exec=thinkboard|Exec=$bindir/thinkboard|" "$here/$desktop" > "$appdir/$desktop"
+rm -f "$appdir/thinkboard.desktop"
 
 # Refresh the desktop/icon caches where the tools exist (harmless if they don't).
 command -v update-desktop-database >/dev/null 2>&1 && update-desktop-database "$appdir" || true
@@ -27,5 +30,5 @@ command -v gtk-update-icon-cache   >/dev/null 2>&1 && gtk-update-icon-cache -f -
 
 echo "ThinkBoard installed:"
 echo "  binary:   $bindir/thinkboard"
-echo "  launcher: $appdir/thinkboard.desktop"
+echo "  launcher: $appdir/$desktop"
 echo "Find it in your app menu, or run 'thinkboard' if ~/.local/bin is on your PATH."

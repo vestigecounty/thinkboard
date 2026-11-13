@@ -5297,6 +5297,7 @@ name = "thinkboard"
 version = "0.8.0"
 dependencies = [
  "arboard",
+ "ashpd",
  "base64",
  "block2 0.6.2",
  "bytemuck",
