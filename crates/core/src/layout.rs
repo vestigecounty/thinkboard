@@ -235,20 +235,31 @@ pub fn sibling_stack(
 /// Reorders one rank so each node sits near the average position of its
 /// `neighbors` in the adjacent rank; nodes with no neighbors keep their spot.
 /// Updates `pos` (each node's index within its rank).
+///
+/// A node with no neighbors there has no average to sort by, and keeps its
+/// slot while the others are sorted into the rest, as dagre does. It used to
+/// be sorted by its own index in this rank, against the others' averages of
+/// indices in the next — two scales in one sort: a day with no plans yet,
+/// added last beside three days of three plans each, came second (3 against
+/// 1, 4 and 7).
 fn order_by_barycenter(layer: &mut [usize], pos: &mut [usize], neighbors: &[Vec<usize>]) {
-    let key = |local: usize| -> f32 {
+    let barycenter = |local: usize| {
         let ns = &neighbors[local];
-        if ns.is_empty() {
-            pos[local] as f32
-        } else {
-            ns.iter().map(|&n| pos[n] as f32).sum::<f32>() / ns.len() as f32
-        }
+        ns.iter().map(|&n| pos[n] as f32).sum::<f32>() / ns.len() as f32
     };
-    let keys: Vec<f32> = layer.iter().map(|&local| key(local)).collect();
-    let mut order: Vec<usize> = (0..layer.len()).collect();
-    order.sort_by(|&a, &b| keys[a].partial_cmp(&keys[b]).unwrap_or(std::cmp::Ordering::Equal));
-    let reordered: Vec<usize> = order.iter().map(|&i| layer[i]).collect();
-    layer.copy_from_slice(&reordered);
+    // In rank order, so a stable sort leaves ties as they were.
+    let mut sorted: Vec<(f32, usize)> = layer
+        .iter()
+        .filter(|&&local| !neighbors[local].is_empty())
+        .map(|&local| (barycenter(local), local))
+        .collect();
+    sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+    let mut sorted = sorted.into_iter().map(|(_, local)| local);
+    for slot in layer.iter_mut() {
+        if !neighbors[*slot].is_empty() {
+            *slot = sorted.next().expect("one sorted node per sortable slot");
+        }
+    }
     for (i, &local) in layer.iter().enumerate() {
         pos[local] = i;
     }
@@ -352,6 +363,41 @@ mod tests {
         let out = layered_layout(&nodes, &edges, &[0, 1, 2, 3], Direction::Down, 70.0, 40.0);
 
         assert!(x_of(&out, 3) < x_of(&out, 2)); // d left of c
+    }
+
+    #[test]
+    fn a_card_with_no_children_keeps_its_place_among_siblings_that_have_some() {
+        // A trip: three days with three plans each, and a fourth day added
+        // last, with none yet. Sorted by its own place among the days (3)
+        // against the others' average place among the plans (1, 4, 7), it
+        // came second.
+        let mut nodes = vec![node("trip", 0.0, 0.0)];
+        let mut edges = Vec::new();
+        for day in 1..=3 {
+            let id = format!("day{day}");
+            nodes.push(node(&id, 0.0, 0.0));
+            edges.push(edge("trip", &id));
+            for plan in 1..=3 {
+                let plan = format!("{id}-plan{plan}");
+                nodes.push(node(&plan, 0.0, 0.0));
+                edges.push(edge(&id, &plan));
+            }
+        }
+        nodes.push(node("day4", 0.0, 0.0));
+        edges.push(edge("trip", "day4"));
+        let days: Vec<usize> = ["day1", "day2", "day3", "day4"]
+            .iter()
+            .map(|id| nodes.iter().position(|n| n.id == *id).unwrap())
+            .collect();
+        let all: Vec<usize> = (0..nodes.len()).collect();
+
+        let out = layered_layout(&nodes, &edges, &all, Direction::Down, 70.0, 40.0);
+        let across: Vec<f32> = days.iter().map(|&day| x_of(&out, day)).collect();
+        assert!(across.is_sorted(), "days left to right in the order they were added: {across:?}");
+
+        let out = layered_layout(&nodes, &edges, &all, Direction::Right, 70.0, 40.0);
+        let across: Vec<f32> = days.iter().map(|&day| y_of(&out, day)).collect();
+        assert!(across.is_sorted(), "days top to bottom in the order they were added: {across:?}");
     }
 
     #[test]

@@ -1884,6 +1884,51 @@ fn card_kinds() {
 
 /// Tidying a board: a messy tree laid out with one command, a card dragged
 /// with snap to grid on, and one resized by its corner.
+/// Auto-layout of a trip whose last day has no plans yet: that day stays
+/// last, across and down, rather than sorting in among the days with plans.
+fn laying_out_a_trip() {
+    let trip = |_: &ColorTheme| {
+        use thinkboard_core::fixtures::{edge, node};
+        let card = |id: &str, text: &str, x: f32, y: f32| CanvasNode {
+            text: Some(text.to_owned()),
+            x,
+            y,
+            width: 160.0,
+            height: 50.0,
+            ..node(id)
+        };
+        let mut nodes = vec![card("trip", "Lisbon trip", 0.0, 0.0)];
+        let mut edges = Vec::new();
+        let plans = [["Alfama", "Fado night", "Tram 28"], ["Sintra", "Pena Palace", "Cabo da Roca"], ["Belém", "Pastéis", "LX Factory"]];
+        for (day, plans) in plans.iter().enumerate() {
+            let id = format!("day{}", day + 1);
+            // Scattered, as cards are before they're laid out.
+            nodes.push(card(&id, &format!("Day {}", day + 1), 420.0 - day as f32 * 260.0, 140.0 + day as f32 * 90.0));
+            edges.push(edge("trip", &id));
+            for (n, plan) in plans.iter().enumerate() {
+                let plan_id = format!("{id}-{n}");
+                nodes.push(card(&plan_id, plan, -300.0 + (day * 3 + n) as f32 * 120.0, 420.0 + (n % 2) as f32 * 80.0));
+                edges.push(edge(&id, &plan_id));
+            }
+        }
+        nodes.push(card("day4", "Day 4", 600.0, -120.0));
+        edges.push(edge("trip", "day4"));
+        CanvasDocument { nodes, edges, extra: serde_json::Map::new() }
+    };
+    let mut tour = Tour::new("laying_out_a_trip", first_launch(trip));
+    for (name, label) in [("across", "Auto-layout \u{2192}"), ("down", "\u{2193}")] {
+        // Fitted first, so the marquee takes every card: one left off
+        // screen by the last layout would be left out of this one.
+        tour.chord(Modifiers::COMMAND, "0");
+        tour.drag(Point::new(12.0, 12.0), Point::new(1428.0, 888.0));
+        let day4 = tour.find("Day 4");
+        tour.right_click(tour.node_center(day4));
+        tour.click_label(label);
+        tour.chord(Modifiers::COMMAND, "0");
+        tour.shot(name);
+    }
+}
+
 fn arranging() {
     let messy = |_: &ColorTheme| {
         use thinkboard_core::fixtures::{edge, node};
@@ -3605,6 +3650,7 @@ const SCENES: &[(&str, fn())] = &[
     ("themes", themes),
     ("card_kinds", card_kinds),
     ("arranging", arranging),
+    ("laying_out_a_trip", laying_out_a_trip),
     ("ai_setup", ai_setup),
     ("ai_answers", ai_answers),
     ("ai_errors", ai_errors),
