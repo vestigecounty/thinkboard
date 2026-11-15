@@ -106,7 +106,7 @@ rasterizer) stays desktop-side.
 | `theme_picker` / `font_picker` / `model_picker` | what fills that shell besides the palette |
 | `vault` | finding the vault's boards and switching between them |
 | `switcher` | back and forward through the boards visited (⌘[ ⌘]), and where each was left |
-| `summon` | the summon key under Wayland (the desktop's portal), and `thinkboard --toggle` |
+| `summon` | the summon key under Wayland (the desktop's portal), and a second launch handing over to the copy running |
 | `search`, `clipboard`, `command`, `settings`, `startup`, `tray`, `sync` | as named |
 
 Related fields are grouped into sub-structs (`Ai`, `Ghosts`, `Rasters`,
@@ -1106,6 +1106,25 @@ shot that lied:
 
 ## Platform notes
 
+**A second launch hands over to the copy running** (macOS, Linux:
+`summon::hand_over`), over a socket in the runtime directory: it does what the
+summon key does there, or shows the board and opens the one it was given, and
+exits. It used to kill every other copy, which lost an edit made inside the
+autosave's debounce, restarted the app from its own launcher, and let a
+throwaway `--config` run kill the everyday copy. So:
+
+- **One copy per config file.** The socket's name carries a hash of the config
+  path (`socket_name`, FNV-1a — std's hasher isn't stable across builds, and
+  every build has to find every other), so a `--config` run starts alongside.
+- **Another build, or the other mode, takes over**: the copy running is asked
+  to quit, saves, and is killed by pid only if it hasn't gone in 5 s. A build
+  is the version and the executable's path and mtime, read at launch, so a
+  rebuild counts; the mode is the effective `windowed`, so a launch after
+  changing "Run as a normal window" applies it. The same build launched again
+  only toggles — `cargo run` without a change in between hides the board.
+- **Nothing answering, on the default config**, is an older build or a hung
+  one, and is killed as before. Windows has no socket yet and always kills.
+
 - **macOS** — the overlay is an `NSPanel` via a class-morph on winit's window;
   that leaves winit's KVO teardown inconsistent, so `save_and_exit` flushes the
   autosave and calls `std::process::exit(0)` rather than crashing in teardown.
@@ -1144,9 +1163,9 @@ shot that lied:
   a dialog and keeps it in its own keyboard settings — the settings row shows
   the key the desktop names and says where to change it, and
   `config.summon_hotkey` is only what we suggest. Where there's no portal (sway,
-  an older GNOME), `thinkboard --toggle` shows or hides the running copy over a
-  socket in the runtime directory, for a key bound in the desktop's own
-  settings; the launcher runs it too. The portal files the shortcut under the
+  an older GNOME, COSMIC), a key bound to `thinkboard` in the desktop's own
+  settings does it, since a second launch hands over (below); the launcher
+  runs it too. The portal files the shortcut under the
   app id, `com.vestigecounty.ThinkBoard`, which is why the `.desktop` file and
   the window's `app_id` are named for it. Tray uses `ksni` (pure-Rust D-Bus, no
   GTK) so the zig cross-build works; the dialogs use the xdg-portal backend for

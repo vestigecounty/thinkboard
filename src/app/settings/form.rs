@@ -1077,7 +1077,7 @@ fn portal_words(portal: &Portal) -> &'static str {
         Portal::Bound(key) if key.is_empty() => "Not set. Give ThinkBoard one in your desktop's keyboard settings.",
         Portal::Bound(_) => "Kept by your desktop. Change it in its keyboard settings.",
         Portal::Missing => {
-            "Your desktop doesn't give apps a shortcut. Bind the command thinkboard --toggle in its \
+            "Your desktop doesn't give apps a shortcut. Bind the command thinkboard to a key in its \
              keyboard settings, or use the tray icon."
         }
     }

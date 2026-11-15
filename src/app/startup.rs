@@ -45,7 +45,6 @@ ThinkBoard — an Obsidian .canvas viewer/editor
 
 Usage:
   thinkboard [file.canvas] [--windowed] [--config <path>]
-  thinkboard --toggle
 
 Arguments:
   [file.canvas]      Canvas to open. If omitted, opens the configured canvas,
@@ -54,9 +53,12 @@ Arguments:
 Options:
   --windowed         Run as an ordinary window (no desktop overlay)
   --config <path>    Use a specific config file
-  --toggle           Show or hide the running board, or start one (macOS,
-                     Linux) — for a shortcut set in the desktop's settings
-  --help, -h         Show this help";
+  --help, -h         Show this help
+
+With ThinkBoard already running (macOS, Linux), it shows or hides the board,
+as the summon key does, or opens the canvas given, so a key bound to
+thinkboard in the desktop's settings summons it. A different build, or a
+different --windowed, takes the running copy's place.";
 
 /// Parses a hotkey spec (e.g. `Alt+F12`, `Cmd+Shift+K`, `Ctrl+Space`) into a
 /// global hotkey — tolerant of whitespace around `+` and of case — and applies
@@ -140,17 +142,19 @@ pub(crate) fn run() -> iced::Result {
         println!("{USAGE}");
         return Ok(());
     }
-    // A running copy shows or hides and this one is done; with none running,
-    // this one starts, and comes up shown. Asked before the next line, which
-    // would kill the copy it's asking.
-    #[cfg(unix)]
-    if std::env::args().any(|arg| arg == "--toggle") && super::summon::send_toggle() {
-        return Ok(());
-    }
-    crate::platform::kill_previous_instances();
-
     // Loaded again in App::new; read here for the hotkey and window flags.
     let mut config = crate::config::Config::load(config_path_arg().as_deref());
+
+    // One copy at a time on a config file: one running takes this launch over,
+    // and this one is done, or makes way for it (`summon::hand_over`). Windows
+    // has no socket for that yet, so there the copy running is replaced.
+    #[cfg(unix)]
+    if super::summon::hand_over(is_windowed(&config), positional_canvas().as_deref().map(FsPath::new)) {
+        return Ok(());
+    }
+    #[cfg(not(unix))]
+    crate::platform::kill_previous_instances();
+
     // Resolve the vault's theme *before* the builder below registers its fonts,
     // and identically to App::new's own resolution, so both agree on the file.
     config.adopt_vault_theme();

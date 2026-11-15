@@ -202,7 +202,9 @@ pub fn top_safe_inset() -> f32 {
 
 /// Terminates any other running instance so a freshly built binary can take
 /// over — the app is resident (hotkey-summoned), so iterating would otherwise
-/// pile up copies fighting over the global hotkey.
+/// pile up copies fighting over the global hotkey. Unsaved edits go with it, so
+/// on macOS and Linux it's the last resort, for a copy that didn't answer a
+/// launch (`summon::hand_over`); Windows has no socket yet and does it always.
 pub fn kill_previous_instances() {
     let this_pid = std::process::id().to_string();
 

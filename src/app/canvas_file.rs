@@ -173,7 +173,7 @@ fn summon_tip() -> (&'static str, Option<&'static str>) {
                  Your desktop asks you to confirm it, or choose another, the first time.",
                 Some(
                     "Your desktop keeps the shortcut: change it in its keyboard settings. Where it \
-                     can't keep one, bind `thinkboard --toggle` there instead, or use the tray icon.",
+                     can't keep one, bind the command `thinkboard` to a key there, or use the tray icon.",
                 ),
             );
         }
@@ -925,7 +925,7 @@ mod tests {
             // The desktop keeps the shortcut, so the aside says where it's
             // changed, and what to do where it can't keep one.
             assert!(tip.contains("Pause") && tip.contains("confirm"), "{tip}");
-            assert!(hotkey.is_some_and(|hotkey| hotkey.contains("--toggle")), "the way in without the portal");
+            assert!(hotkey.is_some_and(|hotkey| hotkey.contains("`thinkboard`")), "the way in without the portal");
         } else {
             assert!(tip.contains("Pause"), "{tip}");
             assert!(!tip.contains("four fingers"), "no trackpad gesture off macOS: {tip}");

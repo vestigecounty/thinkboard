@@ -382,6 +382,9 @@ pub(crate) enum Message {
     /// What the desktop says about the summon shortcut it keeps (Wayland).
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     SummonPortal(summon::Portal),
+    /// A later launch handed itself over to this copy (macOS, Linux).
+    #[cfg(unix)]
+    Launched(summon::Launch),
     WindowShown,
     SpaceChanged,
     /// Open (or focus) the in-board find bar (Cmd/Ctrl+F).
@@ -1496,6 +1499,8 @@ impl App {
             Message::ToggleOverlay if self.hotkey_recording => {}
             Message::ToggleOverlay => return self.toggle_overlay(),
             Message::SummonPortal(portal) => self.summon_portal = Some(portal),
+            #[cfg(unix)]
+            Message::Launched(launch) => return self.launched(launch),
             Message::WindowShown => {
                 // Re-raise and re-frame the overlay window (also re-adapts
                 // to display changes while hidden).
@@ -2653,12 +2658,13 @@ impl App {
             if self.summon_portal.is_some() {
                 subscriptions.push(Subscription::run_with(self.summon_suggested.clone(), summon::portal));
             }
-            #[cfg(unix)]
-            subscriptions.push(Subscription::run(summon::toggle_requests));
             // Tray menu clicks (Show/Hide, Quit) where a tray exists.
             #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
             subscriptions.push(Subscription::run(tray::events));
         }
+        // A later launch, in either mode (`summon::hand_over`).
+        #[cfg(unix)]
+        subscriptions.push(Subscription::run_with(!self.overlay, summon::launches));
         // Auto-dismiss when the active workspace/Space changes, unless
         // configured to persist. Only where the platform reports it
         // (event-driven, no polling).
