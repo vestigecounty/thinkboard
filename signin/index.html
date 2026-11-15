@@ -1,0 +1,75 @@
+<!doctype html>
+<!--
+  The way back from signing in to OpenRouter in ThinkBoard. OpenRouter sends
+  the browser here with a code; the app is waiting for it on a port of this
+  machine, which it put in `state`, and this page forwards the code there.
+  The code is worth nothing without a secret only that waiting app holds, so
+  it can pass through here; nothing is kept, loaded or sent anywhere else.
+  It goes to 127.0.0.1 and nowhere else, whatever the address says.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="referrer" content="no-referrer">
+<meta name="robots" content="noindex">
+<title>Signing in · ThinkBoard</title>
+<style>
+  :root { color-scheme: dark; }
+  body {
+    margin: 0;
+    min-height: 100vh;
+    display: grid;
+    place-items: center;
+    background: rgb(31, 31, 33);
+    background-image: radial-gradient(rgba(255, 255, 255, 0.07) 1.2px, transparent 1.2px);
+    background-size: 24px 24px;
+    color: rgb(230, 230, 230);
+    font: 16px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  }
+  main {
+    max-width: 26rem;
+    margin: 16px;
+    padding: 20px 24px;
+    border-radius: 10px;
+    background: rgb(42, 42, 45);
+    box-shadow: inset 0 0 0 1px rgba(255, 255, 255, 0.08), 0 4px 16px rgba(0, 0, 0, 0.35);
+  }
+  p { margin: 0; }
+  p + p { margin-top: 12px; color: rgb(160, 160, 165); font-size: 14px; }
+  a { color: rgb(110, 165, 255); }
+</style>
+</head>
+<body>
+<main>
+  <p id="said">Taking you back to ThinkBoard…</p>
+  <p id="more"><a id="back" hidden>Return to ThinkBoard</a></p>
+</main>
+<script>
+  (function () {
+    var query = new URLSearchParams(location.search);
+    var code = query.get('code') || '';
+    var state = query.get('state') || '';
+    // The app's state: the port it waits on, then a random part.
+    var match = /^(\d{4,5})\.([A-Za-z0-9_-]{16,64})$/.exec(state);
+    var port = match ? Number(match[1]) : 0;
+    var said = document.getElementById('said');
+    var more = document.getElementById('more');
+    if (!code || port < 1024 || port > 65535) {
+      said.textContent = 'Sign-in didn’t finish, so there’s nothing to take back to ThinkBoard.';
+      more.textContent = 'You can close this tab, and sign in again from ThinkBoard’s settings.';
+      return;
+    }
+    var back = 'http://127.0.0.1:' + port + '/callback?code=' + encodeURIComponent(code) +
+      '&state=' + encodeURIComponent(state);
+    var link = document.getElementById('back');
+    link.href = back;
+    link.hidden = false;
+    // Left in the history, the code would be offered to whoever used the
+    // back button; replaced, it isn't.
+    history.replaceState(null, '', location.pathname);
+    location.replace(back);
+  })();
+</script>
+</body>
+</html>
