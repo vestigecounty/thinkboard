@@ -1003,7 +1003,16 @@ fn serve(mut stream: TcpStream, script: &Script) {
         let data: Vec<serde_json::Value> = script
             .models
             .iter()
-            .map(|(id, name, context)| serde_json::json!({ "id": id, "name": name, "context_length": context }))
+            // Priced as OpenRouter prices them, per token: a `:free` one at
+            // nothing, which is how the picker knows it's free.
+            .map(|(id, name, context)| {
+                let price = if id.ends_with(":free") || *id == "openrouter/free" { "0" } else { "0.000001" };
+                serde_json::json!({
+                    "id": id, "name": name, "context_length": context,
+                    "pricing": { "prompt": price, "completion": price },
+                    "architecture": { "output_modalities": ["text"] },
+                })
+            })
             .collect();
         return respond(&mut stream, "200 OK", &serde_json::json!({ "data": data }));
     }
@@ -2010,6 +2019,20 @@ static TRIP: Script = Script {
     reject_key: false,
 };
 
+/// A provider with free models among the rest, as OpenRouter has.
+static WITH_FREE: Script = Script {
+    models: &[
+        ("google/gemma-3-27b-it", Some("Google: Gemma 3 27B"), Some(131_072)),
+        ("google/gemma-3-27b-it:free", Some("Google: Gemma 3 27B (free)"), Some(131_072)),
+        ("meta-llama/llama-3.3-70b-instruct", Some("Meta: Llama 3.3 70B Instruct"), Some(131_072)),
+        ("openrouter/free", Some("Free Models Router"), Some(200_000)),
+        ("qwen/qwen3-30b-a3b", Some("Qwen: Qwen3 30B A3B"), Some(40_960)),
+        ("qwen/qwen3-30b-a3b:free", Some("Qwen: Qwen3 30B A3B (free)"), Some(40_960)),
+    ],
+    answers: &[],
+    reject_key: false,
+};
+
 /// A provider that refuses the key it's given.
 static REJECTING: Script = Script { models: MODELS, answers: &[], reject_key: true };
 
@@ -2057,6 +2080,51 @@ fn configure(tour: &mut Tour, url: &str) {
 fn ask(tour: &mut Tour, index: usize) {
     tour.right_click(tour.node_center(index));
     tour.click_label("Ask AI");
+}
+
+/// Signing in to OpenRouter for a key: the hint while AI is off, the button
+/// in OpenRouter's key row with no key yet, waiting on the browser, and a
+/// sign-in that didn't finish — then a provider's models with the free ones
+/// first. Nothing is signed into, and no browser opened: the states are set
+/// as the sign-in sets them, as the portal's are in `wayland_summon`, and the
+/// models come from a stand-in provider.
+fn sign_in() {
+    let mut tour = Tour::new("sign_in", first_launch(trip_board));
+    tour.palette("settings");
+    tour.click_label("AI");
+    tour.shot("off-hint");
+    tour.send(Message::Settings(settings::Msg::PickPreset("OpenRouter".to_owned())));
+    tour.shot("openrouter-no-key");
+    let (_, task) = Task::<Message>::none().abortable();
+    tour.app.signing = sign_in::Signing::Waiting { _stop: sign_in::Stop::new(), _task: task };
+    tour.redraw();
+    tour.shot("waiting");
+    tour.send(Message::SignedIn(Err("The browser didn't come back within ten minutes — sign in again.".to_owned())));
+    tour.shot("failed");
+
+    let provider = Provider::start(&WITH_FREE);
+    tour.send(Message::Settings(settings::Msg::PickPreset("Custom".to_owned())));
+    tour.send(Message::Settings(settings::Msg::Edit(settings::Field::AiUrl, provider.url.clone())));
+    tour.send(Message::Settings(settings::Msg::Commit));
+    tour.click_label("Choose…");
+    // As a sign-in opens it, saying so.
+    if let Some(picker) = &mut tour.app.model_picker {
+        picker.notice = Some("Signed in to OpenRouter. The key is saved in your account as ThinkBoard.");
+    }
+    tour.shot("models-fetching");
+    // The light crossing the skeleton, a frame at a time — the list's
+    // answer isn't taken in meanwhile, so it stays up as long as this takes.
+    let panel = Rectangle::new(Point::new((tour.viewport.width - 480.0) / 2.0, 60.0), Size::new(480.0, 200.0));
+    let mut light = tour.strip("skeleton-light", panel);
+    for step in 0..6 {
+        std::thread::sleep(Duration::from_millis(230));
+        tour.frame(&mut light, &format!("{} ms", (step + 1) * 230));
+    }
+    tour.save(light, 2);
+    tour.settle_until(|app| app.model_picker.as_ref().is_some_and(|p| !p.loading));
+    tour.shot("models-free-first");
+    tour.type_text("qwen");
+    tour.shot("models-searched");
 }
 
 /// Asking for the first time: no provider yet, then one chosen in settings
@@ -3578,7 +3646,7 @@ impl Recording {
                 "selected": state.selected,
                 "offset": state.offset,
                 "rows": rows.iter().map(row).collect::<Vec<_>>(),
-                "headers": headers.iter().map(|(heads, label)| serde_json::json!([heads, label])).collect::<Vec<_>>(),
+                "headers": headers.iter().map(|(heads, label, _)| serde_json::json!([heads, label])).collect::<Vec<_>>(),
             }))
         } else {
             app.theme_picker.as_ref().map(|picker| {
@@ -3704,6 +3772,7 @@ const SCENES: &[(&str, fn())] = &[
     ("overlapping", overlapping),
     ("settings", settings),
     ("wayland_summon", wayland_summon),
+    ("sign_in", sign_in),
     ("pickers", pickers),
     ("palette_settings", palette_settings),
     ("find", find),

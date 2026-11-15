@@ -43,7 +43,7 @@ use std::time::{Duration, Instant};
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 
 #[cfg(unix)]
-use iced::{Task, window};
+use iced::Task;
 
 #[cfg(unix)]
 use super::{App, Message, Phase};
@@ -64,6 +64,15 @@ pub(crate) enum Portal {
 }
 
 impl super::App {
+    /// The board's window to the front, as launching an app that's running
+    /// does — and as a sign-in finished in the browser does.
+    pub(super) fn bring_forward(&self) -> iced::Task<super::Message> {
+        match self.main_window {
+            Some(id) => iced::window::minimize(id, false).chain(iced::window::gain_focus(id)),
+            None => iced::Task::none(),
+        }
+    }
+
     /// What the desktop said of the summon shortcut. Where it has no portal
     /// to say it with, COSMIC's own shortcuts may have it instead.
     pub(super) fn portal_said(&mut self, said: Portal) {
@@ -524,14 +533,6 @@ impl App {
                 Task::batch([open, show])
             }
             Launch::Replace => self.save_and_exit(),
-        }
-    }
-
-    /// The window to the front, as launching an app that's running does.
-    fn bring_forward(&self) -> Task<Message> {
-        match self.main_window {
-            Some(id) => window::minimize(id, false).chain(window::gain_focus(id)),
-            None => Task::none(),
         }
     }
 }

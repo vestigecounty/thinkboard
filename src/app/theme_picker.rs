@@ -212,6 +212,7 @@ impl App {
                 } else {
                     "".into()
                 },
+                detail_tint: None,
                 keys: Vec::new(),
                 enabled: true,
                 font: None,
@@ -232,6 +233,8 @@ impl App {
                 glyph: super::chrome::Glyph::Magnifier,
                 on_submit: Message::CommitTheme,
                 verb: "Choose",
+                loading: None,
+                notice: None,
                 empty: "No matching theme".into(),
                 headers: Vec::new(),
             },

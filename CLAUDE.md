@@ -574,16 +574,25 @@ runtime's model, which no hosted provider serves, so picking a provider and
 asking failed on the very first question. The settings form's model row has a
 "Choose…" button, and picking a provider that can answer opens the picker by
 itself — one on this machine, or a hosted one whose key is already stored; for
-a hosted one without, pasting the key does. Opened from the form, the picker
-is drawn **over the form** (`over_settings`, as the theme and font pickers are
-from their rows), in whichever place the form is: the board's panel layer sits
-under the in-board modal, and the settings window doesn't have one. It closes
-with the form — left open behind it, it would hold the board modal with
-nothing visible — and while it's open, Esc is the picker's alone.
+a hosted one without, pasting the key does. Opened from the form in the
+board, **the form closes and the picker takes its place**
+(`open_model_picker_from_settings`): drawn over the form, it was a panel over a
+panel, two things open and neither clearly the one to answer. "Sign in…"
+closes it too — the browser has it from there, and the models come up over
+the board after. The settings window has no board to show it over, so there
+it's drawn over the form (`over_settings`, as the theme and font pickers are
+from their rows), closes with the window, and has Esc to itself while open.
 
 It's the one panel that **fetches**, so it has two states the others don't —
-in flight and failed — and both are shown in the list's own empty row, so the
-panel is up on the keystroke that asked for it either way. A finished fetch
+in flight and failed — and the panel is up on the keystroke that asked for it
+either way. A failure is said in the list's own empty row. In flight, with
+nothing kept from before, the list is drawn as rows still to come, at its full
+height, and the head says what it's waiting on (`picker::Shell::loading`): a
+one-row panel high over the form, growing when the list came, read as broken.
+A band of light crosses the rows meanwhile — one band across the whole list,
+which is why it's a canvas rather than containers, each of whose gradients
+would be its own — on frames asked for only while it's up, and held still
+when animations are off. A finished fetch
 carries the URL it was for and is dropped if that no longer matches, or
 switching provider mid-flight would offer one provider's models under another's
 name. The last list is kept (one endpoint's worth) so reopening is instant, and
@@ -602,6 +611,44 @@ runtime is running, by its preset's name where it has one.
 A failed answer stays on the board as a card, which is deliberate: it's where
 the question was asked, and deleting it is the editor's ordinary delete. A
 failure partway through is added under what had arrived, not written over it.
+
+**Free models are listed first**, with nothing typed: OpenRouter's router to
+them (`ai::FREE_ROUTER`), which routes to an available one, then the models
+themselves, "Free · rate-limited" — none is put forward as one to rely on —
+then "Paid". Headers say what's so, and nothing more. Sections appear only where
+the endpoint prices its models, which is where any can be free, so the rest are
+the priced ones. The free sections and a free row's detail are tinted in a
+card's green, softened toward the muted text; "Paid" in the theme's accent;
+each taken toward the text until it reads on the panel at 3:1
+(`model_picker::tint`), so no theme gets a colour of ours it can't read. Free is read live from `/models`, never a list of
+names: nothing charged to ask or to answer, and text the only output
+(OpenRouter lists music models at nothing too). Typed into, it's one ranked
+list, a free row saying so beside its context window. A refusal from one is
+worded for it in `ai::describe_failure`: a 429 is the free models' limit,
+which a moment's wait may not lift, and a 402 wants credits, which a balance
+below nothing does even for a free model.
+
+**OpenRouter can be signed into for a key** (`app::sign_in`, the protocol in
+`core::sign_in`) — not as a recommendation, but because it's the one provider
+that makes a key for an app it's signed into; the rest hand keys out only on
+their own sites. So the way to it is OpenRouter's key row, where there's no
+key yet ("Sign in…" beside Paste); the Provider note while AI is off says
+only that some hosted providers have free models. It's OAuth with PKCE: the browser signs in, a code comes back, and
+the code is traded for a key labelled ThinkBoard in the person's account,
+kept with OpenRouter's like a pasted one. ThinkBoard comes back in front of
+the browser — the settings window, or the board's, the overlay as its summon
+brings it (a focus request alone left the macOS panel behind the browser) —
+and asks for attention, all a window can do under Wayland. The model picker
+opens with a line over the list saying the sign-in worked (`Shell::notice`):
+the picker coming up by itself didn't say so, and a note under the key row
+was under the picker. The
+code comes back through **the site's relay page** (`signin/` on the site,
+`demo/public/signin/`): sent straight to `localhost`, the consent page would
+name the app `localhost:<port>`. The relay forwards it to `127.0.0.1` on the
+port the app waits on, which it reads from `state` — and nowhere else. The
+code is worth nothing without the verifier only that waiting sign-in holds,
+so passing through a page is safe; one request is answered, the one with this
+sign-in's `state`, and after ten minutes, a code's life, it gives up.
 
 ## The settings form
 

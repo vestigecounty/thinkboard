@@ -2194,7 +2194,7 @@ fn naming_a_theme_in_settings_takes_effect_without_a_restart() {
 use thinkboard_core::ai::Model;
 
 fn model(id: &str) -> Model {
-    Model { id: id.to_owned(), name: None, context: None }
+    Model { id: id.to_owned(), name: None, context: None, free: false }
 }
 
 /// An app with a provider configured and a list already fetched for it.
@@ -2234,6 +2234,80 @@ fn choosing_a_model_writes_the_id_the_endpoint_gave() {
         app.settings_drafts.get(&settings::Field::AiModel).map(String::as_str),
         Some("accounts/fireworks/models/llama-v3p1-70b-instruct"),
     );
+}
+
+#[test]
+fn free_models_come_first_with_nothing_typed_and_rank_with_the_rest_when_searched() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
+    send(&mut app, Message::OpenModelPicker);
+    let url = app.config.ai_url.clone();
+    let free = |id: &str| Model { free: true, ..model(id) };
+    let models = vec![model("anthropic/claude-sonnet-4"), free("google/gemma-4-31b-it:free"), model("openai/gpt-4o"), free("openrouter/free")];
+    send(&mut app, Message::ModelsFetched(url, Ok(models)));
+
+    let ids = |app: &App, query: &str| -> Vec<String> {
+        app.model_matches(query).into_iter().map(|index| app.models()[index].id.clone()).collect()
+    };
+    let (_, headers) = app.model_listing("");
+    assert_eq!(ids(&app, ""), ["openrouter/free", "google/gemma-4-31b-it:free", "anthropic/claude-sonnet-4", "openai/gpt-4o"]);
+    assert_eq!(headers.iter().map(|(at, ..)| *at).collect::<Vec<_>>(), [0, 1, 2], "the router, the free ones, the paid");
+    assert!(headers[1].1.contains("rate-limited"), "free isn't put forward as dependable: {}", headers[1].1);
+    assert_eq!(headers[2].1, "Paid");
+    assert_eq!(app.highlighted_model().as_deref(), Some("openrouter/free"), "the highlight is on the first row shown");
+
+    send(&mut app, Message::PanelInput(picker::Panel::Model, "o".to_owned()));
+    assert!(app.model_listing("o").1.is_empty(), "a search is one ranked list");
+}
+
+#[test]
+fn a_sign_in_keeps_its_key_with_openrouter_and_lists_its_models() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
+    // Waiting, as the row shows it once the browser's been opened.
+    let waiting = |app: &mut App| {
+        let (_, handle) = iced::Task::<Message>::none().abortable();
+        app.signing = sign_in::Signing::Waiting { _stop: sign_in::Stop::new(), _task: handle };
+    };
+
+    waiting(&mut app);
+    send(&mut app, Message::SignedIn(Err("The sign-in had run out of time — sign in again.".to_owned())));
+    assert!(matches!(&app.signing, sign_in::Signing::Failed(why) if why.contains("run out of time")));
+
+    waiting(&mut app);
+    send(&mut app, Message::SignedIn(Ok("sk-or-v1-abc".to_owned())));
+    assert!(matches!(app.signing, sign_in::Signing::Idle));
+    assert_eq!(app.config.ai_key(), "sk-or-v1-abc");
+    assert!(
+        app.model_picker.as_ref().and_then(|picker| picker.notice).is_some_and(|notice| notice.starts_with("Signed in")),
+        "said over the models it opened",
+    );
+    assert!(app.model_picker.as_ref().is_some_and(|picker| !picker.over_settings), "its models next, over the board with the form closed");
+
+    // From the settings window, over the form there: it has no board.
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
+    send(&mut app, Message::OpenSettings);
+    waiting(&mut app);
+    send(&mut app, Message::SignedIn(Ok("sk-or-v1-abc".to_owned())));
+    assert!(app.model_picker.as_ref().is_some_and(|picker| picker.over_settings));
+
+    // Another provider chosen while signing in: the key is still OpenRouter's.
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "https://api.openai.com/v1".to_owned();
+    waiting(&mut app);
+    send(&mut app, Message::SignedIn(Ok("sk-or-v1-def".to_owned())));
+    assert_eq!(app.config.ai_key(), "", "not OpenAI's");
+    assert_eq!(app.config.ai_api_keys.get("https://openrouter.ai/api/v1").map(String::as_str), Some("sk-or-v1-def"));
+    assert!(app.model_picker.is_none());
+
+    // Cancelled: whatever comes back is no one's.
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
+    waiting(&mut app);
+    send(&mut app, Message::CancelSignIn);
+    send(&mut app, Message::SignedIn(Ok("sk-or-v1-late".to_owned())));
+    assert_eq!(app.config.ai_key(), "");
 }
 
 #[test]
@@ -2296,15 +2370,18 @@ fn picking_a_provider_that_can_answer_asks_for_the_model_next() {
     app.config.ai_url.clear();
     send(&mut app, Message::OpenSettingsOverlay);
 
-    // A local runtime needs no key, so its list comes up at once — over the
-    // form it was chosen in, not hidden under it on the board.
+    // A local runtime needs no key, so its list comes up at once — in place
+    // of the form it was chosen in, not over it: one panel at a time.
     send(&mut app, Message::Settings(settings::Msg::PickPreset("LM Studio".to_owned())));
-    assert!(app.model_picker.as_ref().is_some_and(|picker| picker.over_settings));
+    assert!(app.model_picker.as_ref().is_some_and(|picker| !picker.over_settings));
+    assert!(!app.settings_overlay);
 
     // A hosted one with no key would only list a refusal: the form stays put.
     send(&mut app, Message::ClosePanel(picker::Panel::Model));
+    send(&mut app, Message::OpenSettingsOverlay);
     send(&mut app, Message::Settings(settings::Msg::PickPreset("OpenAI".to_owned())));
     assert!(app.model_picker.is_none());
+    assert!(app.settings_overlay);
     // With its key in place, it's ready.
     app.config.set_ai_key("sk-1");
     send(&mut app, Message::Settings(settings::Msg::PickPreset("OpenAI".to_owned())));
@@ -2312,16 +2389,19 @@ fn picking_a_provider_that_can_answer_asks_for_the_model_next() {
 
     // And the button beside the field, whenever.
     send(&mut app, Message::ClosePanel(picker::Panel::Model));
+    send(&mut app, Message::OpenSettingsOverlay);
     send(&mut app, Message::Settings(settings::Msg::ChooseModel));
-    assert!(app.model_picker.as_ref().is_some_and(|picker| picker.over_settings));
+    assert!(app.model_picker.is_some());
+    assert!(!app.settings_overlay, "the form gives way to it");
 }
 
 #[test]
-fn esc_over_the_settings_closes_only_the_picker() {
+fn esc_over_the_settings_window_closes_only_the_picker() {
     let mut app = app_with(two_nodes(), Vec::new());
     app.config.ai_url = "http://localhost:1234/v1".to_owned();
-    send(&mut app, Message::OpenSettingsOverlay);
+    send(&mut app, Message::OpenSettings);
     send(&mut app, Message::Settings(settings::Msg::ChooseModel));
+    assert!(app.model_picker.as_ref().is_some_and(|picker| picker.over_settings), "the window has no board");
     let esc = iced::Event::Keyboard(iced::keyboard::Event::KeyPressed {
         key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
         modified_key: iced::keyboard::Key::Named(iced::keyboard::key::Named::Escape),
@@ -2341,11 +2421,12 @@ fn esc_over_the_settings_closes_only_the_picker() {
         send(&mut app, reply);
     }
     assert!(app.model_picker.is_none());
-    assert!(app.settings_overlay, "the form it was chosen from stays");
+    assert!(app.settings_window.is_some(), "the form it was chosen from stays");
 
     // Closing the form takes a picker opened from it along.
     send(&mut app, Message::Settings(settings::Msg::ChooseModel));
-    send(&mut app, Message::CloseSettingsOverlay);
+    let window = app.settings_window.expect("the settings window");
+    send(&mut app, Message::WindowCloseRequested(window));
     assert!(app.model_picker.is_none(), "left open, it would block the board unseen");
 }
 

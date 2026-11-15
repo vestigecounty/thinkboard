@@ -736,7 +736,7 @@ impl App {
                     let changed = self.after_setting_change(field);
                     // A hosted provider's key is what its model list waited on.
                     if field == Field::AiApiKey && self.config.ai_enabled() && ready_to_list(&self.config) {
-                        return Task::batch([changed, self.open_model_picker_over_settings()]);
+                        return Task::batch([changed, self.open_model_picker_from_settings()]);
                     }
                     return changed;
                 }
@@ -768,11 +768,11 @@ impl App {
                 // unlikely to serve. Not for a hosted one with no key yet: its
                 // list would only be a refusal, so the key's paste opens it.
                 if self.config.ai_enabled() && ready_to_list(&self.config) {
-                    return self.open_model_picker_over_settings();
+                    return self.open_model_picker_from_settings();
                 }
                 Task::none()
             }
-            Msg::ChooseModel => self.open_model_picker_over_settings(),
+            Msg::ChooseModel => self.open_model_picker_from_settings(),
             Msg::ChooseTheme => self.open_theme_picker_over_settings(),
             Msg::ChooseFont => self.open_font_picker_over_settings(),
             Msg::Backdrop(backdrop) => {
@@ -1134,6 +1134,16 @@ impl App {
         self.settings_window = None;
         self.settings_drafts.clear();
         self.settings_focus = None;
+        self.close_settings_pickers()
+    }
+
+    /// Closes the form in the board, keeping whatever was typed and not yet
+    /// submitted, as closing the window keeps it.
+    pub(super) fn close_settings_overlay(&mut self) -> Task<Message> {
+        self.persist_config();
+        self.settings_overlay = false;
+        self.settings_focus = None;
+        self.cache.clear();
         self.close_settings_pickers()
     }
 

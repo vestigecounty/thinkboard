@@ -21,6 +21,7 @@ pub mod model;
 pub mod navigate;
 pub mod obsidian;
 pub mod search;
+pub mod sign_in;
 pub mod snap;
 pub mod syntax;
 pub mod theme;

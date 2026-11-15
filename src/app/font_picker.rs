@@ -180,6 +180,7 @@ impl App {
                 matched: thinkboard_core::fuzzy::matched(&picker.state.query, title),
                 title: title.into(),
                 detail: if entry.name == picker.before_font { "current".into() } else { "".into() },
+                detail_tint: None,
                 keys: Vec::new(),
                 enabled: true,
                 // The point of the list: each name set in its own face — except
@@ -206,6 +207,8 @@ impl App {
                 glyph: super::chrome::Glyph::Magnifier,
                 on_submit: Message::CommitFont,
                 verb: "Choose",
+                loading: None,
+                notice: None,
                 empty: "No matching font".into(),
                 headers: Vec::new(),
             },

@@ -306,6 +306,7 @@ impl App {
                 } else {
                     entry.folder().into()
                 },
+                detail_tint: None,
                 keys: Vec::new(),
                 enabled: true,
                 font: None,
@@ -331,6 +332,8 @@ impl App {
                 glyph: super::chrome::Glyph::Magnifier,
                 on_submit: Message::OpenSelectedCanvas,
                 verb: "Open",
+                loading: None,
+                notice: None,
                 empty: empty.into(),
                 headers: Vec::new(),
             },

@@ -569,7 +569,13 @@ impl Config {
     /// entry rather than storing a blank one, so the config doesn't accumulate
     /// dead endpoints.
     pub fn set_ai_key(&mut self, key: &str) {
-        let endpoint = endpoint_key(&self.ai_url).to_owned();
+        self.set_ai_key_for(&self.ai_url.clone(), key);
+    }
+
+    /// Sets the API key for `url`, configured or not — a sign-in's, which can
+    /// end after another provider has been chosen.
+    pub fn set_ai_key_for(&mut self, url: &str, key: &str) {
+        let endpoint = endpoint_key(url).to_owned();
         if endpoint.is_empty() {
             return; // "Off" has no endpoint to attach a key to
         }

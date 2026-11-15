@@ -5344,10 +5344,12 @@ dependencies = [
 name = "thinkboard-core"
 version = "0.8.0"
 dependencies = [
+ "base64",
  "criterion",
  "futures",
  "pulldown-cmark",
  "reqwest",
+ "ring",
  "serde",
  "serde_json",
 ]

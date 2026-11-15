@@ -13,6 +13,10 @@ pulldown-cmark = { version = "0.13", default-features = false }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.150", features = ["preserve_order"] }
+# Signing in for a key (`sign_in`): its random verifier and its SHA-256, and
+# the base64url both are written in. Already in the graph, through rustls.
+ring = "0.17"
+base64 = "0.22"
 
 # `cargo bench` would otherwise also run the unit-test binary as a benchmark,
 # where it rejects criterion's own flags.

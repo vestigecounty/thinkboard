@@ -57,6 +57,7 @@ mod picker;
 mod raster;
 mod search;
 mod settings;
+mod sign_in;
 mod startup;
 mod summon;
 mod switcher;
@@ -442,6 +443,11 @@ pub(crate) enum Message {
     /// Keep the highlighted model (Enter), or a clicked one.
     CommitModel,
     PickModel(String),
+    /// OpenRouter's sign-in, for a key (`sign_in`): started from its key row,
+    /// cancelled there, and ended with the key or why there's none.
+    SignIn,
+    CancelSignIn,
+    SignedIn(Result<String, String>),
 
     /// Font picker (from the palette): the same panel over the installed
     /// families, previewing the highlighted one on the board.
@@ -694,6 +700,8 @@ struct App {
     /// The key suggested to the desktop: the config's at launch, kept apart
     /// from it so the portal is asked once a run (`summon::portal`).
     summon_suggested: String,
+    /// OpenRouter's sign-in, under way or how the last one ended.
+    signing: sign_in::Signing,
     show_fps: bool,
     /// Vertical scroll offset (world px from the top) per node id, for nodes
     /// resized below their content while `card_scrollbars` is on. Clamped to the
@@ -969,6 +977,7 @@ impl App {
             registered_hotkey,
             summon_portal: None,
             summon_suggested: String::new(),
+            signing: sign_in::Signing::Idle,
             show_fps: std::env::args().any(|arg| arg == "--fps"),
             node_scroll: HashMap::new(),
             ai: Ai::default(),
@@ -1441,15 +1450,7 @@ impl App {
                 return self.open_settings_form();
             }
             Message::OpenSettingsAt(field) => return self.open_settings_at(field),
-            Message::CloseSettingsOverlay => {
-                // Whatever was typed and not yet submitted, as closing the
-                // window keeps it.
-                self.persist_config();
-                self.settings_overlay = false;
-                self.settings_focus = None;
-                self.cache.clear();
-                return self.close_settings_pickers();
-            }
+            Message::CloseSettingsOverlay => return self.close_settings_overlay(),
             Message::OpenSettings => {
                 if let Some(id) = self.settings_window {
                     return window::gain_focus(id);
@@ -1499,6 +1500,9 @@ impl App {
             Message::ToggleOverlay if self.hotkey_recording => {}
             Message::ToggleOverlay => return self.toggle_overlay(),
             Message::SummonPortal(portal) => self.portal_said(portal),
+            Message::SignIn => return self.sign_in(),
+            Message::CancelSignIn => self.cancel_sign_in(),
+            Message::SignedIn(key) => return self.signed_in(key),
             #[cfg(unix)]
             Message::Launched(launch) => return self.launched(launch),
             Message::WindowShown => {
@@ -1681,12 +1685,15 @@ impl App {
         }
     }
 
-    /// The rows the panel's section headers sit over — the palette's, with
-    /// nothing typed; none anywhere else.
+    /// The rows the panel's section headers sit over — the palette's, and the
+    /// model picker's, with nothing typed; none anywhere else.
     fn panel_headers(&self, panel: picker::Panel) -> Vec<usize> {
-        match (panel, &self.command_palette) {
-            (picker::Panel::Command, Some(state)) => {
+        match (panel, &self.command_palette, &self.model_picker) {
+            (picker::Panel::Command, Some(state), _) => {
                 command::listing(self, &state.query).headers.into_iter().map(|(heads, _)| heads).collect()
+            }
+            (picker::Panel::Model, _, Some(picker)) => {
+                self.model_listing(&picker.state.query).1.into_iter().map(|(heads, ..)| heads).collect()
             }
             _ => Vec::new(),
         }
@@ -2645,6 +2652,11 @@ impl App {
         // reveal advances and the phase leaves `Entering`/`Exiting` regardless.
         if matches!(self.phase, Phase::Entering { .. } | Phase::Exiting { .. }) {
             subscriptions.push(iced::time::every(Duration::from_millis(16)).map(Message::Tick));
+        }
+        // The model picker's skeleton, its light crossing it while the list is
+        // fetched: a frame is all it needs, drawn — unless animations are off.
+        if self.model_picker_waiting().is_some() && self.config.animation_scale > 0.0 {
+            subscriptions.push(window::frames().map(|_| Message::Noop));
         }
         // A double-click's caret placement waits for the editor's first frame
         // (its buffer isn't shaped until then); one frame tick delivers it.

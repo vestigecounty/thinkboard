@@ -21,6 +21,7 @@
 use std::borrow::Cow;
 use std::ops::Range;
 use std::sync::LazyLock;
+use std::time::{Duration, Instant};
 
 use iced::advanced::widget::Id;
 use iced::advanced::widget::operation::scrollable::AbsoluteOffset;
@@ -241,6 +242,8 @@ pub(super) struct Row<'a> {
     /// enclosing folder in the vault browser, why a command can't run. Empty
     /// for none.
     pub detail: Cow<'a, str>,
+    /// The detail's colour, where it isn't the muted one: a model's "free".
+    pub detail_tint: Option<Color>,
     /// A shortcut, a cap per key, after the detail. Empty for none.
     pub keys: Vec<&'static str>,
     /// A disabled row is greyed and can't be pressed (but still takes a slot,
@@ -255,6 +258,10 @@ pub(super) struct Row<'a> {
     pub glyph: Option<super::chrome::Glyph>,
     pub press: Message,
 }
+
+/// A section header: the row it heads, what it says, and the colour it's set
+/// in where it isn't the muted one.
+pub(super) type Header<'a> = (usize, Cow<'a, str>, Option<Color>);
 
 /// What makes a shell one panel rather than another.
 ///
@@ -272,9 +279,17 @@ pub(super) struct Shell<'a> {
     pub verb: &'a str,
     /// Shown in place of the rows when there are none.
     pub empty: Cow<'a, str>,
-    /// Section headers, each with the row it heads. Only the palette has any,
-    /// and only with nothing typed: a query ranks across them.
-    pub headers: Vec<(usize, Cow<'a, str>)>,
+    /// Since when it has been waiting on rows being fetched, with none to show
+    /// (the model picker's): the list is drawn as rows still to come, at its
+    /// full height, and `empty` says what's being waited on in the head —
+    /// rather than a one-row panel that grows when they come.
+    pub loading: Option<Instant>,
+    /// A line over the list, in its colour: what led to the panel, where that
+    /// wants saying (a sign-in that worked, over the models it opened).
+    pub notice: Option<(Cow<'a, str>, Color)>,
+    /// Section headers. The palette's and the model picker's, and only with
+    /// nothing typed: a query ranks across them.
+    pub headers: Vec<Header<'a>>,
 }
 
 /// How this platform spells the keys a hint names: Return is ↵ on a Mac and
@@ -319,9 +334,11 @@ pub(super) fn view<'a>(
             value: text_c,
             selection: Color { a: 0.30, ..accent },
         });
+    let waiting = shell.loading.filter(|_| rows.is_empty());
     // How many a query left, as the find bar counts; nothing with none typed,
-    // where the whole list is the answer.
+    // where the whole list is the answer. Waiting, what on.
     let count = match rows.len() {
+        _ if waiting.is_some() => shell.empty.clone().into_owned(),
         _ if state.query.trim().is_empty() => String::new(),
         0 => String::new(),
         1 => "1 result".to_owned(),
@@ -339,7 +356,17 @@ pub(super) fn view<'a>(
     .padding([0.0, 14.0])
     .center_y(Length::Fixed(HEAD_HEIGHT));
 
-    let body = if rows.is_empty() {
+    let body = if let Some(since) = waiting {
+        // A sweep takes as long as the app's animations say, and a scale of
+        // nothing — animations off — holds it still.
+        let scale = app.config.animation_scale;
+        let sweep = (scale > 0.0).then(|| SKELETON_SWEEP.mul_f32(scale));
+        let skeleton = Skeleton { since, sweep, ink: ct.text };
+        Element::from(
+            container(canvas(skeleton).width(Length::Fill).height(LIST_HEIGHT))
+                .padding(iced::Padding { top: LIST_PAD, right: LIST_PAD, bottom: LIST_PAD, left: LIST_PAD }),
+        )
+    } else if rows.is_empty() {
         // Sits at a row's height so an empty list doesn't collapse the panel.
         Element::from(
             container(text(shell.empty).size(13).font(font).color(muted))
@@ -352,8 +379,8 @@ pub(super) fn view<'a>(
         // Its right inset inside the scrollable, so that's where the bar runs.
         let mut list = column![].padding(iced::Padding::default().right(LIST_PAD));
         for (i, entry) in rows.into_iter().enumerate() {
-            while let Some((_, label)) = headers.next_if(|(heads, _)| *heads == i) {
-                list = list.push(header(label, strong, muted, padding));
+            while let Some((_, label, tint)) = headers.next_if(|(heads, ..)| *heads == i) {
+                list = list.push(header(label, strong, tint.unwrap_or(muted), padding));
             }
             list = list.push(list_row(entry, i == state.selected, Look { ct, font, strong, faint }, padding));
         }
@@ -393,7 +420,21 @@ pub(super) fn view<'a>(
         .center_y(Length::Fixed(FOOT_HEIGHT));
 
     let rule = || container(Space::new().width(Length::Fill).height(1)).style(move |_theme| chrome::hairline(&ct));
-    let panel = container(column![head, rule(), body, rule(), foot])
+    let mut parts = column![head, rule()];
+    if let Some((words, color)) = shell.notice {
+        // Under the field, where the eye is when the panel comes up: a band
+        // of its colour, faint, and the words in it.
+        parts = parts.push(
+            container(text(words).size(13).font(font).color(color))
+                .width(Length::Fill)
+                .padding([8.0, 14.0])
+                .style(move |_theme| container::Style {
+                    background: Some(Color { a: 0.10, ..color }.into()),
+                    ..container::Style::default()
+                }),
+        );
+    }
+    let panel = container(parts.push(body).push(rule()).push(foot))
         // As wide as the design asks, or the window less a margin each side.
         .width(Length::Fill)
         .max_width(PANEL_WIDTH)
@@ -412,6 +453,68 @@ pub(super) fn view<'a>(
         .padding(iced::Padding { top: 64.0 + app.top_safe_inset, right: 16.0, bottom: 0.0, left: 16.0 });
 
     mouse_area(backdrop).on_press(Message::ClosePanel(which)).into()
+}
+
+/// How long the skeleton's light takes to cross it, at an animation scale of 1.
+const SKELETON_SWEEP: Duration = Duration::from_millis(1400);
+
+/// A list's worth of rows still to come: each a bar where its title will be
+/// and a short one for its detail, in the text colour barely there — the
+/// lengths varied, as titles are, so it reads as a list and not as stripes —
+/// and a band of light sweeping across them. One band, in the list's own
+/// coordinates, so it crosses the bars in turn rather than each on its own:
+/// why it's a canvas, where a container's gradient is its own.
+struct Skeleton {
+    since: Instant,
+    /// A sweep's length; none holds the light still, which is to say off.
+    sweep: Option<Duration>,
+    ink: Color,
+}
+
+impl canvas::Program<Message> for Skeleton {
+    type State = ();
+
+    fn draw(
+        &self,
+        _state: &(),
+        renderer: &iced::Renderer,
+        _theme: &iced::Theme,
+        bounds: iced::Rectangle,
+        _cursor: iced::mouse::Cursor,
+    ) -> Vec<canvas::Geometry> {
+        use canvas::{Fill, Path, Style, gradient};
+        use iced::{Point, Size};
+        const TITLES: [f32; 5] = [0.7, 0.45, 0.58, 0.38, 0.5];
+        const BAR: f32 = 9.0;
+        const DETAIL: f32 = 28.0;
+        let mut frame = canvas::Frame::new(renderer, bounds.size());
+        let dim = Color { a: 0.07, ..self.ink };
+        let fill = match self.sweep {
+            Some(sweep) => {
+                let through = (self.since.elapsed().as_secs_f32() / sweep.as_secs_f32()).fract();
+                // From wholly off the left edge to wholly off the right, and
+                // leaning, so each row below is lit a moment after the one above.
+                let half = 90.0;
+                let x = -half + through * (bounds.width + 2.0 * half);
+                let light = gradient::Linear::new(Point::new(x - half, 0.0), Point::new(x + half, half * 0.4))
+                    .add_stop(0.0, dim)
+                    .add_stop(0.5, Color { a: 0.15, ..self.ink })
+                    .add_stop(1.0, dim);
+                Fill { style: Style::Gradient(light.into()), ..Fill::default() }
+            }
+            None => Fill::from(dim),
+        };
+        let titles = bounds.width - 2.0 * ROW_PAD_X - DETAIL - 10.0;
+        for row in 0..(LIST_HEIGHT / ROW_HEIGHT) as usize {
+            let y = row as f32 * ROW_HEIGHT + (ROW_HEIGHT - BAR) / 2.0;
+            let title = titles * TITLES[row % TITLES.len()];
+            for (x, width) in [(ROW_PAD_X, title), (bounds.width - ROW_PAD_X - DETAIL, DETAIL)] {
+                let bar = Path::rounded_rectangle(Point::new(x, y), Size::new(width, BAR), (BAR / 2.0).into());
+                frame.fill(&bar, fill);
+            }
+        }
+        vec![frame.into_geometry()]
+    }
 }
 
 /// What every row of one panel is drawn with.
@@ -449,8 +552,8 @@ fn scrollbar(ct: &crate::theme::Theme, status: scrollable::Status) -> scrollable
 
 /// A section header, in a row's slot: its label sits at the slot's foot, so
 /// the space above it is what parts it from the section before.
-fn header<'a>(label: Cow<'a, str>, strong: Font, muted: Color, padding: iced::Padding) -> Element<'a, Message> {
-    container(text(label.to_uppercase()).size(11).font(strong).color(muted).wrapping(text::Wrapping::None))
+fn header<'a>(label: Cow<'a, str>, strong: Font, color: Color, padding: iced::Padding) -> Element<'a, Message> {
+    container(text(label.to_uppercase()).size(11).font(strong).color(color).wrapping(text::Wrapping::None))
         .width(Length::Fill)
         .height(Length::Fixed(ROW_HEIGHT))
         .padding(padding.bottom(5.0))
@@ -491,7 +594,8 @@ fn list_row<'a>(entry: Row<'a>, selected: bool, look: Look, padding: iced::Paddi
     // Only when there is one: an empty child would still take the row's
     // spacing, nudging every row without one off-centre.
     if !entry.detail.is_empty() {
-        line = line.push(text(entry.detail).size(12).font(font).color(ct.text_muted).wrapping(text::Wrapping::None));
+        let color = entry.detail_tint.unwrap_or(ct.text_muted);
+        line = line.push(text(entry.detail).size(12).font(font).color(color).wrapping(text::Wrapping::None));
     }
     if !entry.keys.is_empty() {
         let caps = entry.keys.into_iter().map(|key| {

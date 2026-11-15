@@ -31,6 +31,7 @@ use iced::{Alignment, Border, Color, Element, Fill, Font, Padding, Point, Rectan
 
 use super::{FILE_ONLY, Field, Msg, PROVIDER_OFF, Tab, current_preset, hand_picked_css, is_local};
 use crate::app::chrome::mix;
+use crate::app::sign_in::{Signing, signs_in as offers_sign_in};
 use crate::app::summon::Portal;
 use crate::app::{App, Message};
 use crate::config::{ArrowTip, Config, LinkStyle, OverlayBackdrop};
@@ -521,13 +522,35 @@ fn ai(app: &App, look: Look) -> Vec<Element<'_, Message>> {
         // A runtime on this machine asks for no key — greyed, not locked, as
         // a local proxy can still want one.
         let local = is_local(&c.ai_url);
-        ask.push(
-            setting(Field::AiApiKey)
-                .control(key(look, app.draft(Field::AiApiKey), local))
-                .enabled(!local)
-                .desc("Sent as a Bearer token. Hosted providers need one; it's kept per provider.")
-                .build(app, look),
-        );
+        // OpenRouter can make a key for an app it's signed into, so where it
+        // has none yet, that's offered in place of an empty field.
+        let signs_in = offers_sign_in(&c.ai_url);
+        let control = match &app.signing {
+            Signing::Waiting { .. } if signs_in => {
+                row![act(look, "Cancel", Message::CancelSignIn, plain(look))].into()
+            }
+            _ if signs_in && c.ai_key().is_empty() => row![
+                act(look, "Sign in…", Message::SignIn, accent(look)),
+                act(look, "Paste", Message::Settings(Msg::Paste(Field::AiApiKey)), plain(look)),
+            ]
+            .spacing(8)
+            .align_y(Alignment::Center)
+            .into(),
+            _ => key(look, app.draft(Field::AiApiKey), local),
+        };
+        let mut api_key = setting(Field::AiApiKey).control(control).enabled(!local).desc(if signs_in {
+            "Signing in makes one in your OpenRouter account, named ThinkBoard. Or paste one of yours."
+        } else {
+            "Sent as a Bearer token. Hosted providers need one; it's kept per provider."
+        });
+        if signs_in {
+            match &app.signing {
+                Signing::Waiting { .. } => api_key = api_key.note(quiet(look, "Finish signing in in your browser.")),
+                Signing::Failed(why) => api_key = api_key.note(quiet(look, why.as_str())),
+                Signing::Idle => {}
+            }
+        }
+        ask.push(api_key.build(app, look));
     }
 
     let mut sections = vec![section(look, "Ask AI", "", ask)];
@@ -1493,7 +1516,11 @@ fn providers<'a>(look: Look, chosen: String) -> Element<'a, Message> {
 fn provider_words(preset: &str, url: &str) -> String {
     let place = url.trim().split_once("://").map_or(url.trim(), |(_, rest)| rest).trim_end_matches('/');
     match preset {
-        PROVIDER_OFF => "Off: Ask AI stays hidden. A local provider like LM Studio needs no key.".to_owned(),
+        PROVIDER_OFF => {
+            "Off: nothing leaves your machine. Use a model running locally, or a hosted provider — some have \
+             free models."
+                .to_owned()
+        }
         "Custom" => "Any OpenAI-compatible endpoint.".to_owned(),
         _ if is_local(url) => format!("Local, no key needed · {place}"),
         _ => format!("Hosted, needs an API key · {place}"),

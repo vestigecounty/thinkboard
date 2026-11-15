@@ -43,7 +43,7 @@ pub const PRESETS: &[Preset] = &[
     Preset { name: "LM Studio", url: "http://localhost:1234/v1" },
     Preset { name: "Ollama", url: "http://localhost:11434/v1" },
     Preset { name: "OpenAI", url: "https://api.openai.com/v1" },
-    Preset { name: "OpenRouter", url: "https://openrouter.ai/api/v1" },
+    Preset { name: "OpenRouter", url: crate::sign_in::ENDPOINT },
     Preset { name: "Groq", url: "https://api.groq.com/openai/v1" },
     Preset { name: "Together AI", url: "https://api.together.xyz/v1" },
     Preset { name: "Fireworks AI", url: "https://api.fireworks.ai/inference/v1" },
@@ -84,6 +84,10 @@ pub struct Model {
     /// Context window in tokens, where stated. Worth showing: it's the thing
     /// most likely to decide between two models with similar names.
     pub context: Option<u64>,
+    /// Priced at nothing to ask and nothing to answer, and answering in text
+    /// alone — where the endpoint says what it charges (OpenRouter does). A
+    /// free model is rate-limited, and such offers come and go.
+    pub free: bool,
 }
 
 /// The models an endpoint offers, by its OpenAI-compatible `GET /models`.
@@ -130,6 +134,7 @@ fn parse_models(body: &serde_json::Value) -> Vec<Model> {
                 context: ["context_length", "context_window", "max_context_length"]
                     .iter()
                     .find_map(|key| item.get(*key).and_then(serde_json::Value::as_u64)),
+                free: free(item),
             })
         })
         .collect();
@@ -138,6 +143,23 @@ fn parse_models(body: &serde_json::Value) -> Vec<Model> {
     models.sort_by_key(|model| model.id.to_lowercase());
     models.dedup_by(|a, b| a.id == b.id);
     models
+}
+
+/// Whether a `/models` entry says it costs nothing, prompt and completion
+/// both, and answers in text alone: a model that makes music can be listed at
+/// nothing too, and isn't one to ask a question of. Prices are decimal
+/// strings, per token; a model without them isn't free, only unpriced.
+fn free(item: &serde_json::Value) -> bool {
+    let zero = |side: &str| {
+        item.pointer(&format!("/pricing/{side}"))
+            .and_then(|price| price.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| price.as_f64()))
+            .is_some_and(|price| price == 0.0)
+    };
+    let text_out = item
+        .pointer("/architecture/output_modalities")
+        .and_then(serde_json::Value::as_array)
+        .is_none_or(|out| out.iter().all(|modality| modality == "text"));
+    zero("prompt") && zero("completion") && text_out
 }
 
 /// What a request was for, which decides what a refusal means.
@@ -176,10 +198,29 @@ fn describe_failure(status: reqwest::StatusCode, body: &str, base_url: &str, api
             "This endpoint doesn't list its models — type the model's name in Settings → AI.".to_owned()
         }
         404 => format!("Nothing answers at {} — check the API URL in Settings → AI.", base_url.trim()),
+        // Credits, or a balance below nothing — which stops even the free
+        // models.
+        402 => format!("{provider} wants credits for this — add some on its site, then ask again. ({detail})"),
+        // A free model's limits are per minute and per day, and the day's
+        // is the one a wait of a moment won't lift.
+        429 if matches!(asked, Asked::Chat { model } if free_by_name(model)) => format!(
+            "That's {provider}'s limit for its free models for now — try later, or choose another model in \
+             Settings → AI. Credits on the account raise it. ({detail})"
+        ),
         429 => format!("{provider} is limiting requests — wait a moment, then ask again. ({detail})"),
         500..=599 => format!("{provider} couldn't answer ({status}): {detail}"),
         _ => format!("{provider} refused the request ({status}): {detail}"),
     }
+}
+
+/// OpenRouter's router to its free models: whichever is up at the time, so
+/// one that's been withdrawn or is down is passed over.
+pub const FREE_ROUTER: &str = "openrouter/free";
+
+/// Whether a model's name says it's a free one: OpenRouter's `:free`
+/// variants, and its router to them. A refusal carries the name, not the price.
+fn free_by_name(model: &str) -> bool {
+    model.ends_with(":free") || model == FREE_ROUTER
 }
 
 /// Whether a refusal is about the model named — wording varies by runtime:
@@ -1345,6 +1386,25 @@ mod tests {
     }
 
     #[test]
+    fn a_free_model_costs_nothing_either_way_and_answers_in_text() {
+        let body = serde_json::json!({"data": [
+            {"id": "google/gemma-4-31b-it:free", "pricing": {"prompt": "0", "completion": "0"},
+             "architecture": {"output_modalities": ["text"]}},
+            {"id": "openrouter/free", "pricing": {"prompt": "0", "completion": "0"}},
+            // Music, at nothing: not something to ask a question of.
+            {"id": "google/lyria-3-pro-preview", "pricing": {"prompt": "0", "completion": "0"},
+             "architecture": {"output_modalities": ["text", "audio"]}},
+            {"id": "openai/gpt-4o", "pricing": {"prompt": "0.0000025", "completion": "0.00001"}},
+            {"id": "half/free", "pricing": {"prompt": "0", "completion": "0.000001"}},
+            // No price given is unknown, not free.
+            {"id": "local-model"},
+        ]});
+        let models = parse_models(&body);
+        let free: Vec<&str> = models.iter().filter(|m| m.free).map(|m| m.id.as_str()).collect();
+        assert_eq!(free, ["google/gemma-4-31b-it:free", "openrouter/free"]);
+    }
+
+    #[test]
     fn unusable_entries_are_dropped_and_the_rest_sorted() {
         let body = serde_json::json!({"data": [
             {"id": "zeta"},
@@ -1358,6 +1418,20 @@ mod tests {
         let ids: Vec<&str> = models.iter().map(|m| m.id.as_str()).collect();
         assert_eq!(ids, ["Alpha", "beta", "zeta"], "case-insensitive, so vendors group");
         assert_eq!(models[1].name, None, "a name equal to the id says nothing twice");
+    }
+
+    #[test]
+    fn credits_and_a_free_models_limit_say_so() {
+        use reqwest::StatusCode;
+        let openrouter = "https://openrouter.ai/api/v1";
+        let broke = describe_failure(StatusCode::PAYMENT_REQUIRED, r#"{"error": {"message": "Insufficient credits"}}"#, openrouter, "sk-or", Asked::Chat { model: "openai/gpt-4o" });
+        assert!(broke.starts_with("OpenRouter wants credits"), "{broke}");
+
+        let limited = |model| describe_failure(StatusCode::TOO_MANY_REQUESTS, r#"{"error": {"message": "Rate limit exceeded"}}"#, openrouter, "sk-or", Asked::Chat { model });
+        for free in ["google/gemma-4-31b-it:free", "openrouter/free"] {
+            assert!(limited(free).contains("limit for its free models"), "{}", limited(free));
+        }
+        assert!(limited("openai/gpt-4o").contains("wait a moment"), "a paid model's limit lifts by itself");
     }
 
     #[test]

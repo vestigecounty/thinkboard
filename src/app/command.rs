@@ -584,7 +584,7 @@ pub(crate) fn key_event(
 /// The palette's rows and section headers, as `state` has them: what [`view`]
 /// draws, and what the tour records of it. Rows are greyed and un-clickable
 /// when their command isn't applicable.
-pub(super) fn rows<'a>(app: &'a App, state: &picker::State) -> (Vec<Row<'a>>, Vec<(usize, Cow<'a, str>)>) {
+pub(super) fn rows<'a>(app: &'a App, state: &picker::State) -> (Vec<Row<'a>>, Vec<picker::Header<'a>>) {
     let Listing { entries, headers } = listing(app, &state.query);
     let rows = entries
         .into_iter()
@@ -600,6 +600,7 @@ pub(super) fn rows<'a>(app: &'a App, state: &picker::State) -> (Vec<Row<'a>>, Ve
                 // The reason replaces the shortcut: a chord for something that
                 // can't run is the one thing on the row with no use.
                 detail: unavailable.map_or(entry.detail, Cow::Borrowed),
+                detail_tint: None,
                 keys: if unavailable.is_some() { Vec::new() } else { entry.keys },
                 enabled: unavailable.is_none(),
                 font: None,
@@ -608,7 +609,7 @@ pub(super) fn rows<'a>(app: &'a App, state: &picker::State) -> (Vec<Row<'a>>, Ve
             }
         })
         .collect();
-    (rows, headers.into_iter().map(|(heads, label)| (heads, label.into())).collect())
+    (rows, headers.into_iter().map(|(heads, label)| (heads, label.into(), None)).collect())
 }
 
 /// The palette panel: a focused input over the listing.
@@ -631,6 +632,8 @@ pub(super) fn view<'a>(app: &'a App, state: &'a picker::State) -> Element<'a, Me
             glyph: Glyph::Prompt,
             on_submit: Message::RunSelectedCommand,
             verb: if opens { "Open" } else { "Run" },
+            loading: None,
+            notice: None,
             empty: "No matching command".into(),
             headers,
         },
