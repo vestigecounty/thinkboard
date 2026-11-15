@@ -1155,7 +1155,10 @@ throwaway `--config` run kill the everyday copy. So:
   default. macOS's live behind-window blur was tried too: no faster than the
   desktop, a second slower to summon, and greyed colours.
 - **Linux** — Wayland can't hide a window in place, so hiding *closes* the
-  window and summoning opens a fresh one. **Nor can an app hear a key that
+  window and summoning opens a fresh one. The overlay is borderless
+  fullscreen, except on COSMIC, whose compositor draws a fullscreen window
+  opaque: there it's maximized, stopping at the panel, so it can be
+  see-through. **Nor can an app hear a key that
   isn't its own there**: `global-hotkey` grabs through X11, and XWayland hears
   a key only while one of its windows has focus, which ours never is. So under
   Wayland the summon key is asked of the desktop, through the GlobalShortcuts

@@ -310,8 +310,8 @@ fn window_icon() -> Option<window::Icon> {
 /// it's an undecorated, always-on-top, screen-filling surface: the platform
 /// layer stretches it to the screen after creation (macOS/Windows), while Linux
 /// has no such hook so it starts borderless-fullscreen (the compositor keeps it
-/// transparent). Kept a pure function of the config so Linux can rebuild it for
-/// each re-summon.
+/// transparent), or maximized on COSMIC. Kept a pure function of the config so
+/// Linux can rebuild it for each re-summon.
 pub(super) fn window_settings(config: &crate::config::Config, windowed: bool) -> window::Settings {
     let mut settings = window::Settings {
         size: Size::new(1400.0, 900.0),
@@ -332,8 +332,14 @@ pub(super) fn window_settings(config: &crate::config::Config, windowed: bool) ->
         settings.resizable = false;
         settings.level = window::Level::AlwaysOnTop;
         settings.position = window::Position::Specific(Point::ORIGIN);
+        // Fullscreen fills the screen, except on COSMIC, whose compositor
+        // draws a fullscreen window opaque whatever its alpha: the see-through
+        // board came out black there. Maximized, it stops at the panel and is
+        // composited as drawn.
         #[cfg(not(any(target_os = "macos", windows)))]
-        {
+        if crate::platform::on_cosmic() {
+            settings.maximized = true;
+        } else {
             settings.fullscreen = true;
         }
     }

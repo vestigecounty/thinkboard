@@ -55,6 +55,18 @@ pub fn set_overlay_opaque(opaque: bool) {
     backend::set_overlay_opaque(opaque);
 }
 
+/// Whether the desktop is COSMIC, which names itself among
+/// `XDG_CURRENT_DESKTOP`'s names (`COSMIC`, or `pop:COSMIC` on Pop!_OS).
+#[cfg(not(any(target_os = "macos", windows)))]
+pub fn on_cosmic() -> bool {
+    std::env::var("XDG_CURRENT_DESKTOP").is_ok_and(|desktops| names_cosmic(&desktops))
+}
+
+#[cfg(any(not(any(target_os = "macos", windows)), test))]
+fn names_cosmic(desktops: &str) -> bool {
+    desktops.split(':').any(|name| name.eq_ignore_ascii_case("cosmic"))
+}
+
 /// Whether this platform can put a picture under the overlay
 /// (`config::OverlayBackdrop::Wallpaper` / `Image`): a window of its own,
 /// placed under the board's. macOS, for now.
@@ -259,4 +271,18 @@ pub fn open_url(url: &str) {
         .args(["/C", "start", "", url])
         .creation_flags(CREATE_NO_WINDOW)
         .spawn();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::names_cosmic;
+
+    #[test]
+    fn cosmic_is_found_among_the_desktops_named_whatever_its_case() {
+        assert!(names_cosmic("COSMIC"));
+        assert!(names_cosmic("pop:COSMIC"));
+        assert!(!names_cosmic("GNOME"));
+        assert!(!names_cosmic("ubuntu:GNOME"));
+        assert!(!names_cosmic(""));
+    }
 }
