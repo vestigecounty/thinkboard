@@ -53,6 +53,9 @@ Arguments:
 Options:
   --windowed         Run as an ordinary window (no desktop overlay)
   --config <path>    Use a specific config file
+  --summon           Toggle the running instance's overlay, then exit. With no
+                     instance running, starts ThinkBoard (this is what the
+                     COSMIC desktop shortcut runs; see the platform module)
   --help, -h         Show this help";
 
 /// Parses a hotkey spec (e.g. `Alt+F12`, `Cmd+Shift+K`, `Ctrl+Space`) into a
@@ -81,11 +84,23 @@ pub(super) fn summon_hotkey(spec: &str) -> Option<HotKey> {
 /// keeps the manager so the shortcut can be re-registered when it changes in
 /// settings. Returns `(None, _)` in windowed mode or where a manager can't be
 /// created (e.g. Wayland has no global-hotkey support).
+///
+/// On a COSMIC session the global hotkey is skipped entirely: the manager
+/// would succeed (XWayland is there to grab) and then never fire — the
+/// compositor routes keys to Wayland surfaces, not to XWayland root grabs.
+/// The working summon on cosmic is the custom-shortcut + socket IPC mechanism
+/// (`platform::summon`), registered in `App::new` alongside this.
 pub(super) fn register_summon_hotkey(
     spec: &str,
     windowed: bool,
 ) -> (Option<GlobalHotKeyManager>, Option<HotKey>) {
     if windowed {
+        return (None, None);
+    }
+    #[cfg(target_os = "linux")]
+    if crate::platform::cosmic_backend_active() {
+        // Register the compositor-level shortcut instead; no manager to keep.
+        crate::platform::summon::ensure_summon_shortcut(spec);
         return (None, None);
     }
     let manager = match GlobalHotKeyManager::new() {
@@ -132,6 +147,28 @@ pub(crate) fn run() -> iced::Result {
         println!("{USAGE}");
         return Ok(());
     }
+
+    // COSMIC desktop: the summon arrives as a second process (`<exe> --summon`,
+    // spawned by the compositor's custom-shortcut mechanism). It forwards the
+    // toggle to the resident instance over a Unix socket and exits — unless no
+    // instance is running, in which case this very process continues into
+    // normal startup (the hotkey then also *launches* the app cold).
+    #[cfg(target_os = "linux")]
+    if std::env::args().any(|arg| arg == "--summon") {
+        if crate::platform::summon::request_summon() {
+            return Ok(());
+        }
+        // No resident: fall through and start the app. `kill_previous_instances`
+        // below is skipped — a stale-but-alive instance would then be killed
+        // and this one would take over, which is the right recovery.
+    } else {
+        // Regular launch (not `--summon`): on cosmic the resident instance is
+        // the one that owns the summon socket, so old copies must die for the
+        // new build to take over — same as before, but AFTER the `--summon`
+        // check so the summoner never kills the instance it's talking to.
+        crate::platform::kill_previous_instances();
+    }
+    #[cfg(not(target_os = "linux"))]
     crate::platform::kill_previous_instances();
 
     // Loaded again in App::new; read here for the hotkey and window flags.
@@ -272,10 +309,11 @@ fn window_icon() -> Option<window::Icon> {
 
 /// The window configuration for a launch. In overlay mode (not `--windowed`)
 /// it's an undecorated, always-on-top, screen-filling surface: the platform
-/// layer stretches it to the screen after creation (macOS/Windows), while Linux
-/// has no such hook so it starts borderless-fullscreen (the compositor keeps it
-/// transparent). Kept a pure function of the config so Linux can rebuild it for
-/// each re-summon.
+/// layer stretches it to the screen after creation (macOS/Windows); on Linux
+/// it's maximized — borderless-fullscreen would make cosmic-comp composite it
+/// opaquely (the plan's Phase 0 finding), so the see-through board went black.
+/// Kept a pure function of the config so Linux can rebuild it for each
+/// re-summon.
 pub(super) fn window_settings(config: &crate::config::Config, windowed: bool) -> window::Settings {
     let mut settings = window::Settings {
         size: Size::new(1400.0, 900.0),
@@ -295,7 +333,37 @@ pub(super) fn window_settings(config: &crate::config::Config, windowed: bool) ->
         settings.resizable = false;
         settings.level = window::Level::AlwaysOnTop;
         settings.position = window::Position::Specific(Point::ORIGIN);
-        #[cfg(not(any(target_os = "macos", windows)))]
+        #[cfg(target_os = "macos")]
+        {
+            // macOS gets its exact screen frame from the platform layer after
+            // creation (`configure_overlay_window`); fullscreen would fight it.
+            settings.fullscreen = false;
+        }
+        #[cfg(windows)]
+        {
+            // Windows stretches the window to the workarea itself.
+            settings.fullscreen = false;
+        }
+        #[cfg(target_os = "linux")]
+        {
+            if crate::platform::cosmic_backend_active() {
+                // cosmic: a maximized undecorated window fills the workarea
+                // (the panel's exclusive zone is respected) AND composites
+                // with alpha — fullscreen is what killed transparency here
+                // (the plan's Phase 0 finding). `Level::AlwaysOnTop` is a
+                // winit no-op on Wayland regardless; the window perches below
+                // the panel and above ordinary windows while focused, which
+                // an overlay closed on Escape doesn't need to outlive.
+                settings.fullscreen = false;
+                settings.maximized = true;
+                settings.position = window::Position::Default;
+            } else {
+                // Non-cosmic Linux (X11 or another Wayland compositor): the
+                // borderless-fullscreen sizing stands, as before.
+                settings.fullscreen = true;
+            }
+        }
+        #[cfg(not(any(target_os = "macos", windows, target_os = "linux")))]
         {
             settings.fullscreen = true;
         }
@@ -374,6 +442,30 @@ pub(super) fn hotkey_toggles() -> impl iced::futures::Stream<Item = Message> {
                     let _ = sender.unbounded_send(());
                 }
             }));
+
+            while receiver.next().await.is_some() {
+                let _ = output.send(Message::ToggleOverlay).await;
+            }
+        },
+    )
+}
+
+/// Forwards COSMIC summon IPC pings into the update loop: the listener thread
+/// (`platform::summon::listen_for_summon`) invokes the callback for every
+/// `--summon` process that connects, and this stream turns each into a
+/// `ToggleOverlay`. Subscribed alongside `hotkey_toggles` on Linux — on a
+/// non-cosmic desktop the socket simply never gets a connection (the shortcut
+/// isn't registered there), so the idle listener costs nothing.
+pub(super) fn summon_toggles() -> impl iced::futures::Stream<Item = Message> {
+    iced::stream::channel(
+        4,
+        |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
+            use iced::futures::{SinkExt, StreamExt};
+
+            let (sender, mut receiver) = iced::futures::channel::mpsc::unbounded();
+            crate::platform::summon::listen_for_summon(move || {
+                let _ = sender.unbounded_send(());
+            });
 
             while receiver.next().await.is_some() {
                 let _ = output.send(Message::ToggleOverlay).await;
@@ -494,6 +586,13 @@ impl App {
     /// Re-registers the summon hotkey with the OS after it changes in settings,
     /// so it takes effect without a restart.
     pub(super) fn reregister_hotkey(&mut self) {
+        // COSMIC: rewrite the custom-shortcut entry — the compositor reloads
+        // the file live. There is no global-hotkey manager on this path.
+        #[cfg(target_os = "linux")]
+        if crate::platform::cosmic_backend_active() {
+            crate::platform::summon::ensure_summon_shortcut(&self.config.summon_hotkey);
+            return;
+        }
         let Some(manager) = &self.hotkey_manager else {
             return;
         };

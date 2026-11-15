@@ -1,14 +1,20 @@
 //! Platform abstraction. Every OS-specific behavior goes through this module,
 //! so the rest of the app stays platform-agnostic (no `#[cfg(target_os)]` at
-//! call sites). Each backend — [`macos`], [`windows`], [`fallback`] —
-//! implements the same small surface; this facade dispatches to the one built
+//! call sites). Each backend — [`macos`], [`windows`], [`fallback`], [`cosmic`]
+//! — implements the same small surface; this facade dispatches to the one built
 //! for the target and adds portable helpers (`open_url`, `kill_previous_instances`).
+//! On Linux the dispatch between [`fallback`] and [`cosmic`] happens at runtime
+//! (`linux_backend`), so one binary serves every Linux desktop.
 
 #[cfg(target_os = "macos")]
 mod macos;
 #[cfg(windows)]
 mod windows;
-// Everything else (Linux/BSD, for now) gets no desktop-overlay treatment.
+// Linux/BSD: the no-op backend, plus the COSMIC-desktop one. Which of the two
+// serves a given run is decided at runtime — see `linux_backend()` — because a
+// release binary should work on KDE/GNOME too, not only on cosmic.
+#[cfg(not(any(target_os = "macos", windows)))]
+mod cosmic;
 #[cfg(not(any(target_os = "macos", windows)))]
 mod fallback;
 
@@ -16,8 +22,51 @@ mod fallback;
 use macos as backend;
 #[cfg(windows)]
 use windows as backend;
+// On Linux/BSD there is no single compile-time backend: consts that describe
+// the platform (the `SUPPORTS_*`/`LIVE_TRANSPARENCY`/`WATCHES_WORKSPACE`
+// family) read the runtime-chosen one via `linux_backend`, and functions
+// dispatch the same way. `fallback` remains the default the dispatchers
+// delegate to (cosmic's items exist only where they differ).
 #[cfg(not(any(target_os = "macos", windows)))]
 use fallback as backend;
+#[cfg(all(not(any(target_os = "macos", windows)), target_os = "linux"))]
+fn linux_backend() -> bool {
+    cosmic::is_cosmic_session()
+}
+#[cfg(all(not(any(target_os = "macos", windows)), not(target_os = "linux")))]
+fn linux_backend() -> bool {
+    false
+}
+
+/// Summon plumbing that only the cosmic backend implements: `--summon` IPC and
+/// the custom-shortcut writer. No-ops elsewhere (see `fallback`).
+#[cfg(not(any(target_os = "macos", windows)))]
+pub mod summon {
+    // Re-exported from `cosmic` on Linux; absent elsewhere (call sites are
+    // behind `platform::SUMMON_SUPPORTED`).
+    #[cfg(target_os = "linux")]
+    pub use super::cosmic::{ensure_summon_shortcut, listen_for_summon, request_summon};
+
+    // (No SUPPORTED const: call sites are Linux-targeted in `startup` and
+    // already guarded by `cosmic_backend_active()` where behavior differs.)
+}
+#[cfg(any(target_os = "macos", windows))]
+pub mod summon {
+    /// The macOS/Windows summon is the native global hotkey; no IPC.
+    pub const SUPPORTED: bool = false;
+}
+
+/// Whether the COSMIC-desktop backend is serving this run (Linux only; false
+/// everywhere else). Startup consults it for the window shape and the summon
+/// mechanism; the dispatchers above use the same check.
+#[cfg(not(any(target_os = "macos", windows)))]
+pub fn cosmic_backend_active() -> bool {
+    linux_backend()
+}
+#[cfg(any(target_os = "macos", windows))]
+pub fn cosmic_backend_active() -> bool {
+    false
+}
 
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
@@ -29,7 +78,12 @@ use std::os::windows::process::CommandExt;
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
 /// Whether this platform reports workspace/Space changes, so the overlay can
-/// auto-dismiss when the user switches desktops. macOS only, for now.
+/// auto-dismiss when the user switches desktops. macOS only, for now. On
+/// Linux it is false regardless of the desktop (cosmic exposes no
+/// workspace-change channel to clients either).
+#[cfg(target_os = "linux")]
+pub const WATCHES_WORKSPACE: bool = false;
+#[cfg(not(target_os = "linux"))]
 pub const WATCHES_WORKSPACE: bool = backend::WATCHES_WORKSPACE;
 
 /// Whether the overlay window can be transparent (the desktop shows through).
@@ -43,21 +97,33 @@ pub const OVERLAY_TRANSPARENT: bool = true;
 pub const OVERLAY_TRANSPARENT: bool = false;
 
 /// Whether the overlay's see-through can be switched while it's up. On macOS
-/// it's the window's opaque flag, which AppKit lets us flip at any time. Where
-/// it's decided by how the window and its swapchain were made — Windows'
-/// DirectComposition swapchain, Linux's compositor surface — a switch waits
-/// for a restart.
+/// it's the window's opaque flag, which AppKit lets us flip at any time. On
+/// Linux the overlay window is reopened per summon from fresh settings, which
+/// makes the switch effectively live on cosmic (see
+/// `cosmic::LIVE_TRANSPARENCY`); plain fallback keeps it a restart. Windows
+/// decides it by how the window and its swapchain were made, so a switch
+/// waits for a restart there.
+#[cfg(target_os = "linux")]
+pub const LIVE_TRANSPARENCY: bool = cosmic::LIVE_TRANSPARENCY;
+#[cfg(not(target_os = "linux"))]
 pub const LIVE_TRANSPARENCY: bool = backend::LIVE_TRANSPARENCY;
 
 /// Makes the overlay opaque, or see-through again. A no-op where
 /// [`LIVE_TRANSPARENCY`] is false. Main thread only.
 pub fn set_overlay_opaque(opaque: bool) {
+    #[cfg(target_os = "linux")]
+    if linux_backend() {
+        return cosmic::set_overlay_opaque(opaque);
+    }
     backend::set_overlay_opaque(opaque);
 }
 
 /// Whether this platform can put a picture under the overlay
 /// (`config::OverlayBackdrop::Wallpaper` / `Image`): a window of its own,
 /// placed under the board's. macOS, for now.
+#[cfg(target_os = "linux")]
+pub const SUPPORTS_BACKDROP_PICTURE: bool = false;
+#[cfg(not(target_os = "linux"))]
 pub const SUPPORTS_BACKDROP_PICTURE: bool = backend::SUPPORTS_BACKDROP_PICTURE;
 
 /// What the picture under the overlay is of.
@@ -144,17 +210,31 @@ pub const UI_FONT_FILES: &[&str] = &[];
 /// visible on every workspace, non-activating, sized to the screen. Called
 /// after the window is shown. A no-op where it isn't implemented.
 pub fn configure_overlay_window() {
+    #[cfg(target_os = "linux")]
+    if linux_backend() {
+        return cosmic::configure_overlay_window();
+    }
     backend::configure_overlay_window();
 }
 
 /// Registers a handler fired when the active workspace/Space changes. Only
 /// installs a native observer where [`WATCHES_WORKSPACE`] is true.
 pub fn set_workspace_change_handler(handler: impl Fn() + Send + Sync + 'static) {
+    #[cfg(target_os = "linux")]
+    if linux_backend() {
+        // cosmic exposes no workspace channel; keep the no-op symmetric with
+        // fallback (the handler is dropped).
+        let _ = handler;
+        return;
+    }
     backend::set_workspace_change_handler(handler);
 }
 
 /// Whether this platform delivers trackpad pinch (magnify) gestures we capture
 /// natively (iced doesn't expose them). Only macOS, for now.
+#[cfg(target_os = "linux")]
+pub const SUPPORTS_PINCH: bool = false;
+#[cfg(not(target_os = "linux"))]
 pub const SUPPORTS_PINCH: bool = backend::SUPPORTS_PINCH;
 
 /// Registers a handler for trackpad pinch gestures: `(magnification_delta, x,
@@ -166,6 +246,9 @@ pub fn set_magnify_handler(handler: impl Fn(f32, f32, f32) + Send + Sync + 'stat
 
 /// Whether this platform can recognize a raw multi-finger trackpad swipe to
 /// summon the overlay (a private-framework tap). Only macOS, and experimental.
+#[cfg(target_os = "linux")]
+pub const SUPPORTS_GESTURES: bool = false;
+#[cfg(not(target_os = "linux"))]
 pub const SUPPORTS_GESTURES: bool = backend::SUPPORTS_GESTURES;
 
 /// Registers the handler fired when the summon gesture is recognized. Pair with
@@ -191,12 +274,20 @@ pub fn set_summon_gesture_enabled(enable: bool) {
 /// to type anywhere again. A no-op elsewhere, where hiding a window hands focus
 /// on by itself.
 pub fn release_focus() {
+    #[cfg(target_os = "linux")]
+    if linux_backend() {
+        return cosmic::release_focus();
+    }
     backend::release_focus();
 }
 
 /// The top safe-area inset in points: the macOS notch / menu-bar height, so
 /// top-anchored overlay UI can avoid being clipped. 0 on platforms without one.
 pub fn top_safe_inset() -> f32 {
+    #[cfg(target_os = "linux")]
+    if linux_backend() {
+        return cosmic::top_safe_inset();
+    }
     backend::top_safe_inset()
 }
 

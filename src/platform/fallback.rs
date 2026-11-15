@@ -2,9 +2,11 @@
 //! (Linux/BSD, for now). The app runs as an ordinary window; the summon hotkey
 //! and canvas still work — only the always-on-top, all-workspaces overlay
 //! treatment is skipped.
-
-/// No workspace-change notifications, so the overlay never auto-dismisses.
-pub const WATCHES_WORKSPACE: bool = false;
+//
+// On Linux the consts that describe the desktop (`WATCHES_WORKSPACE`,
+// `LIVE_TRANSPARENCY`, the `SUPPORTS_*` family) are decided by the facade
+// (false for every Linux desktop), so they are not re-exported here; only the
+// no-op functions the facade dispatches to live on.
 
 /// Nothing to do: the window stays whatever iced/winit created.
 pub fn configure_overlay_window() {}
@@ -12,16 +14,10 @@ pub fn configure_overlay_window() {}
 /// No observer to install; the handler is dropped.
 pub fn set_workspace_change_handler(_handler: impl Fn() + Send + Sync + 'static) {}
 
-/// No native pinch gestures on this platform.
-pub const SUPPORTS_PINCH: bool = false;
-
-/// No pinch monitor to install (see [`SUPPORTS_PINCH`]).
+/// No pinch monitor to install.
 pub fn set_magnify_handler(_handler: impl Fn(f32, f32, f32) + Send + Sync + 'static) {}
 
-/// No raw trackpad-gesture recognition on this platform.
-pub const SUPPORTS_GESTURES: bool = false;
-
-/// No gesture handler to register (see [`SUPPORTS_GESTURES`]).
+/// No gesture handler to register.
 pub fn set_gesture_handler(_handler: impl Fn() + Send + Sync + 'static) {}
 
 /// No gesture tap to toggle (see [`SUPPORTS_GESTURES`]).
@@ -35,20 +31,15 @@ pub fn top_safe_inset() -> f32 {
     0.0
 }
 
-/// The overlay's transparency is fixed when its window is made, so switching
-/// it waits for a restart.
-pub const LIVE_TRANSPARENCY: bool = false;
-
-/// Nothing to switch (see [`LIVE_TRANSPARENCY`]).
+/// Nothing to switch: the overlay's transparency is fixed when its window is
+/// made, so switching it waits for a restart (the facade's Linux
+/// `LIVE_TRANSPARENCY` is decided per-desktop, not by this backend).
 pub fn set_overlay_opaque(_opaque: bool) {}
 
-/// No window of our own under the overlay here.
-pub const SUPPORTS_BACKDROP_PICTURE: bool = false;
-
-/// Nothing to choose (see [`SUPPORTS_BACKDROP_PICTURE`]).
+/// Nothing to choose — no window of our own under the overlay here.
 pub fn set_backdrop_picture(_picture: super::BackdropPicture, _blur: f32) {}
 
-/// Nothing to preview (see [`SUPPORTS_BACKDROP_PICTURE`]).
+/// Nothing to preview (see [`set_backdrop_picture`]).
 pub fn preview_backdrop_picture(
     _picture: super::BackdropPicture,
     _blur: f32,
@@ -57,5 +48,5 @@ pub fn preview_backdrop_picture(
     ready(None);
 }
 
-/// Nothing to show (see [`SUPPORTS_BACKDROP_PICTURE`]).
+/// Nothing to show (see [`set_backdrop_picture`]).
 pub fn show_backdrop_picture(_alpha: f32) {}

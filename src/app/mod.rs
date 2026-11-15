@@ -83,7 +83,7 @@ use search::Search;
 use thinkboard_core::history::History;
 
 pub(crate) use startup::run;
-use startup::{config_path_arg, hotkey_toggles, is_windowed};
+use startup::{config_path_arg, hotkey_toggles, is_windowed, summon_toggles};
 use sync::{should_save, watch_file};
 
 /// Re-exported for `crate::StagedSnapshot`, which the board draws from.
@@ -2566,6 +2566,15 @@ impl App {
             subscriptions.push(window::frames().map(|_| Message::PlaceEditorCaret));
         }
         subscriptions.extend(self.event_listeners().into_iter().map(iced::event::listen_with));
+        // COSMIC summon IPC: subscribed whenever the overlay mode is on —
+        // crucially also while the overlay is HIDDEN, since a summon's whole
+        // job is to bring it back. (The socket listener lives inside the
+        // subscription; while hidden there is no window, so nothing else is
+        // ticking the daemon.) Windowed mode has no summon at all.
+        #[cfg(target_os = "linux")]
+        if self.overlay {
+            subscriptions.push(Subscription::run(summon_toggles));
+        }
         if self.overlay {
             subscriptions.push(Subscription::run(hotkey_toggles));
             // Tray menu clicks (Show/Hide, Quit) where a tray exists.
