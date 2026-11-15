@@ -11,6 +11,9 @@
 //! changed in the desktop's keyboard settings, not ours. `config.summon_hotkey`
 //! is only the key we suggest.
 //!
+//! COSMIC has no such portal, so there the shortcut is added to its own
+//! custom shortcuts instead — once, and kept by it from then on (`cosmic`).
+//!
 //! **A second launch hands over to the copy running** (macOS, Linux), over a
 //! socket in the user's runtime directory: it does what the summon key does
 //! there — shows or hides the overlay, brings a window forward — or, given a
@@ -22,6 +25,10 @@
 //! as a normal window" wants. Every launch used to kill every other copy, which
 //! lost an edit made inside the autosave's debounce. Windows still does
 //! (`platform::kill_previous_instances`).
+
+#[cfg(any(target_os = "linux", test))]
+#[cfg_attr(not(target_os = "linux"), allow(dead_code))]
+mod cosmic;
 
 #[cfg(unix)]
 use std::io::{BufRead, BufReader, Read, Write};
@@ -54,6 +61,48 @@ pub(crate) enum Portal {
     /// No GlobalShortcuts portal to ask: a key bound to `thinkboard`, and the
     /// tray, are the ways in.
     Missing,
+}
+
+impl super::App {
+    /// What the desktop said of the summon shortcut. Where it has no portal
+    /// to say it with, COSMIC's own shortcuts may have it instead.
+    pub(super) fn portal_said(&mut self, said: Portal) {
+        #[cfg(target_os = "linux")]
+        let said = match said {
+            Portal::Missing => self.without_portal(),
+            said => said,
+        };
+        self.summon_portal = Some(said);
+    }
+
+    /// No portal: on COSMIC, a shortcut of its own that runs ThinkBoard —
+    /// one bound by hand, or ours — or else ours added now, once (`cosmic`).
+    /// Never from a copy on a config of its own, a throwaway run whose
+    /// record of having added it would be its own.
+    #[cfg(target_os = "linux")]
+    fn without_portal(&mut self) -> Portal {
+        if cfg!(test) || !crate::platform::on_cosmic() || super::startup::config_path_arg().is_some() {
+            return Portal::Missing;
+        }
+        if let Some(key) = cosmic::summon_key() {
+            return Portal::Bound(key);
+        }
+        // Added once, and taken out since: that's the user's to undo.
+        if self.config.cosmic_shortcut_added {
+            return Portal::Missing;
+        }
+        match cosmic::add_summon(&self.summon_suggested) {
+            Ok(key) => {
+                self.config.cosmic_shortcut_added = true;
+                self.persist_config();
+                Portal::Bound(key)
+            }
+            Err(why) => {
+                eprintln!("summon shortcut not added to COSMIC's: {why}");
+                Portal::Missing
+            }
+        }
+    }
 }
 
 /// Whether this is a Linux session under Wayland, which is what winit picks
@@ -155,7 +204,23 @@ pub(super) fn portal(suggested: &String) -> impl iced::futures::Stream<Item = Me
 /// key without one here; the desktop then asks for a key itself.
 #[cfg(any(target_os = "linux", test))]
 pub(super) fn portal_trigger(hotkey: HotKey) -> Option<String> {
-    let key = match hotkey.key {
+    let key = key_name(hotkey.key)?;
+    let mods = [
+        (Modifiers::CONTROL, "CTRL"),
+        (Modifiers::ALT, "ALT"),
+        (Modifiers::SHIFT, "SHIFT"),
+        (Modifiers::SUPER | Modifiers::META, "LOGO"),
+    ];
+    let mut trigger: Vec<&str> = mods.iter().filter(|(mods, _)| hotkey.mods.intersects(*mods)).map(|(_, name)| *name).collect();
+    trigger.push(&key);
+    Some(trigger.join("+"))
+}
+
+/// A key's xkb name, which is how both the shortcuts spec and COSMIC name
+/// one: `Pause`, `k`, `bracketleft`. `None` for a key without one here.
+#[cfg(any(target_os = "linux", test))]
+fn key_name(code: Code) -> Option<String> {
+    Some(match code {
         Code::Space => "space".to_owned(),
         Code::Enter => "Return".to_owned(),
         Code::Tab => "Tab".to_owned(),
@@ -198,16 +263,7 @@ pub(super) fn portal_trigger(hotkey: HotKey) -> Option<String> {
                 return None;
             }
         }
-    };
-    let mods = [
-        (Modifiers::CONTROL, "CTRL"),
-        (Modifiers::ALT, "ALT"),
-        (Modifiers::SHIFT, "SHIFT"),
-        (Modifiers::SUPER | Modifiers::META, "LOGO"),
-    ];
-    let mut trigger: Vec<&str> = mods.iter().filter(|(mods, _)| hotkey.mods.intersects(*mods)).map(|(_, name)| *name).collect();
-    trigger.push(&key);
-    Some(trigger.join("+"))
+    })
 }
 
 /// What a later launch asks of the copy already running (`hand_over`).

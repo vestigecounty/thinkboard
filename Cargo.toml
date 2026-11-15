@@ -57,6 +57,8 @@ thinkboard-core = { path = "crates/core", features = ["fixtures"] }
 # The offscreen tour (src/app/tour.rs) drives a `UserInterface` and runs tasks
 # itself, which iced keeps behind its own runtime. Already in the graph via iced.
 iced_runtime = "0.14"
+# As on Linux, so the COSMIC shortcut file's tests run on every platform.
+ron = "0.12"
 
 [target.'cfg(any(target_os = "macos", windows))'.dependencies]
 tray-icon = "0.19"
@@ -74,6 +76,9 @@ tokio = { version = "1", features = ["rt-multi-thread"] }
 # The summon shortcut under Wayland, through the desktop's GlobalShortcuts
 # portal (app/summon.rs). Already in the graph for rfd's file dialogs.
 ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
+# COSMIC has no such portal: the shortcut is added to its own shortcuts file
+# (app/summon/cosmic.rs), read and written with the parser COSMIC reads it with.
+ron = "0.12"
 
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.58", features = [

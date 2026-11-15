@@ -1498,7 +1498,7 @@ impl App {
             // pressing the current hotkey can be re-bound instead of summoning.
             Message::ToggleOverlay if self.hotkey_recording => {}
             Message::ToggleOverlay => return self.toggle_overlay(),
-            Message::SummonPortal(portal) => self.summon_portal = Some(portal),
+            Message::SummonPortal(portal) => self.portal_said(portal),
             #[cfg(unix)]
             Message::Launched(launch) => return self.launched(launch),
             Message::WindowShown => {

@@ -88,6 +88,10 @@ pub struct Config {
     /// [`Config::summon_gesture`] covers the gap; anyone on a laptop who wants
     /// a key rather than a swipe sets one here.
     pub summon_hotkey: String,
+    /// COSMIC only: whether the summon shortcut has been added to the
+    /// desktop's own (`app::summon`). It's done once: one taken out there
+    /// since is the user's doing, and isn't put back. The app keeps it.
+    pub cosmic_shortcut_added: bool,
     /// macOS only: summon/dismiss the overlay with a four-finger downward
     /// trackpad swipe. Ignored on other platforms, where it defaults off.
     ///
@@ -269,6 +273,7 @@ impl Default for Config {
             windowed: false,
             tray_icon_monochrome: false,
             summon_hotkey: "Pause".to_owned(),
+            cosmic_shortcut_added: false,
             // See the field: on a Mac the default hotkey is a key most Macs
             // haven't got, so the gesture is what makes the overlay reachable.
             summon_gesture: cfg!(target_os = "macos"),

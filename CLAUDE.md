@@ -106,7 +106,7 @@ rasterizer) stays desktop-side.
 | `theme_picker` / `font_picker` / `model_picker` | what fills that shell besides the palette |
 | `vault` | finding the vault's boards and switching between them |
 | `switcher` | back and forward through the boards visited (⌘[ ⌘]), and where each was left |
-| `summon` | the summon key under Wayland (the desktop's portal), and a second launch handing over to the copy running |
+| `summon` | the summon key under Wayland (the desktop's portal, or COSMIC's own shortcuts), and a second launch handing over to the copy running |
 | `search`, `clipboard`, `command`, `settings`, `startup`, `tray`, `sync` | as named |
 
 Related fields are grouped into sub-structs (`Ai`, `Ghosts`, `Rasters`,
@@ -1168,7 +1168,12 @@ throwaway `--config` run kill the everyday copy. So:
   `config.summon_hotkey` is only what we suggest. Where there's no portal (sway,
   an older GNOME, COSMIC), a key bound to `thinkboard` in the desktop's own
   settings does it, since a second launch hands over (below); the launcher
-  runs it too. The portal files the shortcut under the
+  runs it too. On COSMIC the app adds that shortcut itself, once
+  (`summon::cosmic`), to the file where COSMIC keeps every custom shortcut —
+  and one that doesn't parse loses the user all of them. So it's read with
+  the parser COSMIC uses, each shortcut kept as written, and what would be
+  written is read back first: every shortcut that was there, unchanged, and
+  ours, or nothing is written. The portal files the shortcut under the
   app id, `com.vestigecounty.ThinkBoard`, which is why the `.desktop` file and
   the window's `app_id` are named for it. Tray uses `ksni` (pure-Rust D-Bus, no
   GTK) so the zig cross-build works; the dialogs use the xdg-portal backend for
