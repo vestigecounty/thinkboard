@@ -2981,11 +2981,17 @@ fn small_windows() {
 ///   through each place, release; `pick LABEL` — glide to what reads LABEL, and click it;
 ///   `swatch N` — the open card menu's Nth swatch (0 the default), likewise.
 /// - `type TEXT` — a key at a time, at a person's pace (`\n` is Return);
-///   `key NAME` — `escape`, `enter`, `tab`, `up` or `down`; `chord MODS KEY` — a shortcut,
+///   `key NAME` — `escape`, `enter`, `tab`, `up`, `down` or a character
+///   (`[`); `chord MODS KEY` — a shortcut,
 ///   `cmd 0`. `pan DX,DY [SECS]` — the board panned that far, as by two
 ///   fingers; `zoom FACTOR [SECS]` — pinched, about the pointer.
+/// - `hold MODS`, `release` — modifiers held down over the steps between, as
+///   ⌘ is held to bring up the board strip, a `key` pressed under them.
 /// - `board FILE` — the board to open, beside the script, instead of
 ///   `TOUR_CANVAS` (read before launch, wherever the line is).
+/// - `open FILE` — another board, beside the script, opened as the palette
+///   or the vault browser opens one: on the trail of boards visited, left
+///   where it was looked at, for ⌘[ and ⌘] to go back to.
 /// - `name ID` — the card made last is called ID from here on.
 ///
 /// Nothing is written back: the board is opened as a scratch one, with its
@@ -3182,31 +3188,33 @@ fn canvas() {
             "chord" => {
                 // `cmd 0`, `cmd shift p`: the modifiers held, the key pressed.
                 let (key, held) = args.split_last().expect("a key");
-                let mut modifiers = Modifiers::empty();
-                for held in held {
-                    modifiers |= match *held {
-                        "cmd" => Modifiers::COMMAND,
-                        "shift" => Modifiers::SHIFT,
-                        "alt" => Modifiers::ALT,
-                        _ => panic!("no such modifier {held:?}"),
-                    };
-                }
-                rec.chord(&mut tour, modifiers, key);
+                rec.chord(&mut tour, modifiers(held), key);
+            }
+            "hold" => rec.hold(&mut tour, modifiers(&args)),
+            "release" => rec.hold(&mut tour, Modifiers::empty()),
+            "open" => {
+                tour.send(Message::OpenListedBoard(beside.join(rest)));
+                tour.settle();
             }
             "type" => {
                 let text = rest.replace("\\n", "\n");
                 rec.type_text(&mut tour, &text);
             }
             "key" => {
-                let named = match rest {
-                    "escape" => key::Named::Escape,
-                    "enter" => key::Named::Enter,
-                    "tab" => key::Named::Tab,
-                    "down" => key::Named::ArrowDown,
-                    "up" => key::Named::ArrowUp,
+                let key = match rest {
+                    "escape" => Key::Named(key::Named::Escape),
+                    "enter" => Key::Named(key::Named::Enter),
+                    "tab" => Key::Named(key::Named::Tab),
+                    "down" => Key::Named(key::Named::ArrowDown),
+                    "up" => Key::Named(key::Named::ArrowUp),
+                    _ if rest.chars().count() == 1 => Key::Character(rest.into()),
                     _ => panic!("no such key {rest:?}"),
                 };
-                rec.key(&mut tour, Key::Named(named), None);
+                // Under modifiers held, it's a shortcut, and said so.
+                if !tour.modifiers.is_empty() {
+                    rec.keys = Some(written(tour.modifiers, rest));
+                }
+                rec.key(&mut tour, key, None);
                 rec.wait(&mut tour, 0.1);
             }
             "name" => {
@@ -3225,6 +3233,31 @@ fn canvas() {
             _ => panic!("line {}: no such step {step:?}", number + 1),
         }
     }
+}
+
+/// A script's modifiers, `cmd shift`, as held.
+fn modifiers(names: &[&str]) -> Modifiers {
+    names.iter().fold(Modifiers::empty(), |held, name| {
+        held | match *name {
+            "cmd" => Modifiers::COMMAND,
+            "shift" => Modifiers::SHIFT,
+            "alt" => Modifiers::ALT,
+            _ => panic!("no such modifier {name:?}"),
+        }
+    })
+}
+
+/// A shortcut as the app writes its keys: `⌘0`, `⇧⌘P` — `key` after the
+/// modifiers, or none.
+fn written(modifiers: Modifiers, key: &str) -> String {
+    let mut written = String::new();
+    for (held, glyph) in [(Modifiers::CTRL, "⌃"), (Modifiers::ALT, "⌥"), (Modifiers::SHIFT, "⇧"), (Modifiers::COMMAND, "⌘")] {
+        if modifiers.contains(held) {
+            written.push_str(glyph);
+        }
+    }
+    written.push_str(&key.to_uppercase());
+    written
 }
 
 /// Where a script's place is on screen: a world point `x,y`, or a card by id
@@ -3266,11 +3299,12 @@ fn card_at_port(tour: &Tour) -> Option<(String, &'static str)> {
 /// frame's time, the window, how far the overlay is summoned, the pointer, the
 /// camera, every card's place, size and text, the links, which cards are
 /// springing into place, the shimmer over what a question read, what's
-/// selected, the clusters zooming out shows, the open panel and the theme on
-/// the board, the card being edited — its text, its caret and the editor's box
-/// — and the open menu; and what the board's own gestures don't leave in the
-/// app's state, which the scene knows instead: a button or a shortcut
-/// pressed, a link being drawn out of a port, a marquee being dragged. What a
+/// selected, the clusters zooming out shows, the open panel, the board strip
+/// and the theme on the board, which board it is, the card being edited — its
+/// text, its caret and the editor's box — and the open menu; and what the
+/// board's own gestures don't leave in the app's state, which the scene knows
+/// instead: a button or a shortcut pressed, keys held, a link being drawn out
+/// of a port, a marquee being dragged. What a
 /// gesture *does* is the app's to decide — where a card lands, how it grows,
 /// when an answer's cards restack — so a replay of it elsewhere is taken from
 /// here rather than worked out again.
@@ -3310,6 +3344,10 @@ impl Recording {
             tour.operate(Box::new(Noop));
             tour.send(Message::PlaceEditorCaret);
         }
+        // The redraw a window sends each frame, and what it says: the board
+        // times ⌘ held by itself on these, and says when it's been long
+        // enough. `draw` sends one too, but only for the buttons' sake.
+        tour.deliver(vec![Event::Window(window::Event::RedrawRequested(Instant::now()))]);
         tour.draw();
         if let Some(started) = self.started {
             let frame = self.note(tour, started.elapsed().as_secs_f32());
@@ -3399,19 +3437,21 @@ impl Recording {
     /// A shortcut: `modifiers` held and `key` pressed, delivered without
     /// settling; the frame says which keys, written as the app writes them.
     fn chord(&mut self, tour: &mut Tour, modifiers: Modifiers, key: &str) {
-        let mut written = String::new();
-        for (held, glyph) in [(Modifiers::CTRL, "⌃"), (Modifiers::ALT, "⌥"), (Modifiers::SHIFT, "⇧"), (Modifiers::COMMAND, "⌘")] {
-            if modifiers.contains(held) {
-                written.push_str(glyph);
-            }
-        }
-        written.push_str(&key.to_uppercase());
-        self.keys = Some(written);
+        self.keys = Some(written(modifiers, key));
         tour.modifiers = modifiers;
         tour.deliver(vec![Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers))]);
         self.key(tour, Key::Character(key.into()), None);
         tour.modifiers = Modifiers::empty();
         tour.deliver(vec![Event::Keyboard(keyboard::Event::ModifiersChanged(Modifiers::empty()))]);
+        self.frame(tour);
+    }
+
+    /// `modifiers` held down from here — or, empty, let go — with the frames
+    /// going on meanwhile: ⌘ held by itself long enough brings up the board
+    /// strip, and its release lands on the board it highlights.
+    fn hold(&mut self, tour: &mut Tour, modifiers: Modifiers) {
+        tour.modifiers = modifiers;
+        tour.deliver(vec![Event::Keyboard(keyboard::Event::ModifiersChanged(modifiers))]);
         self.frame(tour);
     }
 
@@ -3581,6 +3621,29 @@ impl Recording {
             };
             serde_json::json!({ "kind": kind, "x": menu.screen.x, "y": menu.screen.y, "items": items })
         });
+        // The board strip, from what its view draws: the boards it shows,
+        // each outlined as it is there — cards as `[x, y, width, height,
+        // colour, frame]`, links as their two ends — and which is lit.
+        let strip = app.strip_boards().map(|(boards, highlight)| {
+            let boards: Vec<serde_json::Value> = boards
+                .iter()
+                .map(|board| {
+                    let cards: Vec<serde_json::Value> = board
+                        .outline
+                        .cards
+                        .iter()
+                        .map(|shape| {
+                            let r = shape.rect;
+                            let color = shape.color.map(|c| [c.r, c.g, c.b, c.a]);
+                            serde_json::json!([r.x, r.y, r.width, r.height, color, shape.frame])
+                        })
+                        .collect();
+                    let links: Vec<[f32; 4]> = board.outline.links.iter().map(|(a, b)| [a.x, a.y, b.x, b.y]).collect();
+                    serde_json::json!({ "name": board.name, "lit": board.index == highlight, "cards": cards, "links": links })
+                })
+                .collect();
+            serde_json::json!({ "boards": boards })
+        });
         serde_json::json!({
             "t": t,
             "viewport": [tour.viewport.width, tour.viewport.height],
@@ -3589,6 +3652,9 @@ impl Recording {
             "pointer": [tour.cursor.x, tour.cursor.y],
             "pressed": self.pressed.take(),
             "keys": self.keys.take(),
+            "held": (!tour.modifiers.is_empty()).then(|| written(tour.modifiers, "")),
+            "board": app.canvas_path.file_stem().map(|stem| stem.to_string_lossy()),
+            "strip": strip,
             "camera": [world.x, world.y, app.camera.zoom],
             "nodes": nodes,
             "edges": edges,

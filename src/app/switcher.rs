@@ -77,15 +77,15 @@ const WARM_BITMAPS: usize = 128 * 1024 * 1024;
 /// Taken when the board is left, so the strip never reads a file.
 #[derive(Debug, Clone, Default)]
 pub(super) struct Outline {
-    cards: Vec<Shape>,
-    links: Vec<(Point, Point)>,
+    pub(super) cards: Vec<Shape>,
+    pub(super) links: Vec<(Point, Point)>,
 }
 
 #[derive(Debug, Clone)]
-struct Shape {
-    rect: Rectangle,
-    color: Option<Color>,
-    frame: bool,
+pub(super) struct Shape {
+    pub(super) rect: Rectangle,
+    pub(super) color: Option<Color>,
+    pub(super) frame: bool,
 }
 
 impl Outline {
@@ -126,6 +126,13 @@ fn port(rect: Rectangle, side: &str) -> Point {
         "right" => Point::new(rect.x + rect.width, middle.y),
         _ => middle,
     }
+}
+
+/// A board in the strip: its place on the trail, its name, and its outline.
+pub(super) struct StripBoard {
+    pub(super) index: usize,
+    pub(super) name: String,
+    pub(super) outline: Outline,
 }
 
 /// What's kept of a board when it's left: where the camera was (its offset
@@ -395,9 +402,35 @@ impl App {
         Task::batch([self.install_titles(titles), self.refresh_snapshots()])
     }
 
+    /// What the strip shows, once it has been held long enough to: as many
+    /// boards as fit beside each other, the highlight kept among them, and
+    /// the place on the trail it highlights.
+    pub(super) fn strip_boards(&self) -> Option<(Vec<StripBoard>, usize)> {
+        let strip = self.visits.strip.as_ref().filter(|strip| strip.shown)?;
+        let trail = &self.visits.trail;
+        let room = self.camera.viewport.width - 2.0 * (MARGIN + PAD) + GAP;
+        let fits = ((room / (THUMB.width + GAP)).floor() as usize).max(1);
+        let shown = trail.len().min(fits).min(MAX_SHOWN);
+        let first = strip.highlight.saturating_sub(shown / 2).min(trail.len() - shown);
+        let boards = (first..first + shown)
+            .map(|index| {
+                let path = &trail[index];
+                // The board on screen as it is now; the others as they were left.
+                let outline = if index == self.visits.at {
+                    Outline::of(&self.nodes, &self.edges)
+                } else {
+                    self.visits.left.get(path).map(|left| left.outline.clone()).unwrap_or_default()
+                };
+                let name = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
+                StripBoard { index, name, outline }
+            })
+            .collect();
+        Some((boards, strip.highlight))
+    }
+
     /// The strip over the board, once it has been held long enough to show.
     pub(super) fn strip_view(&self) -> Option<Element<'_, Message>> {
-        let strip = self.visits.strip.as_ref().filter(|strip| strip.shown)?;
+        let (boards, highlight) = self.strip_boards()?;
         let ct = self.theme;
         let font = Font { weight: crate::theme::iced_weight(ct.weight_normal), ..ct.ui_font() };
         let faint = chrome::mix(ct.text_muted, ct.elevated(), 0.35);
@@ -407,22 +440,8 @@ impl App {
             link: ct.text_muted,
         };
 
-        // As many as fit beside each other, the highlight kept among them.
-        let trail = &self.visits.trail;
-        let room = self.camera.viewport.width - 2.0 * (MARGIN + PAD) + GAP;
-        let fits = ((room / (THUMB.width + GAP)).floor() as usize).max(1);
-        let shown = trail.len().min(fits).min(MAX_SHOWN);
-        let first = strip.highlight.saturating_sub(shown / 2).min(trail.len() - shown);
-
-        let boards = (first..first + shown).map(|index| {
-            let path = &trail[index];
-            // The board on screen as it is now; the others as they were left.
-            let outline = if index == self.visits.at {
-                Outline::of(&self.nodes, &self.edges)
-            } else {
-                self.visits.left.get(path).map(|left| left.outline.clone()).unwrap_or_default()
-            };
-            let lit = index == strip.highlight;
+        let boards = boards.into_iter().map(|StripBoard { index, name, outline }| {
+            let lit = index == highlight;
             let picture = container(canvas(Thumbnail { outline, ink }).width(Fill).height(Fill))
                 .width(THUMB.width)
                 .height(THUMB.height)
@@ -435,7 +454,6 @@ impl App {
                     },
                     ..container::Style::default()
                 });
-            let name = path.file_stem().map(|stem| stem.to_string_lossy().into_owned()).unwrap_or_default();
             let name = container(
                 text(name)
                     .size(12.5)
