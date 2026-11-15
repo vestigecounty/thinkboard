@@ -26,41 +26,68 @@ pub struct Vault {
     pub last_opened: u64,
 }
 
-/// Obsidian's registry file, per platform. `None` where we don't know where it
-/// would be — which is not the same as Obsidian not being installed, so callers
-/// treat it the same as an empty list.
-pub fn registry_path() -> Option<PathBuf> {
+/// Where Obsidian's registry file may be, per platform: everywhere an install
+/// of it could have put one. Empty where we don't know — which is not the same
+/// as Obsidian not being installed, so callers treat it the same as no vaults.
+pub fn registry_paths() -> Vec<PathBuf> {
     let home = std::env::var_os("HOME").map(PathBuf::from);
     #[cfg(target_os = "macos")]
     {
-        Some(home?.join("Library/Application Support/obsidian/obsidian.json"))
+        home.map(|h| h.join("Library/Application Support/obsidian/obsidian.json")).into_iter().collect()
     }
     #[cfg(target_os = "windows")]
     {
         let _ = home;
-        Some(PathBuf::from(std::env::var_os("APPDATA")?).join("obsidian/obsidian.json"))
+        std::env::var_os("APPDATA").map(|dir| PathBuf::from(dir).join("obsidian/obsidian.json")).into_iter().collect()
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        // The XDG location, with the usual fallback.
-        std::env::var_os("XDG_CONFIG_HOME")
-            .map(PathBuf::from)
-            .or_else(|| home.map(|h| h.join(".config")))
-            .map(|dir| dir.join("obsidian/obsidian.json"))
+        let config = std::env::var_os("XDG_CONFIG_HOME").filter(|dir| !dir.is_empty()).map(PathBuf::from);
+        linux_registry_paths(home.as_deref(), config.as_deref())
     }
 }
 
-/// The vaults Obsidian knows about that still exist on disk, best guess first.
+/// Linux has three: the XDG config directory, where the .deb, the AppImage and
+/// the tarball keep it, and the ones Flatpak — the most common way it's
+/// installed there — and Snap give it in its place, under the user's home.
+/// Reading only the first, a Flatpak user's welcome board offered none of
+/// their vaults.
+#[cfg(any(not(any(target_os = "macos", target_os = "windows")), test))]
+fn linux_registry_paths(home: Option<&Path>, xdg_config: Option<&Path>) -> Vec<PathBuf> {
+    let config = xdg_config.map(Path::to_path_buf).or_else(|| home.map(|h| h.join(".config")));
+    let mut paths: Vec<PathBuf> = config.into_iter().map(|dir| dir.join("obsidian/obsidian.json")).collect();
+    if let Some(home) = home {
+        paths.push(home.join(".var/app/md.obsidian.Obsidian/config/obsidian/obsidian.json"));
+        paths.push(home.join("snap/obsidian/current/.config/obsidian/obsidian.json"));
+    }
+    paths
+}
+
+/// The vaults Obsidian knows about that still exist on disk, best guess first,
+/// from every registry there is.
 pub fn vaults() -> Vec<Vault> {
-    let Some(path) = registry_path() else {
-        return Vec::new();
-    };
-    let Ok(json) = std::fs::read_to_string(&path) else {
-        return Vec::new(); // no Obsidian, or no vault ever opened
-    };
-    let mut found = parse(&json);
+    // A registry that can't be read is no Obsidian there, or no vault ever
+    // opened in it.
+    let registries = registry_paths().into_iter().filter_map(|path| std::fs::read_to_string(path).ok()).map(|json| parse(&json));
+    let mut found = merge(registries);
     found.retain(|vault| vault.path.is_dir());
     found
+}
+
+/// Several registries' vaults as one list, best guess first. A vault in more
+/// than one — moved from one install to another — is offered once, as the
+/// registry that has it open, or opened it last, says.
+fn merge(registries: impl IntoIterator<Item = Vec<Vault>>) -> Vec<Vault> {
+    let mut merged: Vec<Vault> = Vec::new();
+    for vault in registries.into_iter().flatten() {
+        match merged.iter_mut().find(|seen| seen.path == vault.path) {
+            Some(seen) if (vault.open, vault.last_opened) > (seen.open, seen.last_opened) => *seen = vault,
+            Some(_) => {}
+            None => merged.push(vault),
+        }
+    }
+    best_first(&mut merged);
+    merged
 }
 
 /// Reads the registry's `vaults` map. Separate from the file so the shape can
@@ -87,8 +114,13 @@ pub fn parse(json: &str) -> Vec<Vault> {
             })
         })
         .collect();
-    vaults.sort_by_key(|vault| (!vault.open, std::cmp::Reverse(vault.last_opened)));
+    best_first(&mut vaults);
     vaults
+}
+
+/// The one Obsidian has open, then the rest by when each was last opened.
+fn best_first(vaults: &mut [Vault]) {
+    vaults.sort_by_key(|vault| (!vault.open, std::cmp::Reverse(vault.last_opened)));
 }
 
 /// A vault's display name: the folder it lives in.
@@ -137,6 +169,44 @@ mod tests {
         for json in ["", "{}", "not json", r#"{"vaults": []}"#, r#"{"vaults": {"a": {}}}"#] {
             assert!(parse(json).is_empty(), "{json:?} should yield nothing");
         }
+    }
+
+    #[test]
+    fn on_linux_the_flatpak_and_snap_installs_are_looked_in_too() {
+        let home = Path::new("/home/x");
+        assert_eq!(
+            linux_registry_paths(Some(home), None),
+            [
+                PathBuf::from("/home/x/.config/obsidian/obsidian.json"),
+                PathBuf::from("/home/x/.var/app/md.obsidian.Obsidian/config/obsidian/obsidian.json"),
+                PathBuf::from("/home/x/snap/obsidian/current/.config/obsidian/obsidian.json"),
+            ],
+        );
+        // XDG_CONFIG_HOME moves the native install's, not the sandboxes',
+        // which keep their own.
+        let paths = linux_registry_paths(Some(home), Some(Path::new("/cfg")));
+        assert_eq!(paths[0], PathBuf::from("/cfg/obsidian/obsidian.json"));
+        assert_eq!(paths.len(), 3);
+        assert_eq!(linux_registry_paths(None, Some(Path::new("/cfg"))).len(), 1, "no home, no sandboxes to find");
+    }
+
+    #[test]
+    fn a_vault_in_two_registries_is_offered_once_as_the_one_that_opened_it_last_says() {
+        let native = parse(SAMPLE);
+        let flatpak = parse(
+            r#"{"vaults": {
+                "c5d": { "path": "/Users/x/Archive", "ts": 1900000000000 },
+                "e6f": { "path": "/Users/x/Garden",  "ts": 1750000000000 }
+            }}"#,
+        );
+        let vaults = merge([native, flatpak]);
+        let names: Vec<&str> = vaults.iter().map(|v| v.name.as_str()).collect();
+        assert_eq!(
+            names,
+            ["Notes", "Archive", "Recent", "Garden"],
+            "Archive once, at the newer stamp the second registry gave it",
+        );
+        assert_eq!(vaults[1].last_opened, 1900000000000);
     }
 
     #[test]

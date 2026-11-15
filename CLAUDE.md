@@ -247,7 +247,10 @@ this way nothing is taken and the overlay is still reachable.
 welcome board. Someone arriving from Obsidian shouldn't have to find their own
 vault in a folder dialog. It is never authoritative: entries that no longer
 exist are dropped, an unreadable or absent file is simply no vaults, and the
-folder picker beside them still works.
+folder picker beside them still works. On Linux there are three places to
+look — the XDG config directory, and the ones Flatpak (its most common
+install there) and Snap give Obsidian instead — and a vault in more than one
+is offered once.
 
 The board says three more things it used to leave out: the command palette
 exists (it is now the way to most of the app), Ask AI needs a provider before
