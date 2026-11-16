@@ -892,18 +892,22 @@ gaps with dummy nodes. Ours come from the file.
   qualifies twice moves at double speed. `App::group_selection` creates one
   around two or more selected non-frame nodes (command palette, or the node
   context menu); `groupable_selection` is the single predicate all three call
-  sites gate on. A new frame carries no `label`, since there's no rename UI —
-  name it, which drops straight into naming it; double-clicking a frame's
-  header reopens the caption. A blank caption clears the label rather than
+  sites gate on. A new frame is labelled "Untitled group"
+  (`model::UNTITLED_GROUP`), as Obsidian names one, and drops straight into
+  naming it with that selected; double-clicking a frame's header reopens the
+  caption. A caption cleared goes back to "Untitled group" rather than
   deleting the frame — unlike a drag-created card, which *is* taken back when
-  left empty.
+  left empty. A frame another tool left unnamed stays unnamed unless it's
+  given a name: a double-click and an Esc isn't a change to the file.
 - **The editor edits two things.** `EditTarget::Body` is a text node's text over
   the whole card; `EditTarget::Label` is a frame's caption along its header
-  strip. They share the widget, the text-level undo and the key bindings, and
-  differ in where the text comes from, where it goes back to, and which
-  rectangle counts as "on screen" (`App::edit_rect`) — a frame is routinely
-  bigger than the viewport, so fitting all of it to edit a caption would zoom
-  the board out for nothing.
+  strip. They share the widget, the text-level undo and the key bindings —
+  except that a caption is one line, as in Obsidian: Return ends it, and a
+  line break pasted into it is a space (`model::one_line`, which `set_label`
+  applies too). They differ in where the text comes from, where it goes back
+  to, and which rectangle counts as "on screen" (`App::edit_rect`) — a frame
+  is routinely bigger than the viewport, so fitting all of it to edit a
+  caption would zoom the board out for nothing.
 - **Ask AI works on a frame**, which has no incoming links to walk. Its contents
   are flattened into an outline instead (`ai::group_prompt`), preserving both
   hierarchies the user sees: links nest a card's targets under it, and a nested

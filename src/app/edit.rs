@@ -41,7 +41,8 @@ const MIN_EDITOR_WIDTH: f32 = 24.0;
 ///
 /// The two share everything — the widget, the text-level undo, the key
 /// bindings — and differ only in where the text comes from and goes back to,
-/// and in where the box is drawn.
+/// in where the box is drawn, and in that a caption is one line: Return ends
+/// it, and a pasted line break is a space.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum EditTarget {
     /// A text node's body, laid out over the whole card.
@@ -429,6 +430,10 @@ impl App {
             // `window::frames()` subscription then fires `PlaceEditorCaret`.
             None => editing.pending_caret = caret_at,
         }
+        // A new group's caption is selected, so typing names it.
+        if target == EditTarget::Label && self.fresh_node == Some(index) {
+            editing.content.perform(text_editor::Action::SelectAll);
+        }
         self.editing = Some(editing);
         self.cache.clear();
         // With scrollbars on, editing a node re-grows it to fit (its shrink was
@@ -517,11 +522,22 @@ impl App {
                     }
                 }
                 EditTarget::Label => {
-                    // A caption left blank clears the label rather than deleting
-                    // the frame — an unnamed group is a perfectly good group.
+                    // A caption left blank goes back to Obsidian's name for a
+                    // new group rather than to none, or the frame would have
+                    // nothing to read and nothing to double-click to rename it.
+                    // Unless it had none to start with: a double-click and an
+                    // Esc on a frame another tool left unnamed changes nothing.
                     let caption = editing.content.text();
+                    let was_unnamed = self
+                        .edit_undo
+                        .as_ref()
+                        .and_then(|before| before.nodes.iter().find(|n| Some(&n.id) == edited_id.as_ref()))
+                        .is_some_and(|before| before.label().is_none());
                     if let Some(node) = self.nodes.get_mut(index) {
                         node.set_label(&caption);
+                        if node.label().is_none() && !was_unnamed {
+                            node.set_label(crate::model::UNTITLED_GROUP);
+                        }
                     }
                 }
             }
@@ -584,6 +600,15 @@ impl App {
     /// Applies one editor action, mirroring the result back onto the node.
     pub(super) fn editor_action(&mut self, action: text_editor::Action) {
         let edited = if let Some(editing) = &mut self.editing {
+            let action = match action {
+                text_editor::Action::Edit(text_editor::Edit::Paste(text))
+                    if editing.target == EditTarget::Label && text.contains(['\n', '\r']) =>
+                {
+                    let line = crate::model::one_line(&text);
+                    text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new(line)))
+                }
+                action => action,
+            };
             let is_edit = action.is_edit();
             if is_edit {
                 editing.snapshot(false);
@@ -596,21 +621,29 @@ impl App {
         self.commit_editor_text(edited);
     }
 
-    /// Return in the editor — see [`on_return`]. A caption is one line and a
-    /// selection is being replaced, so both get the plain break.
-    pub(super) fn editor_return(&mut self) {
+    /// Return in the editor — see [`on_return`]. A selection being replaced
+    /// gets the plain break. A caption is one line, so there Return ends the
+    /// edit, as Enter saves a group's name in Obsidian.
+    pub(super) fn editor_return(&mut self) -> Task<Message> {
         let plain = text_editor::Action::Edit(text_editor::Edit::Enter);
         let Some(editing) = &mut self.editing else {
-            return;
+            return Task::none();
         };
+        if editing.target == EditTarget::Label {
+            return self.finish_editing();
+        }
         let cursor = editing.content.cursor();
-        if cursor.selection.is_some() || editing.target == EditTarget::Label {
-            return self.editor_action(plain);
+        if cursor.selection.is_some() {
+            self.editor_action(plain);
+            return Task::none();
         }
         let row = cursor.position.line;
         let line = editing.content.line(row).map(|line| line.text.into_owned()).unwrap_or_default();
         let edit = match on_return(&line, cursor.position.column) {
-            ReturnKey::Plain => return self.editor_action(plain),
+            ReturnKey::Plain => {
+                self.editor_action(plain);
+                return Task::none();
+            }
             ReturnKey::Continue(prefix) => text_editor::Edit::Paste(std::sync::Arc::new(format!("\n{prefix}"))),
             ReturnKey::End(line_now) => {
                 // Select the whole line, then write what it becomes over it.
@@ -626,6 +659,7 @@ impl App {
             }
         };
         self.editor_action(text_editor::Action::Edit(edit));
+        Task::none()
     }
 
     /// Wraps the editor selection in a Markdown marker (`**` bold, `*` italic).

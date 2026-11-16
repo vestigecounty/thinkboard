@@ -347,7 +347,8 @@ pub(crate) enum Message {
     FinishEditing,
     EditorAction(text_editor::Action),
     /// Return in the editor: a line break that carries a list or quote marker
-    /// onto the new line, as Obsidian's does (see `edit::on_return`).
+    /// onto the new line, as Obsidian's does (see `edit::on_return`) — or, in
+    /// a group's caption, the end of the edit.
     EditorReturn,
     /// Wrap the editor selection in a Markdown marker (`**` bold, `*` italic).
     WrapSelection(&'static str),
@@ -1276,7 +1277,7 @@ impl App {
             Message::StopEditing => return self.stop_editing(),
             Message::FinishEditing => return self.finish_editing(),
             Message::EditorAction(action) => self.editor_action(action),
-            Message::EditorReturn => self.editor_return(),
+            Message::EditorReturn => return self.editor_return(),
             Message::WrapSelection(marker) => self.wrap_selection(marker),
             Message::UndoEdit => self.apply_edit_history(false),
             Message::RedoEdit => self.apply_edit_history(true),

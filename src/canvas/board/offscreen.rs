@@ -84,6 +84,8 @@ impl Board<'_> {
                     bounds: Rectangle::new(Point::new(node.x, node.y), Size::new(node.width, node.height)),
                     text: match node.label() {
                         Some(label) if node.is_group() => label.into(),
+                        // One another tool left unnamed.
+                        None if node.is_group() => crate::model::UNTITLED_GROUP.into(),
                         _ => crate::document::cluster::summary_text(node).into(),
                     },
                     image: None,

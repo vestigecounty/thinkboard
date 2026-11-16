@@ -86,6 +86,27 @@ pub enum NodeKind {
 /// File extensions Obsidian renders as images in a canvas.
 const IMAGE_EXTENSIONS: [&str; 8] = ["png", "jpg", "jpeg", "gif", "bmp", "svg", "webp", "avif"];
 
+/// What Obsidian names a new group, and what a caption cleared goes back to.
+pub const UNTITLED_GROUP: &str = "Untitled group";
+
+/// `text` on one line: each line break, with the blanks either side of it,
+/// becomes a single space. A group's caption is one line, as it is in
+/// Obsidian, whatever was pasted into it.
+pub fn one_line(text: &str) -> String {
+    let mut line = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c == '\n' || c == '\r' {
+            line.truncate(line.trim_end().len());
+            while chars.next_if(|c| c.is_whitespace()).is_some() {}
+            line.push(' ');
+        } else {
+            line.push(c);
+        }
+    }
+    line
+}
+
 impl CanvasNode {
     /// What this node is (see [`NodeKind`]). An unrecognized `type` is treated
     /// as [`NodeKind::Text`], which is what the format's own default is and what
@@ -153,8 +174,10 @@ impl CanvasNode {
     /// Blank is stored as *absent* rather than as an empty string: the format
     /// leaves `label` optional, and a node carrying `"label": ""` would round-
     /// trip that emptiness back into the vault as though it were meaningful.
+    /// And it's one line ([`one_line`]), as a caption is in Obsidian.
     pub fn set_label(&mut self, label: &str) {
-        let trimmed = label.trim();
+        let line = one_line(label);
+        let trimmed = line.trim();
         if trimmed.is_empty() {
             self.extra.remove("label");
         } else {
@@ -879,6 +902,26 @@ mod tests {
         group.set_label("   ");
         assert_eq!(group.label(), None);
         assert!(!group.extra.contains_key("label"));
+    }
+
+    #[test]
+    fn a_groups_label_is_one_line() {
+        use serde_json::json;
+        let mut group = node(json!({"id": "g", "type": "group"}));
+        group.set_label("Trip \r\n\n  planning\n");
+        assert_eq!(group.label(), Some("Trip planning"));
+        group.set_label("\n\n");
+        assert_eq!(group.label(), None, "only line breaks is blank");
+    }
+
+    #[test]
+    fn one_line_joins_lines_with_a_space_and_keeps_the_rest() {
+        assert_eq!(one_line("one\ntwo"), "one two");
+        assert_eq!(one_line("one  \n\n\t two"), "one two", "the blanks around a break go with it");
+        assert_eq!(one_line("one\r\ntwo\rthree"), "one two three");
+        // A paste lands beside text, so what isn't a break is kept as it was.
+        assert_eq!(one_line(" one  two"), " one  two");
+        assert_eq!(one_line("one\n"), "one ");
     }
 
     #[test]

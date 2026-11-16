@@ -1678,8 +1678,11 @@ fn groups() {
     tour.shot("marquee-selected");
     tour.palette("group");
     tour.shot("group-naming");
-    tour.type_text("Logistics");
-    tour.named(key::Named::Escape);
+    // Return ends a caption, as Enter saves a group's name in Obsidian.
+    tour.type_text("Logistics\n");
+    let frame = tour.app.nodes.len() - 1;
+    assert_eq!(tour.app.nodes[frame].label(), Some("Logistics"), "one line, named");
+    assert!(tour.app.editing.is_none(), "Return ended the edit");
     tour.shot("group-named");
     tour.click(Point::new(40.0, 860.0));
     tour.shot("deselected");

@@ -824,7 +824,9 @@ fn creating_a_group_opens_its_caption_for_naming() {
     let mut app = app_with(two_nodes(), Vec::new());
     let frame = grouped(&mut app);
 
-    assert!(app.editing.is_some(), "the caption editor should be open");
+    // Named as Obsidian names one, and selected, so typing replaces it.
+    let editing = app.editing.as_ref().expect("the caption editor should be open");
+    assert_eq!(editing.content.selection().as_deref(), Some(crate::model::UNTITLED_GROUP));
     type_text(&mut app, "Planning");
     send(&mut app, Message::StopEditing);
 
@@ -832,21 +834,55 @@ fn creating_a_group_opens_its_caption_for_naming() {
 }
 
 #[test]
-fn a_caption_left_empty_leaves_the_frame_unnamed() {
-    // Unlike a drag-created card, an unnamed frame is not taken back.
+fn a_new_group_left_as_it_opened_is_an_untitled_group() {
+    // Unlike a drag-created card, a frame left unnamed is not taken back.
     let mut app = app_with(two_nodes(), Vec::new());
     let frame = grouped(&mut app);
 
     send(&mut app, Message::StopEditing);
 
     assert_eq!(app.nodes.len(), 3, "the frame survives");
-    assert_eq!(app.nodes[frame].label(), None);
-    // And stores nothing rather than an empty caption.
-    assert!(!app.nodes[frame].extra.contains_key("label"));
+    assert_eq!(app.nodes[frame].label(), Some(crate::model::UNTITLED_GROUP));
 }
 
 #[test]
-fn a_caption_of_only_spaces_clears_the_label() {
+fn return_ends_a_caption_on_one_line() {
+    // Enter saves a group's name in Obsidian; it used to start a second line.
+    let mut app = app_with(two_nodes(), Vec::new());
+    let frame = grouped(&mut app);
+    type_text(&mut app, "Plan");
+    press_return(&mut app);
+
+    assert!(app.editing.is_none(), "Return ends the edit");
+    assert_eq!(app.nodes[frame].label(), Some("Plan"));
+    assert_eq!(app.selected, vec![frame], "and leaves the frame selected");
+    assert_eq!(app.nodes.len(), 3, "no card is added");
+}
+
+#[test]
+fn a_line_break_pasted_into_a_caption_is_a_space() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    let frame = grouped(&mut app);
+    type_text(&mut app, "Trip\n  planning\n");
+    send(&mut app, Message::StopEditing);
+
+    assert_eq!(app.nodes[frame].label(), Some("Trip planning"));
+}
+
+#[test]
+fn a_frame_another_tool_left_unnamed_stays_so_when_nothing_is_typed() {
+    // A double-click on its header and an Esc is no change to the file.
+    let mut app = app_with(vec![node_of("frame", "group")], Vec::new());
+    send(&mut app, Message::StartEditing { index: 0, at: None });
+    send(&mut app, Message::StopEditing);
+
+    assert_eq!(app.nodes[0].label(), None);
+    assert!(!app.nodes[0].extra.contains_key("label"));
+    assert!(!app.history.can_undo(), "and no undo step");
+}
+
+#[test]
+fn a_caption_cleared_goes_back_to_untitled_group() {
     let mut app = app_with(two_nodes(), Vec::new());
     let frame = grouped(&mut app);
     type_text(&mut app, "Planning");
@@ -859,8 +895,7 @@ fn a_caption_of_only_spaces_clears_the_label() {
     type_text(&mut app, "   ");
     send(&mut app, Message::StopEditing);
 
-    assert_eq!(app.nodes[frame].label(), None);
-    assert!(!app.nodes[frame].extra.contains_key("label"));
+    assert_eq!(app.nodes[frame].label(), Some(crate::model::UNTITLED_GROUP));
 }
 
 #[test]

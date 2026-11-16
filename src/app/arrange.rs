@@ -565,8 +565,10 @@ impl App {
             color: None,
             extra: Default::default(),
         };
-        // No label: the format leaves it optional, and there's no rename UI yet,
-        // so a default caption would be permanent noise. Obsidian can name it.
+        // Named as Obsidian names a new group, and selected when its caption
+        // opens below, so typing renames it. Without a name a frame has
+        // nothing to read and nothing to double-click to rename it.
+        frame.set_label(model::UNTITLED_GROUP);
         snap_node_geometry(&mut frame, self.snap_grid());
         self.nodes.push(frame);
         // Deliberately not spawn-animated. A frame appears *around* content
@@ -576,8 +578,8 @@ impl App {
         self.selected = vec![index];
         self.selected_edge = None;
         // Marked fresh so the caption edit that follows doesn't record a second
-        // undo step on top of the creation. Unlike a text node, a frame left
-        // unnamed is *not* taken back — an unnamed group is a fine group.
+        // undo step on top of the creation. Unlike a text node, a frame whose
+        // caption is left blank is *not* taken back — it keeps its first name.
         self.fresh_node = Some(index);
         self.fresh_undo = None;
         self.mark_dirty();

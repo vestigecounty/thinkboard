@@ -375,9 +375,13 @@ impl App {
         // reads this to align its lines (center vs left) to match read mode.
         iced_graphics::text::editor::set_editor_centered(b.centered);
 
+        let key_binding = match editing.target {
+            super::edit::EditTarget::Body => editor_key_binding,
+            super::edit::EditTarget::Label => caption_key_binding,
+        };
         let editor = text_editor(&editing.content)
             .on_action(Message::EditorAction)
-            .key_binding(editor_key_binding)
+            .key_binding(key_binding)
             .font(md_edit::Palette::from_theme(&self.theme).base_font())
             .size(b.font_size * zoom)
             .line_height(iced::advanced::text::LineHeight::Relative(1.2))
@@ -1118,5 +1122,19 @@ fn editor_key_binding(
         return Some(text_editor::Binding::Custom(Message::EditorReturn));
     }
     text_editor::Binding::from_key_press(key_press)
+}
+
+/// A group's caption is one line, so Return there — Shift+Return too — ends the
+/// edit (`App::editor_return`). Everything else is the card editor's.
+fn caption_key_binding(
+    key_press: text_editor::KeyPress,
+) -> Option<text_editor::Binding<Message>> {
+    use iced::keyboard::Key;
+    use iced::keyboard::key::Named;
+
+    if matches!(key_press.key, Key::Named(Named::Enter)) {
+        return Some(text_editor::Binding::Custom(Message::EditorReturn));
+    }
+    editor_key_binding(key_press)
 }
 
