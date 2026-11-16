@@ -13,7 +13,7 @@ use pulldown_cmark::{Alignment, CodeBlockKind, Event, HeadingLevel, Options, Par
 /// What Markdown this module reads, beyond CommonMark: task lists and tables,
 /// both of which Obsidian renders. `is_simple` parses with the same set, or a
 /// table would read to it as a paragraph of pipes.
-const EXTENSIONS: Options = Options::ENABLE_TASKLISTS.union(Options::ENABLE_TABLES);
+pub(crate) const EXTENSIONS: Options = Options::ENABLE_TASKLISTS.union(Options::ENABLE_TABLES);
 
 /// A run of text sharing one style.
 #[derive(Debug, Clone, PartialEq)]

@@ -3282,6 +3282,7 @@ fn a_file_left_unreadable_is_saved_over_rather_than_waited_on() {
 #[test]
 fn what_another_app_copied_is_pasted_whole_and_in_view() {
     // One test, since the clipboard stand-in is shared by the whole binary.
+    let _clipboard = clipboard::system::exclusive();
     let mut app = app_with(two_nodes(), Vec::new());
     app.camera.viewport = Size::new(1200.0, 800.0);
 
@@ -3332,7 +3333,7 @@ fn what_another_app_copied_is_pasted_whole_and_in_view() {
 
     // Copied from there onto a board with a folder, it's written there.
     send(&mut app, Message::SelectNode(Some(0)));
-    send(&mut app, Message::CopyNodes);
+    send(&mut app, Message::Copy { chain: false, mermaid: false });
     let (_, path) = file_app("held-image", Vec::new());
     let _ = app.open_canvas(path.clone());
     send(&mut app, Message::Paste { world: Point::ORIGIN });
@@ -3340,6 +3341,115 @@ fn what_another_app_copied_is_pasted_whole_and_in_view() {
     assert!(path.parent().unwrap().join(&file).exists(), "{file} beside the board");
     *clipboard::system::held() = None;
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
+}
+
+// --- Copying cards out ---
+
+/// A bug reasoned about, left to right: a symptom, a cause ruled out, the
+/// next thing to try.
+fn a_chain_of_three() -> (Vec<CanvasNode>, Vec<CanvasEdge>) {
+    let card = |id: &str, text: &str, x: f32| CanvasNode { x, ..text_node(id, text) };
+    let nodes = vec![
+        card("symptom", "Login fails after the token refresh", 0.0),
+        card("skew", "Clock skew", 400.0),
+        card("cache", "The token cache is shared between tabs", 800.0),
+    ];
+    let mut ruled_out = edge("symptom", "skew");
+    ruled_out.set_label("ruled out");
+    (nodes, vec![ruled_out, edge("skew", "cache")])
+}
+
+const THE_CHAIN: &str = "- Login fails after the token refresh\n\
+                         - → ruled out: Clock skew\n\
+                         - The token cache is shared between tabs";
+
+#[test]
+fn copied_cards_are_text_to_another_app_and_cards_to_this_one() {
+    let _clipboard = clipboard::system::exclusive();
+    let (nodes, edges) = a_chain_of_three();
+    let mut app = app_with(nodes, edges);
+
+    // Selected in any order, they're written in the order they're linked.
+    send(&mut app, Message::SelectNodes(vec![2, 0, 1]));
+    send(&mut app, Message::Copy { chain: false, mermaid: false });
+    assert_eq!(clipboard::read_text().as_deref(), Some(THE_CHAIN), "not JSON with positions");
+    let html = clipboard::system::html().expect("and as HTML");
+    assert!(html.contains("<li>→ ruled out: Clock skew</li>"), "{html}");
+
+    // Pasted back here, they're the cards, linked and labelled as they were.
+    send(&mut app, Message::Paste { world: Point::new(0.0, 600.0) });
+    assert_eq!(app.nodes.len(), 6);
+    assert_eq!(app.edges.len(), 4);
+    assert!(app.edges[2..].iter().any(|e| e.label() == Some("ruled out")));
+}
+
+#[test]
+fn copy_chain_takes_each_card_leading_in_without_selecting_it() {
+    let _clipboard = clipboard::system::exclusive();
+    let (nodes, edges) = a_chain_of_three();
+    let mut app = app_with(nodes, edges);
+
+    send(&mut app, Message::SelectNode(Some(2)));
+    send(&mut app, Message::Copy { chain: true, mermaid: false });
+    assert_eq!(clipboard::read_text().as_deref(), Some(THE_CHAIN));
+    assert_eq!(app.selected, vec![2], "the selection is left as it was");
+
+    // It's swept once to show what went, and then the sweep is done.
+    let flow = app.ai.flows.last().expect("a sweep");
+    assert_eq!((flow.target.as_ref(), flow.nodes.len(), flow.edges.len()), (None, 3, 2));
+    app.ai.flows.last_mut().unwrap().since = Instant::now() - Duration::from_secs(5);
+    send(&mut app, Message::Tick(Instant::now()));
+    assert!(app.ai.flows.is_empty());
+}
+
+#[test]
+fn a_copied_group_is_its_outline_and_pastes_with_its_cards() {
+    let _clipboard = clipboard::system::exclusive();
+    let mut packing = node_of("packing", "group");
+    (packing.width, packing.height) = (400.0, 300.0);
+    packing.set_label("Packing");
+    let card = |id: &str, y: f32| CanvasNode { x: 40.0, y, ..text_node(id, id) };
+    let mut app = app_with(vec![packing, card("Passport", 60.0), card("Charger", 180.0)], Vec::new());
+
+    // The frame alone, as a click on its header selects it.
+    send(&mut app, Message::SelectNode(Some(0)));
+    send(&mut app, Message::Copy { chain: false, mermaid: false });
+    assert_eq!(clipboard::read_text().as_deref(), Some("Packing\n- Passport\n- Charger"));
+    send(&mut app, Message::Paste { world: Point::new(0.0, 900.0) });
+    assert_eq!(app.nodes.len(), 6, "the frame and both its cards");
+}
+
+#[test]
+fn select_chain_selects_a_card_and_what_leads_into_it() {
+    let (nodes, edges) = a_chain_of_three();
+    let mut app = app_with(nodes, edges);
+
+    // ⌥-click on the last card.
+    send(&mut app, Message::SelectChain(Some(2)));
+    assert_eq!(app.selected, vec![0, 1, 2]);
+    // The palette's, on what's selected.
+    send(&mut app, Message::SelectNode(Some(1)));
+    send(&mut app, Message::SelectChain(None));
+    assert_eq!(app.selected, vec![0, 1]);
+}
+
+#[test]
+fn copy_as_mermaid_is_a_flowchart_and_nothing_else() {
+    let _clipboard = clipboard::system::exclusive();
+    let (nodes, edges) = a_chain_of_three();
+    let mut app = app_with(nodes, edges);
+
+    send(&mut app, Message::SelectNode(Some(2)));
+    send(&mut app, Message::Copy { chain: true, mermaid: true });
+    let text = clipboard::read_text().expect("a flowchart");
+    assert!(text.starts_with("```mermaid\nflowchart LR\n    n1[\"Login fails"), "{text}");
+    assert!(text.contains("    n1 -->|\"ruled out\"| n2\n    n2 --> n3\n"), "{text}");
+    // No HTML beside it, which an app that pastes HTML would take instead,
+    // and no cards: pasted here, it's the text.
+    assert_eq!(clipboard::system::html(), None);
+    send(&mut app, Message::Paste { world: Point::new(0.0, 600.0) });
+    assert_eq!(app.nodes.len(), 4);
+    assert_eq!(app.nodes[3].text.as_deref(), Some(text.as_str()));
 }
 
 // --- The board by keyboard ---

@@ -11,6 +11,7 @@ use std::sync::{LazyLock, Mutex};
 use futures::channel::mpsc::{self, Sender};
 use futures::{SinkExt, Stream, StreamExt};
 
+use crate::chain;
 use crate::model::{CanvasEdge, CanvasNode, NodeKind};
 
 /// A streamed event from the endpoint.
@@ -346,6 +347,25 @@ pub fn upstream_prompt(nodes: &[CanvasNode], edges: &[CanvasEdge], target_id: &s
 /// group's contents are nested under its caption). Each card is emitted as a
 /// bullet, its own line breaks indented to stay under it.
 pub fn group_prompt(nodes: &[CanvasNode], edges: &[CanvasEdge], frame: usize) -> String {
+    group_outline(nodes, edges, frame, Outline::Prompt)
+}
+
+/// Who an outline is for.
+///
+/// Ask AI's prompt is kept as it is, deliberately: its answer is split into
+/// cards at `---`, and a prompt of another shape can change the shape of what
+/// comes back — a model shown a list tends to answer with one. A copy is read
+/// by a person or an agent, so it says what a link or file card holds and
+/// keeps the labels on links ([`chain::text`]); that hasn't been tried as a
+/// prompt.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Outline {
+    Prompt,
+    Copy,
+}
+
+/// [`group_prompt`], or the same outline as a copy writes it.
+pub(crate) fn group_outline(nodes: &[CanvasNode], edges: &[CanvasEdge], frame: usize, kind: Outline) -> String {
     let members = crate::model::enclosed_by(nodes, frame);
     if members.is_empty() {
         return String::new();
@@ -358,7 +378,7 @@ pub fn group_prompt(nodes: &[CanvasNode], edges: &[CanvasEdge], frame: usize) ->
         out.push('\n');
     }
     let mut emitted = HashSet::new();
-    write_container(nodes, edges, frame, &members, &member_set, 0, &mut emitted, &mut out);
+    write_container(nodes, edges, frame, &members, &member_set, 0, &mut emitted, &mut out, kind);
     out.trim_end().to_owned()
 }
 
@@ -374,6 +394,7 @@ fn write_container(
     depth: usize,
     emitted: &mut HashSet<usize>,
     out: &mut String,
+    kind: Outline,
 ) {
     let direct: Vec<usize> = members
         .iter()
@@ -394,49 +415,58 @@ fn write_container(
         })
     };
     for &m in direct.iter().filter(|&&m| !has_sibling_parent(m)) {
-        write_member(nodes, edges, m, members, member_set, depth, emitted, out);
+        write_member(nodes, edges, m, None, members, member_set, depth, emitted, out, kind);
     }
     for &m in &direct {
-        write_member(nodes, edges, m, members, member_set, depth, emitted, out);
+        write_member(nodes, edges, m, None, members, member_set, depth, emitted, out, kind);
     }
 }
 
-/// Emits one member and, beneath it, whatever it links to or encloses.
+/// Emits one member and, beneath it, whatever it links to or encloses. In a
+/// copy, `via` — the label of the link it was reached by — leads it, as it
+/// leads a card in a chain.
 #[allow(clippy::too_many_arguments)] // as above
 fn write_member(
     nodes: &[CanvasNode],
     edges: &[CanvasEdge],
     member: usize,
+    via: Option<&str>,
     members: &[usize],
     member_set: &HashSet<usize>,
     depth: usize,
     emitted: &mut HashSet<usize>,
     out: &mut String,
+    kind: Outline,
 ) {
     if !emitted.insert(member) {
         return;
     }
     let node = &nodes[member];
     let indent = "  ".repeat(depth);
+    let lead = |body: &str| match via.map(str::trim).filter(|_| kind == Outline::Copy) {
+        Some(label) => format!("→ {label}: {body}"),
+        None => body.to_owned(),
+    };
 
     if node.is_group() {
         let label = node.label().map(str::trim).filter(|l| !l.is_empty());
-        out.push_str(&format!("{indent}- {}\n", label.unwrap_or("(unnamed group)")));
-        write_container(nodes, edges, member, members, member_set, depth + 1, emitted, out);
+        let unnamed = match kind {
+            Outline::Prompt => "(unnamed group)",
+            Outline::Copy => crate::model::UNTITLED_GROUP,
+        };
+        chain::list_item(out, &indent, &lead(label.unwrap_or(unnamed)));
+        write_container(nodes, edges, member, members, member_set, depth + 1, emitted, out, kind);
         return;
     }
 
-    let text = node.text.as_deref().unwrap_or("").trim();
-    if !text.is_empty() {
-        // Keep a multi-line card under its own bullet rather than letting later
-        // lines read as separate items.
-        let mut lines = text.lines();
-        if let Some(first) = lines.next() {
-            out.push_str(&format!("{indent}- {first}\n"));
-        }
-        for line in lines {
-            out.push_str(&format!("{indent}  {line}\n"));
-        }
+    let text = match kind {
+        Outline::Prompt => node.text.as_deref().map(str::trim).filter(|t| !t.is_empty()).map(str::to_owned),
+        Outline::Copy => chain::card_text(node),
+    };
+    // Keep a multi-line card under its own bullet rather than letting later
+    // lines read as separate items.
+    if let Some(text) = text {
+        chain::list_item(out, &indent, &lead(&text));
     }
 
     // Notes this one links to, nested beneath it.
@@ -447,7 +477,7 @@ fn write_member(
         else {
             continue;
         };
-        write_member(nodes, edges, target, members, member_set, depth + 1, emitted, out);
+        write_member(nodes, edges, target, edge.label(), members, member_set, depth + 1, emitted, out, kind);
     }
 }
 
@@ -1047,6 +1077,29 @@ mod tests {
         ];
         let edges = vec![glink("frame", "q")];
         assert_eq!(upstream_images(&nodes, &edges, "q"), vec!["pics/a.png".to_owned()]);
+    }
+
+    #[test]
+    fn a_copy_of_a_frame_says_more_than_its_prompt() {
+        // Ask AI's prompt stays as it's always been; a copy also has a link
+        // card's URL and the label on a link.
+        let mut link = gnode("docs", "link", 50.0, 200.0, 100.0, 50.0, "");
+        link.text = None;
+        link.extra.insert("url".to_owned(), serde_json::json!("https://example.com"));
+        let nodes = vec![
+            gnode("frame", "group", 0.0, 0.0, 800.0, 600.0, "Bug"),
+            gnode("a", "text", 50.0, 50.0, 100.0, 50.0, "first note"),
+            gnode("b", "text", 300.0, 50.0, 100.0, 50.0, "second note"),
+            link,
+        ];
+        let mut ruled_out = glink("a", "b");
+        ruled_out.set_label("ruled out");
+        let edges = vec![ruled_out];
+        assert_eq!(group_prompt(&nodes, &edges, 0), "Bug\n- first note\n  - second note");
+        assert_eq!(
+            group_outline(&nodes, &edges, 0, Outline::Copy),
+            "Bug\n- first note\n  - → ruled out: second note\n- https://example.com"
+        );
     }
 
     #[test]

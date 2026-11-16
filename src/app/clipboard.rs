@@ -4,6 +4,13 @@
 //! wraps the platform clipboard (NSPasteboard on macOS). Reads are one-shot:
 //! a fresh `Clipboard` is opened per paste rather than held, since the app
 //! only touches it on an explicit paste.
+//!
+//! **Copied cards are two things at once.** Another app gets them as text it
+//! can read: the chain format (`thinkboard_core::chain`) as plain text, for a
+//! terminal or an agent, and rendered as HTML, for an app that pastes HTML —
+//! Obsidian turns it back into Markdown. ThinkBoard gets the cards themselves,
+//! hidden in that HTML as a comment. They used to be the plain text, so what
+//! another app pasted was JSON with positions in it.
 
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -13,7 +20,10 @@ use iced::widget::image;
 use iced::{Point, Rectangle, Task};
 use serde::{Deserialize, Serialize};
 
+use thinkboard_core::chain;
+
 use super::{App, Message, arrange};
+use crate::canvas::board;
 use crate::model::{self, CanvasEdge, CanvasNode};
 
 /// Private marker key that wraps copied canvas nodes on the clipboard, so a
@@ -39,15 +49,35 @@ pub(super) struct HeldImage {
     pub(super) handle: image::Handle,
 }
 
-/// Writes copied nodes to the clipboard, wrapped under [`CANVAS_CLIP_KEY`].
-pub fn write_nodes(clip: &NodeClip) {
-    system::set_text(encode_nodes(clip));
+/// Writes copied cards: `text` for other apps, as plain text and as HTML,
+/// and the cards themselves for ThinkBoard, in the HTML ([`hide_in_html`]).
+pub fn write_cards(clip: &NodeClip, text: &str) {
+    let html = format!("{}{}", chain::html(text), hide_in_html(&encode_nodes(clip)));
+    system::set_html(html, text.to_owned());
 }
 
-/// Reads copied canvas nodes, or `None` if the clipboard doesn't hold our
-/// marker (so a normal text/image paste can take over).
+/// Reads copied cards, or `None` if the clipboard doesn't hold ours (so a
+/// normal text/image paste can take over). From the HTML, or from the plain
+/// text where a build before the HTML put them.
 pub fn read_nodes() -> Option<NodeClip> {
-    decode_nodes(&read_text()?)
+    system::html()
+        .and_then(|html| decode_nodes(found_in_html(&html)?))
+        .or_else(|| decode_nodes(&read_text()?))
+}
+
+/// `json` as an HTML comment, which every app that pastes HTML leaves out.
+/// A comment ends at the first `--`, which JSON can only hold inside a string,
+/// where `\u002d` reads back as the same hyphen.
+fn hide_in_html(json: &str) -> String {
+    format!("<!--{}-->", json.replace("--", "-\\u002d"))
+}
+
+/// The cards [`hide_in_html`] put in `html`, as JSON. Searched for rather than
+/// expected at the end: each platform wraps HTML on the clipboard its own way.
+fn found_in_html(html: &str) -> Option<&str> {
+    let start = html.find(&format!("<!--{{\"{CANVAS_CLIP_KEY}\""))? + "<!--".len();
+    let len = html[start..].find("-->")?;
+    Some(&html[start..start + len])
 }
 
 /// Serializes a [`NodeClip`] to its clipboard JSON string.
@@ -65,23 +95,58 @@ fn decode_nodes(text: &str) -> Option<NodeClip> {
 }
 
 impl App {
-    /// Copies the selected nodes and the edges among them to the clipboard.
-    pub(super) fn copy_selected_nodes(&self) {
-        let selected: Vec<&CanvasNode> =
-            self.selected.iter().filter_map(|&i| self.nodes.get(i)).collect();
+    /// Copies the selected cards — or, with `chain`, the chain leading into
+    /// each — with what a group among them encloses: as text other apps read
+    /// and cards this one pastes, or as a Mermaid flowchart alone, which an
+    /// app that pastes HTML would otherwise take the HTML over.
+    ///
+    /// A chain copied isn't on screen the way a selection is, so the shimmer
+    /// sweeps it once to show what went.
+    pub(super) fn copy(&mut self, chain: bool, mermaid: bool) {
+        let selected: Vec<usize> = self.selected.iter().copied().filter(|&i| i < self.nodes.len()).collect();
         if selected.is_empty() {
             return;
         }
-        let ids: HashSet<&str> = selected.iter().map(|n| n.id.as_str()).collect();
-        let nodes = selected.into_iter().cloned().collect();
+        let set = if chain { chain::upstream(&self.nodes, &self.edges, &selected) } else { selected };
+        let set = chain::with_contents(&self.nodes, &set);
+        let ids: HashSet<&str> = set.iter().map(|&i| self.nodes[i].id.as_str()).collect();
         // Only the edges wholly within the copied set carry over.
-        let edges = self
+        let edges: Vec<&CanvasEdge> = self
             .edges
             .iter()
             .filter(|e| ids.contains(e.from_node.as_str()) && ids.contains(e.to_node.as_str()))
-            .cloned()
             .collect();
-        write_nodes(&NodeClip { nodes, edges });
+        if mermaid {
+            write_text(chain::mermaid(&self.nodes, &self.edges, &set, self.config_layout_dir()));
+        } else {
+            let text = chain::text(&self.nodes, &self.edges, &chain::order(&self.nodes, &self.edges, &set));
+            let nodes = set.iter().map(|&i| self.nodes[i].clone()).collect();
+            write_cards(&NodeClip { nodes, edges: edges.iter().map(|&e| e.clone()).collect() }, &text);
+        }
+        if chain {
+            self.ai.flows.push(board::AiFlow {
+                nodes: set.iter().map(|&i| self.nodes[i].id.clone()).collect(),
+                edges: edges.iter().map(|e| e.id.clone()).collect(),
+                target: None,
+                since: Instant::now(),
+            });
+        }
+    }
+
+    /// Selects the chain of each selected card, or of `of`: it and every card
+    /// leading into it.
+    pub(super) fn select_chain(&mut self, of: Option<usize>) {
+        let targets = match of {
+            Some(index) if index < self.nodes.len() => vec![index],
+            Some(_) => return,
+            None => self.selected.iter().copied().filter(|&i| i < self.nodes.len()).collect(),
+        };
+        if targets.is_empty() {
+            return;
+        }
+        self.selected = chain::upstream(&self.nodes, &self.edges, &targets);
+        self.selected_edge = None;
+        self.cache.clear();
     }
 
     /// Pastes the clipboard at `world`: previously copied nodes if it holds
@@ -330,6 +395,21 @@ mod tests {
         // Valid JSON but without our marker key.
         assert!(decode_nodes(r#"{"nodes":[]}"#).is_none());
     }
+
+    #[test]
+    fn cards_hidden_in_html_come_back_whatever_their_text_says() {
+        // A card's text can hold what would end a comment.
+        let mut card = node("a");
+        card.text = Some("a --> b <!-- c --- d".to_owned());
+        let json = encode_nodes(&NodeClip { nodes: vec![card], edges: Vec::new() });
+        let hidden = hide_in_html(&json);
+        assert_eq!(hidden.matches("--").count(), 2, "only the comment's own: {hidden}");
+        // Wrapped as a platform wraps it, after the readable part.
+        let html = format!("<html><body><p>a --&gt; b</p>{hidden}</body></html>");
+        let found = decode_nodes(found_in_html(&html).expect("found")).expect("ours");
+        assert_eq!(found.nodes[0].text.as_deref(), Some("a --> b <!-- c --- d"));
+        assert!(found_in_html("<p>someone else's HTML</p><!-- a comment -->").is_none());
+    }
 }
 
 /// What the clipboard currently holds, as far as we can paste it. Images take
@@ -380,8 +460,19 @@ mod system {
         }
     }
 
+    /// `html`, with `text` beside it for the apps that paste plain text.
+    pub fn set_html(html: String, text: String) {
+        if let Ok(mut clipboard) = arboard::Clipboard::new() {
+            let _ = clipboard.set_html(html, Some(text));
+        }
+    }
+
     pub fn text() -> Option<String> {
         arboard::Clipboard::new().ok()?.get_text().ok()
+    }
+
+    pub fn html() -> Option<String> {
+        arboard::Clipboard::new().ok()?.get().html().ok()
     }
 
     pub fn image() -> Option<Clip> {
@@ -403,6 +494,18 @@ pub(super) mod system {
 
     static HELD: Mutex<Option<Clip>> = Mutex::new(None);
 
+    /// The HTML last put on, with the text put on beside it.
+    static HTML: Mutex<Option<(String, String)>> = Mutex::new(None);
+
+    static EXCLUSIVE: Mutex<()> = Mutex::new(());
+
+    /// The stand-in to one test while the guard lives. Tests run side by side,
+    /// and one that copied between another's copy and its paste would hand it
+    /// the wrong clip.
+    pub fn exclusive() -> MutexGuard<'static, ()> {
+        EXCLUSIVE.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
     /// What the stand-in holds. Shared by the whole test binary, so a test
     /// that relies on its contents sets them first.
     pub fn held() -> MutexGuard<'static, Option<Clip>> {
@@ -411,6 +514,19 @@ pub(super) mod system {
 
     pub fn set_text(text: String) {
         *held() = Some(Clip::Text(text));
+    }
+
+    pub fn set_html(html: String, text: String) {
+        *held() = Some(Clip::Text(text.clone()));
+        *HTML.lock().unwrap_or_else(PoisonError::into_inner) = Some((html, text));
+    }
+
+    /// The HTML, while the text put on with it is still what's held: whatever
+    /// was put on since — by a test, or the tour playing another app — took
+    /// its place, as it would on a real clipboard.
+    pub fn html() -> Option<String> {
+        let (html, text) = HTML.lock().unwrap_or_else(PoisonError::into_inner).clone()?;
+        matches!(&*held(), Some(Clip::Text(held)) if *held == text).then_some(html)
     }
 
     pub fn text() -> Option<String> {

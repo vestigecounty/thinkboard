@@ -10,6 +10,7 @@
 #[cfg(any(test, feature = "fixtures"))]
 pub mod fixtures;
 pub mod ai;
+pub mod chain;
 pub mod cluster;
 pub mod color;
 pub mod fuzzy;

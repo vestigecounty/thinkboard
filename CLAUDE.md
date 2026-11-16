@@ -742,6 +742,50 @@ selected, as does closing the find bar on a hit; undo keeps the selection by id.
 **Esc still dismisses the overlay** once nothing is open over it — the user's
 call. Deselecting first would make putting the board away a two-key job.
 
+## Copying cards out
+
+**Copied cards are text to another app and cards to this one**
+(`app::clipboard`). ⌘C writes them in the chain format
+(`thinkboard_core::chain::text`) as the clipboard's plain text — what a
+terminal or a coding agent pastes — and rendered as HTML, which Obsidian turns
+back into Markdown. The cards themselves ride in that HTML as a comment, which
+every app that pastes HTML leaves out and ThinkBoard reads back first. They
+used to be the plain text, so another app pasted JSON with positions in it. A
+comment ends at `--`, which the JSON only holds inside a string, so it's
+written `-\u002d` there.
+
+**The text is written for a person or an agent to read**: one card is its own
+text; several are a list in link order, each card's own lines indented under
+its item — joined by blank lines they ran together — and a link's label leads
+the card it points to ("→ ruled out: …"). A web link card is its URL and a
+file card its path. A group is its outline, and is copied with its cards.
+
+**Ask AI keeps its own prompt** (`ai::upstream_prompt`, `ai::group_prompt`),
+though it reads the same cards. Its answer is split into cards at `---`, and
+a prompt of another shape can change the shape of what comes back — a model
+shown a list tends to answer with one. The old prompt is the one tried against
+real models; the copy's format hasn't been, and the tour's provider answers
+from a script whatever it's sent. A group's outline is one walk written for
+either reader (`ai::Outline`), and the prompt's is pinned by its tests.
+
+**A chain is a card and every card leading into it**, what Ask AI reads.
+⌥-click selects one (Alt does nothing else on a card), as does the palette's
+"Select chain" where a Linux window manager takes ⌥-click. ⌥⌘C (Ctrl+Alt+C
+elsewhere) copies the chain of each selected card without selecting it, so
+the shimmer sweeps it once — an `AiFlow` with no answer card — or nothing
+would show what went. On Windows Ctrl+Alt is AltGr, so AltGr+C on the board
+copies a chain.
+
+**Mermaid is another way to write the same copy**, from the palette only. It's
+plain text alone, fenced: an app that pastes HTML takes the HTML over the text,
+and would lose the flowchart. A card's label is its Markdown read as the board
+draws it — Mermaid shows the markers as written — escaped in Mermaid's entity
+codes, and a group is a subgraph.
+
+The clipboard stand-in tests copy and paste through is shared by the whole
+binary, and tests run side by side, so one that copies or pastes holds
+`clipboard::system::exclusive()`.
+
 ## Going back to a board
 
 **A board opens where it was left** (`app::switcher`). Each board left this

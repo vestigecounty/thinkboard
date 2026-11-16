@@ -528,6 +528,14 @@ impl Board<'_> {
                 state.kind = Kind::Idle;
                 Some(canvas::Action::publish(Message::ToggleNode(index)).and_capture())
             }
+            Some(index) if state.modifiers.alt() => {
+                // ⌥-click selects the card's chain: it and every card leading
+                // into it. Alt is free on a card — it only nudges, with the
+                // arrows. Where a Linux window manager takes ⌥-click for
+                // itself, the palette's "Select chain" does the same.
+                state.kind = Kind::Idle;
+                Some(canvas::Action::publish(Message::SelectChain(Some(index))).and_capture())
+            }
             Some(index) => {
                 let node = &self.nodes[index];
                 let world = self.camera.to_world(position);

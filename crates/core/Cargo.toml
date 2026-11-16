@@ -9,7 +9,8 @@ license = "MIT"
 # only pure-data dependencies belong here.
 [dependencies]
 futures = "0.3"
-pulldown-cmark = { version = "0.13", default-features = false }
+# `html` renders a copied card for the apps that paste HTML (`chain::html`).
+pulldown-cmark = { version = "0.13", default-features = false, features = ["html"] }
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = { version = "1.0.150", features = ["preserve_order"] }

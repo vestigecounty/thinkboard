@@ -271,8 +271,13 @@ pub(crate) enum Message {
     OpenLinkMenu { screen: Point, edge: usize },
     CloseContextMenu,
     CreateNode { world: Point },
-    /// Copy the selected nodes (and the edges among them) to the clipboard.
-    CopyNodes,
+    /// Copies the selected cards — or, with `chain`, each one's chain, the
+    /// cards leading into it — as text other apps read and as cards this one
+    /// pastes back; or, with `mermaid`, as a Mermaid flowchart alone.
+    Copy { chain: bool, mermaid: bool },
+    /// Selects each selected card's chain — or, from an ⌥-click, this card's:
+    /// it and every card leading into it, what Ask AI reads.
+    SelectChain(Option<usize>),
     /// Paste clipboard contents (copied nodes, else text or image) at `world`.
     Paste { world: Point },
     /// Sets the selected nodes' color (a canvas value like "1" or "#4a90e2");
@@ -1106,7 +1111,8 @@ impl App {
                 self.context_menu = None;
                 return self.delete_selected();
             }
-            Message::CopyNodes => self.copy_selected_nodes(),
+            Message::Copy { chain, mermaid } => self.copy(chain, mermaid),
+            Message::SelectChain(of) => self.select_chain(of),
             Message::Paste { world } => {
                 self.interacted = true;
                 self.context_menu = None;
@@ -2268,7 +2274,11 @@ impl App {
             CommandId::Quit => Message::Quit,
             CommandId::Undo => Message::Undo,
             CommandId::Redo => Message::Redo,
-            CommandId::Copy => Message::CopyNodes,
+            CommandId::Copy => Message::Copy { chain: false, mermaid: false },
+            CommandId::CopyChain => Message::Copy { chain: true, mermaid: false },
+            CommandId::CopyMermaid => Message::Copy { chain: false, mermaid: true },
+            CommandId::CopyChainMermaid => Message::Copy { chain: true, mermaid: true },
+            CommandId::SelectChain => Message::SelectChain(None),
             CommandId::Paste => Message::Paste { world: center },
             CommandId::DeleteSelected => Message::DeleteSelected,
             CommandId::AddNode => Message::CreateNode { world: center },
@@ -2424,6 +2434,8 @@ impl App {
         if self.ghosts_expired() {
             self.dismiss_ghosts();
         }
+        // A copied chain's sweep, once it has crossed the chain.
+        self.ai.flows.retain(|flow| !flow.finished());
 
         // Stop driving frames once the hue picker has finished opening; `view`
         // reads the elapsed time to draw the unroll.

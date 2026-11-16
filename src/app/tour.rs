@@ -1688,6 +1688,70 @@ fn groups() {
     tour.shot("deselected");
 }
 
+/// Copying a chain out: ⌥-click selects a card and what leads into it, the
+/// palette offers the copies, and ⌥⌘C copies the chain of the card selected
+/// without selecting it, sweeping it once to show what went.
+fn copying_a_chain() {
+    let board = |_: &ColorTheme| {
+        use thinkboard_core::fixtures::{edge, node};
+        let card = |id: &str, text: &str, x: f32, y: f32| CanvasNode {
+            text: Some(text.to_owned()),
+            x,
+            y,
+            width: 220.0,
+            height: 70.0,
+            ..node(id)
+        };
+        let mut issue = CanvasNode { kind: "link".to_owned(), text: None, x: -320.0, y: 0.0, width: 220.0, height: 70.0, ..node("issue") };
+        issue.extra.insert("url".to_owned(), serde_json::json!("https://example.com/issues/412"));
+        let mut ruled_out = edge("symptom", "skew");
+        ruled_out.set_label("ruled out");
+        CanvasDocument {
+            nodes: vec![
+                issue,
+                card("symptom", "Login fails after the **token refresh**", 0.0, 0.0),
+                card("skew", "Clock skew\n\nBoth servers are NTP-synced.", 320.0, 0.0),
+                card("cache", "The token cache is shared between tabs", 640.0, 0.0),
+                card("aside", "Release notes for 2.3", 320.0, 220.0),
+            ],
+            edges: vec![edge("issue", "symptom"), ruled_out, edge("skew", "cache"), edge("aside", "cache")],
+            extra: serde_json::Map::new(),
+        }
+    };
+    let mut tour = Tour::new("copying_a_chain", first_launch(board));
+    tour.chord(Modifiers::COMMAND, "0");
+    tour.shot("board");
+
+    // ⌥-click the last card: it and everything leading into it.
+    let cache = tour.find("The token cache");
+    tour.hold(Modifiers::ALT);
+    tour.click(tour.node_center(cache));
+    tour.hold(Modifiers::empty());
+    assert_eq!(tour.app.selected.len(), 5, "the chain, and the card beside it that leads in too");
+    tour.shot("chain-selected");
+
+    // The copies, as the palette offers them, for the card alone.
+    tour.click(Point::new(40.0, 860.0));
+    tour.click(tour.node_center(cache));
+    assert_eq!(tour.app.selected, vec![cache]);
+    tour.chord(Modifiers::COMMAND | Modifiers::SHIFT, "p");
+    tour.type_text("copy");
+    tour.shot("palette");
+    tour.named(key::Named::Escape);
+
+    // ⌥⌘C on the card alone copies its chain.
+    tour.chord(Modifiers::COMMAND | Modifiers::ALT, "c");
+    assert_eq!(tour.app.selected, vec![cache], "copied without selecting it");
+    let copied = super::clipboard::read_text().expect("copied");
+    assert!(copied.starts_with("- https://example.com/issues/412\n- Login fails"), "{copied}");
+    assert!(copied.contains("\n- → ruled out: Clock skew\n"), "{copied}");
+    // And sweeps it once, which a settled shot would be past.
+    let mut strip = tour.strip("sweep", Rectangle::new(Point::ORIGIN, Size::new(1440.0, 900.0)));
+    tour.send(Message::Copy { chain: true, mermaid: false });
+    tour.film(&mut strip, "copied");
+    tour.save(strip, 4);
+}
+
 /// The vault browser over a vault made for it: boards in folders, one hidden.
 fn vault() {
     let root = std::env::temp_dir().join(format!("thinkboard-tour-vault-{}", std::process::id()));
@@ -3860,6 +3924,7 @@ const SCENES: &[(&str, fn())] = &[
     ("find", find),
     ("links", links),
     ("groups", groups),
+    ("copying_a_chain", copying_a_chain),
     ("vault", vault),
     ("switcher", switcher),
     ("big_board", big_board),

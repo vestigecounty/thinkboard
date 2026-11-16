@@ -41,11 +41,23 @@ pub struct Ghost {
 /// One pending AI request's input chain, animated by the shimmer: a sweep
 /// across `nodes`/`edges` a couple of times, then a breathing glow settling on
 /// `target` (the "…" response node). `since` is this flow's own clock.
+///
+/// Without a `target` it's what was just copied as a chain: one sweep, which
+/// shows what went to the clipboard — copied without selecting, it showed
+/// nothing — and then it's done ([`AiFlow::finished`]).
 pub struct AiFlow {
     pub nodes: HashSet<String>,
     pub edges: HashSet<String>,
-    pub target: String,
+    pub target: Option<String>,
     pub since: Instant,
+}
+
+impl AiFlow {
+    /// A copy's sweep that has crossed its cards. A request's flow lasts
+    /// until its answer starts.
+    pub fn finished(&self) -> bool {
+        self.target.is_none() && self.since.elapsed().as_secs_f32() >= SHIMMER_SWEEP
+    }
 }
 
 impl Board<'_> {
@@ -147,17 +159,23 @@ impl Board<'_> {
             return;
         }
         let time = flow.since.elapsed().as_secs_f32();
-        let zoom = self.camera.zoom;
         // Each pulse is a sweep followed by a quiet gap; the last pulse leads
         // straight into the settle (no trailing gap).
         let cycle = SHIMMER_SWEEP + SHIMMER_GAP;
         let settle_start = (SHIMMER_PULSES - 1.0) * cycle + SHIMMER_SWEEP;
 
-        // After the sweeps, the "…" response node keeps a breathing glow.
+        // After the sweeps, the "…" response node keeps a breathing glow — and
+        // a copy, swept once, is over.
+        let Some(target) = &flow.target else {
+            if time < SHIMMER_SWEEP {
+                self.draw_sweep(frame, flow, time);
+            }
+            return;
+        };
         if time >= settle_start {
             let phase = (time - settle_start) * std::f32::consts::TAU / SHIMMER_BREATHE;
             let alpha = 0.2 + 0.16 * phase.cos();
-            if let Some(i) = self.node_index.get(flow.target.as_str()) {
+            if let Some(i) = self.node_index.get(target.as_str()) {
                 let r = self.node_screen_rect(*i, &self.nodes[*i]);
                 frame.fill(
                     &rounded_path(r, self.card_radius()),
@@ -172,7 +190,13 @@ impl Board<'_> {
         if in_cycle >= SHIMMER_SWEEP {
             return;
         }
+        self.draw_sweep(frame, flow, in_cycle);
+    }
 
+    /// One sweep of the band across `flow`'s cards and links, `in_cycle`
+    /// seconds into it.
+    fn draw_sweep(&self, frame: &mut Frame, flow: &AiFlow, in_cycle: f32) {
+        let zoom = self.camera.zoom;
         // Sweep phase: collect the shimmering shapes and their projection extent.
         let dir = Vector::new(0.94, 0.34); // ~20° below horizontal
         let proj = |p: Point| p.x * dir.x + p.y * dir.y;

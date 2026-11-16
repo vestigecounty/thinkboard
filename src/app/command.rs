@@ -58,6 +58,11 @@ pub(crate) enum CommandId {
     Undo,
     Redo,
     Copy,
+    /// The chain leading into each selected card, as ⌥⌘C copies it.
+    CopyChain,
+    CopyMermaid,
+    CopyChainMermaid,
+    SelectChain,
     Paste,
     DeleteSelected,
     AddNode,
@@ -102,6 +107,10 @@ impl CommandId {
             CommandId::ChooseModel if !app.config.ai_enabled() => Some(NO_PROVIDER),
             CommandId::AskAi if app.selected.is_empty() => Some("Select a card to ask about"),
             CommandId::Copy
+            | CommandId::CopyChain
+            | CommandId::CopyMermaid
+            | CommandId::CopyChainMermaid
+            | CommandId::SelectChain
             | CommandId::DeleteSelected
             | CommandId::Distribute
             | CommandId::EditNode
@@ -158,6 +167,8 @@ pub(crate) enum Section {
     App,
     /// Found by typing only. The seven colours: listed, they were half the
     /// selection's section, for something the card's own menu does in a click.
+    /// And the two Mermaid copies, which "copy" or "mermaid" brings up beside
+    /// the others.
     Unlisted,
 }
 
@@ -185,6 +196,7 @@ impl Section {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct Keys {
     command: bool,
+    alt: bool,
     shift: bool,
     key: Key,
 }
@@ -199,27 +211,33 @@ enum Key {
 
 impl Keys {
     const fn command(letter: &'static str) -> Option<Keys> {
-        Some(Keys { command: true, shift: false, key: Key::Letter(letter) })
+        Some(Keys { command: true, alt: false, shift: false, key: Key::Letter(letter) })
     }
 
     const fn command_shift(letter: &'static str) -> Option<Keys> {
-        Some(Keys { command: true, shift: true, key: Key::Letter(letter) })
+        Some(Keys { command: true, alt: false, shift: true, key: Key::Letter(letter) })
+    }
+
+    const fn command_alt(letter: &'static str) -> Option<Keys> {
+        Some(Keys { command: true, alt: true, shift: false, key: Key::Letter(letter) })
     }
 
     const fn bare(key: Key) -> Option<Keys> {
-        Some(Keys { command: false, shift: false, key })
+        Some(Keys { command: false, alt: false, shift: false, key })
     }
 
-    /// The caps to draw, in the platform's own order — ⇧⌘Z on a Mac, Ctrl
-    /// Shift Z elsewhere — and in its own words for keys it labels in words.
+    /// The caps to draw, in the platform's own order — ⌥⇧⌘Z on a Mac, Ctrl
+    /// Alt Shift Z elsewhere — and in its own words for keys it labels in words.
     pub(crate) fn caps(self) -> Vec<&'static str> {
         let mac = cfg!(target_os = "macos");
         let mut caps = Vec::new();
         if mac {
+            caps.extend(self.alt.then_some("⌥"));
             caps.extend(self.shift.then_some("⇧"));
             caps.extend(self.command.then_some("⌘"));
         } else {
             caps.extend(self.command.then_some("Ctrl"));
+            caps.extend(self.alt.then_some("Alt"));
             caps.extend(self.shift.then_some("Shift"));
         }
         caps.push(match self.key {
@@ -266,6 +284,8 @@ static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
         cmd(Distribute, "Auto-layout selection", "distribute arrange tidy", None, Selection),
         cmd(GroupSelection, "Group selection", "frame box enclose", None, Selection),
         cmd(Copy, "Copy", "clipboard", Keys::command("C"), Selection),
+        cmd(CopyChain, "Copy chain", "clipboard prompt upstream ancestors", Keys::command_alt("C"), Selection),
+        cmd(SelectChain, "Select chain", "upstream ancestors leading", None, Selection),
         cmd(DeleteSelected, "Delete selection", "remove", Keys::bare(Key::Delete), Selection),
         cmd(AddNode, "Add card", "new note node", None, Board),
         cmd(FitBoard, "Fit board to view", "zoom all overview everything", Keys::command("0"), Board),
@@ -290,6 +310,8 @@ static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
         cmd(Colour(Some("5")), "Color: cyan", "colour color tint card blue", None, Unlisted),
         cmd(Colour(Some("6")), "Color: purple", "colour color tint card violet", None, Unlisted),
         cmd(Colour(None), "Color: none", "colour color tint card clear default", None, Unlisted),
+        cmd(CopyMermaid, "Copy as Mermaid", "clipboard diagram flowchart", None, Unlisted),
+        cmd(CopyChainMermaid, "Copy chain as Mermaid", "clipboard diagram flowchart upstream", None, Unlisted),
     ]
 });
 
@@ -675,6 +697,24 @@ mod tests {
         } else {
             assert_eq!(caps, ["Ctrl", "Shift", "Z"]);
         }
+        // Option before them both on a Mac; Alt after Ctrl elsewhere.
+        let chain = COMMANDS.iter().find(|command| command.id == CommandId::CopyChain).and_then(|command| command.shortcut);
+        let caps = chain.expect("copy chain has keys").caps();
+        if cfg!(target_os = "macos") {
+            assert_eq!(caps, ["⌥", "⌘", "C"]);
+        } else {
+            assert_eq!(caps, ["Ctrl", "Alt", "C"]);
+        }
+    }
+
+    #[test]
+    fn the_mermaid_copies_are_found_by_what_they_make() {
+        for query in ["mermaid", "diagram", "flowchart"] {
+            let found = commands(query);
+            assert!(found.contains(&CommandId::CopyMermaid) && found.contains(&CommandId::CopyChainMermaid), "{query}");
+        }
+        assert!(commands("chain").contains(&CommandId::CopyChain));
+        assert!(commands("chain").contains(&CommandId::SelectChain));
     }
 
     #[test]

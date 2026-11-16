@@ -358,7 +358,9 @@ impl canvas::Program<Message> for Board<'_> {
                 let message = match chord(letter, modifiers.shift(), !self.selected.is_empty())? {
                     Chord::Undo => Message::Undo,
                     Chord::Redo => Message::Redo,
-                    Chord::Copy => Message::CopyNodes,
+                    // ⌥⌘C (Ctrl+Alt+C elsewhere) copies the chain leading
+                    // into each selected card, without selecting it first.
+                    Chord::Copy => Message::Copy { chain: modifiers.alt(), mermaid: false },
                     Chord::Find => Message::OpenSearch,
                     Chord::Palette => Message::OpenCommandPalette,
                     Chord::SwitchCanvas => Message::SwitchCanvas,

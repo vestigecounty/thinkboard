@@ -220,7 +220,7 @@ impl App {
         self.ai.flows.push(board::AiFlow {
             nodes: ancestors,
             edges: flow.into_iter().collect(),
-            target: node_id.clone(),
+            target: Some(node_id.clone()),
             since: Instant::now(),
         });
 
@@ -450,7 +450,7 @@ impl App {
     fn end_ai_pending(&mut self, id: &str) -> bool {
         let was_pending = self.ai.pending.remove(id);
         // Drop this request's shimmer once its answer starts (or it ends).
-        self.ai.flows.retain(|flow| flow.target != id);
+        self.ai.flows.retain(|flow| flow.target.as_deref() != Some(id));
         was_pending
     }
 
