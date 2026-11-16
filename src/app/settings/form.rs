@@ -522,6 +522,8 @@ fn ai(app: &App, look: Look) -> Vec<Element<'_, Message>> {
         if app.asks_a_free_model() {
             let tint = crate::app::model_picker::warning_tint(&app.theme);
             model = model.note(warning(look, tint, crate::app::model_picker::FREE_CAVEAT));
+        } else if let Some(price) = app.price_in_use() {
+            model = model.note(quiet(look, price));
         }
         ask.push(model.build(app, look));
         // A runtime on this machine asks for no key — greyed, not locked, as

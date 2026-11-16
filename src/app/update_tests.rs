@@ -2398,7 +2398,7 @@ fn naming_a_theme_in_settings_takes_effect_without_a_restart() {
 use thinkboard_core::ai::Model;
 
 fn model(id: &str) -> Model {
-    Model { id: id.to_owned(), name: None, context: None, free: false }
+    Model { id: id.to_owned(), name: None, free: false, price: None }
 }
 
 /// An app with a provider configured and a list already fetched for it.
@@ -2457,13 +2457,14 @@ fn free_models_come_first_with_nothing_typed_and_a_search_keeps_the_sections_bes
     assert_eq!(ids(&app, ""), ["openrouter/free", "google/gemma-4-31b-it:free", "anthropic/claude-sonnet-4", "openai/gpt-4o"]);
     assert_eq!(headers.iter().map(|(at, ..)| *at).collect::<Vec<_>>(), [0, 1, 2], "the router, the free ones, the paid");
     assert!(headers[1].1.contains("rate-limited"), "free isn't put forward as dependable: {}", headers[1].1);
-    assert_eq!(headers[2].1, "Paid");
+    assert!(headers[2].1.starts_with("Paid"), "{}", headers[2].1);
     assert_eq!(app.highlighted_model().as_deref(), Some("openrouter/free"), "the highlight is on the first row shown");
 
     // Searched, the sections stay — a free model found is still under its
     // header — and the one with the best match leads, so Enter takes it.
     let labels = |query: &str| app.model_listing(query).1.into_iter().map(|(_, label, _)| label).collect::<Vec<_>>();
-    assert_eq!(labels("gpt"), ["Paid"], "one section left is still named");
+    assert_eq!(labels("gpt").len(), 1, "one section left is still named");
+    assert!(labels("gpt")[0].starts_with("Paid"));
     assert_eq!(ids(&app, "gpt"), ["openai/gpt-4o"]);
     assert_eq!(labels("gemma"), ["Free · rate-limited"]);
     assert_eq!(labels("free")[0], "Free · routes to an available model");
@@ -2481,7 +2482,7 @@ fn a_model_searched_for_by_name_leads_its_free_variant() {
     let models = vec![model("qwen/qwen3-30b-a3b"), Model { free: true, ..model("qwen/qwen3-30b-a3b:free") }];
     send(&mut app, Message::ModelsFetched(url, Ok(models)));
     let labels: Vec<_> = app.model_listing("qwen").1.into_iter().map(|(_, label, _)| label).collect();
-    assert_eq!(labels, ["Paid", "Free · rate-limited"], "a tie goes to the paid");
+    assert!(labels[0].starts_with("Paid") && labels[1] == "Free · rate-limited", "a tie goes to the paid: {labels:?}");
     // With nothing typed, free still comes first.
     assert_eq!(app.model_listing("").1[0].1, "Free · rate-limited");
 }
@@ -2509,6 +2510,24 @@ fn the_picker_opens_on_the_model_in_use_and_keeps_its_highlight_as_the_list_is_r
     send(&mut app, Message::PanelNav(picker::Panel::Model, picker::Nav::Step(-1)));
     send(&mut app, Message::ModelsFetched(url, listed(&["aaa/new", ids[0], ids[1], ids[2]])));
     assert_eq!(app.highlighted_model().as_deref(), Some("openai/gpt-4o"));
+}
+
+#[test]
+fn the_form_asks_openrouter_for_its_prices_once_and_not_again_after_a_failure() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    let openrouter = "https://openrouter.ai/api/v1".to_owned();
+    app.config.ai_url = openrouter.clone();
+    assert!(app.form_wants_models(), "nothing kept yet");
+    send(&mut app, Message::ModelsFetched(openrouter.clone(), Err("No API key".to_owned())));
+    assert!(!app.form_wants_models(), "not again after a failure");
+    send(&mut app, Message::ModelsFetched(openrouter, Ok(vec![model("openai/gpt-4o")])));
+    assert!(!app.form_wants_models(), "kept");
+
+    // Only OpenRouter's list has prices; another's is fetched for nothing.
+    for url in ["https://api.openai.com/v1", "http://localhost:1234/v1"] {
+        app.config.ai_url = url.to_owned();
+        assert!(!app.form_wants_models(), "{url}");
+    }
 }
 
 #[test]
@@ -2945,6 +2964,39 @@ fn a_failure_partway_keeps_what_was_written() {
     send(&mut app, Message::Ai(second.clone(), Event::Delta("Take the train from Rossio ".to_owned())));
     send(&mut app, Message::Ai(second.clone(), Event::Error("The connection dropped".to_owned())));
     assert_eq!(text(&app, &second).as_deref(), Some("Take the train from Rossio\n\n⚠ The connection dropped"));
+}
+
+#[test]
+fn what_an_answer_cost_is_said_under_its_last_card_and_nothing_from_a_runtime_here() {
+    use thinkboard_core::ai::{Event, Usage};
+    let ask = |app: &mut App, card: usize, usage: Usage| {
+        send(app, Message::SelectNode(Some(card)));
+        send(app, Message::AskAi);
+        let id = app.ai.streams.keys().next().expect("asked").clone();
+        for event in [Event::Delta("Tram 28".to_owned()), Event::Split, Event::Delta("Or walk".to_owned())] {
+            send(app, Message::Ai(id.clone(), event));
+        }
+        send(app, Message::Ai(id.clone(), Event::Usage(usage)));
+        send(app, Message::Ai(id, Event::Done));
+    };
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
+    app.config.ai_model = "qwen/qwen3-30b-a3b".to_owned();
+    ask(&mut app, 0, Usage { prompt_tokens: 812, completion_tokens: 403, cost: Some(0.00031) });
+    let spent = app.ai.spent.last().expect("said");
+    assert_eq!(spent.words, "$0.00031 · 1.2k tokens");
+    assert_eq!(Some(&spent.node), app.nodes.last().map(|n| &n.id), "under the answer's last card");
+
+    // A free model's answer costs nothing, and says so.
+    app.config.ai_model = "openrouter/free".to_owned();
+    ask(&mut app, 1, Usage { prompt_tokens: 90, completion_tokens: 40, cost: Some(0.0) });
+    assert_eq!(app.ai.spent.last().map(|s| s.words.as_str()), Some("free · 130 tokens"));
+
+    // A runtime on this machine gives no cost, and gets no label.
+    let before = app.ai.spent.len();
+    app.config.ai_url = "http://localhost:1234/v1".to_owned();
+    ask(&mut app, 0, Usage { prompt_tokens: 90, completion_tokens: 40, cost: None });
+    assert_eq!(app.ai.spent.len(), before);
 }
 
 #[test]

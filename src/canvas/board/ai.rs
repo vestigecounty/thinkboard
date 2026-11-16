@@ -25,6 +25,32 @@ pub(super) const GHOST_X: f32 = 24.0;
 /// Weight of a suggestion card's dashed outline, in world units.
 pub(super) const GHOST_STROKE: f32 = 1.5;
 
+/// Seconds an answer's cost stays up in full: long enough to read.
+pub const SPENT_HOLD: f32 = 4.0;
+
+/// Seconds it then takes to fade, at the default animation speed.
+pub const SPENT_FADE: f32 = 1.0;
+
+/// What an answer cost, said under its last card for a moment once it's done
+/// (`app::ai`), then faded — what was spent, rather than a price per million
+/// tokens to multiply out.
+pub struct Spent {
+    /// The card it's said under, by id: the answer's cards are laid out once
+    /// it's done, so it follows wherever that puts the card.
+    pub node: String,
+    pub words: String,
+    pub since: Instant,
+}
+
+impl Spent {
+    /// How solid it's drawn, `fade` being the seconds it takes to go: full
+    /// while it's read, then to nothing — at once, with animations off.
+    pub fn alpha(&self, fade: f32) -> f32 {
+        let past = self.since.elapsed().as_secs_f32() - SPENT_HOLD;
+        if past <= 0.0 { 1.0 } else { (1.0 - past / fade).max(0.0) }
+    }
+}
+
 /// A Copilot-style suggested node: shown as a faint dashed card that becomes a
 /// real node (branching off `parent`) when clicked.
 pub struct Ghost {
@@ -61,6 +87,49 @@ impl AiFlow {
 }
 
 impl Board<'_> {
+    /// Each answer's cost under its last card, right-aligned to it, in muted
+    /// text at a fixed screen size — a note on the card, not part of it.
+    pub(super) fn draw_spent(&self, frame: &mut Frame) {
+        let fade = self.config.anim_secs(SPENT_FADE);
+        for spent in self.spent {
+            let alpha = spent.alpha(fade);
+            let Some(&index) = self.node_index.get(spent.node.as_str()).filter(|_| alpha > 0.0) else {
+                continue;
+            };
+            let rect = self.camera.rect_to_screen(self.node_rect(&self.nodes[index]));
+            frame.fill_text(canvas::Text {
+                content: spent.words.clone(),
+                position: Point::new(rect.x + rect.width, rect.y + rect.height + 6.0),
+                color: Color { a: alpha * self.theme.text_muted.a, ..self.theme.text_muted },
+                size: 12.0.into(),
+                font: self.theme.ui_font(),
+                align_x: iced::advanced::text::Alignment::Right,
+                ..canvas::Text::default()
+            });
+        }
+    }
+
+    /// When the board next wants a frame for the answers' costs: at once
+    /// while one is fading, when the first one held is due to start, or
+    /// never. Asked for from the board's own redraws, as the switcher's hold
+    /// is, so a label held still costs no frames.
+    pub(super) fn spent_redraw(&self) -> Option<Instant> {
+        let now = Instant::now();
+        let fade = std::time::Duration::from_secs_f32(self.config.anim_secs(SPENT_FADE));
+        let hold = std::time::Duration::from_secs_f32(SPENT_HOLD);
+        self.spent
+            .iter()
+            .filter_map(|spent| {
+                let start = spent.since + hold;
+                if now >= start + fade {
+                    None
+                } else {
+                    Some(start.max(now))
+                }
+            })
+            .min()
+    }
+
     /// The suggestion card under `world`, if any (including the placeholder,
     /// which can be dragged but not accepted).
     pub(super) fn ghost_at(&self, world: Point) -> Option<usize> {

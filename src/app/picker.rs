@@ -244,6 +244,11 @@ pub(super) struct Row<'a> {
     pub detail: Cow<'a, str>,
     /// The detail's colour, where it isn't the muted one: a model's "free".
     pub detail_tint: Option<Color>,
+    /// A gauge after the detail: a mark drawn four times, how many of them
+    /// are lit — the rightmost — and their colour; the rest faint. All four
+    /// drawn, so it's the same extent on every row: a model's price, `$` to
+    /// `$$$$`.
+    pub gauge: Option<(&'static str, usize, Color)>,
     /// A shortcut, a cap per key, after the detail. Empty for none.
     pub keys: Vec<&'static str>,
     /// A disabled row is greyed and can't be pressed (but still takes a slot,
@@ -258,6 +263,9 @@ pub(super) struct Row<'a> {
     pub glyph: Option<super::chrome::Glyph>,
     pub press: Message,
 }
+
+/// How many marks a [`Row::gauge`] has.
+pub(super) const GAUGE_STEPS: usize = 4;
 
 /// A section header: the row it heads, what it says, and the colour it's set
 /// in where it isn't the muted one.
@@ -621,6 +629,13 @@ fn list_row<'a>(entry: Row<'a>, selected: bool, look: Look, padding: iced::Paddi
     if !entry.detail.is_empty() {
         let color = entry.detail_tint.unwrap_or(ct.text_muted);
         line = line.push(text(entry.detail).size(12).font(font).color(color).wrapping(text::Wrapping::None));
+    }
+    if let Some((mark, lit, tint)) = entry.gauge {
+        let faint = Color { a: 0.3, ..ct.text_muted };
+        let marks: Vec<Span<'a, (), Font>> = (0..GAUGE_STEPS)
+            .map(|step| span(mark).font(font).color(if step + lit >= GAUGE_STEPS { tint } else { faint }))
+            .collect();
+        line = line.push(rich_text(marks).size(12).wrapping(text::Wrapping::None));
     }
     if !entry.keys.is_empty() {
         let caps = entry.keys.into_iter().map(|key| {

@@ -98,12 +98,50 @@ fn readable(base: iced::Color, theme: &crate::theme::Theme) -> iced::Color {
         .unwrap_or(theme.text)
 }
 
-/// A context window as it reads in a list: `200k`, `1M`.
-fn context(tokens: u64) -> String {
-    match tokens {
-        0..=9_999 => format!("{tokens}"),
-        10_000..=999_999 => format!("{}k", tokens / 1000),
-        _ => format!("{}M", tokens / 1_000_000),
+/// A price as a row says it: dollars per million tokens, sent and answered —
+/// `$3 / $15`, which is how providers quote them. Always that unit, so the
+/// Paid header says it once rather than every row ([`PAID`]).
+fn per_million(price: thinkboard_core::ai::Price) -> String {
+    format!("{} / {}", dollars(price.prompt * 1e6), dollars(price.completion * 1e6))
+}
+
+/// How dear a model is at a glance, one to four, by the mean of its prices
+/// in and out per million tokens: under $1, $5 and $20, and above — about a
+/// small open model, a fast hosted one, a frontier one, and the largest.
+/// Drawn as `$$$$` with that many lit in gold, beside the price itself.
+fn rating(price: thinkboard_core::ai::Price) -> usize {
+    match (price.prompt + price.completion) / 2.0 * 1e6 {
+        mean if mean < 1.0 => 1,
+        mean if mean < 5.0 => 2,
+        mean if mean < 20.0 => 3,
+        _ => 4,
+    }
+}
+
+/// The rating's gold: a card's yellow, taken toward the text until it reads.
+fn gold(theme: &crate::theme::Theme) -> iced::Color {
+    let yellow = thinkboard_core::model::parse_color("3").map(crate::document::IntoColor::into_color);
+    readable(yellow.unwrap_or(theme.accent), theme)
+}
+
+/// The priced section's header, with the unit its rows' prices are in. The
+/// sections stay through a search, so a priced row is never without it.
+const PAID: &str = "Paid · in / out, per million tokens";
+
+/// An amount in dollars as a person writes it: whole dollars bare (`$3`),
+/// cents to two places (`$2.50`, `$0.15`), and less than a cent to two
+/// significant digits (`$0.0031`) — an answer can cost a fraction of one.
+pub(super) fn dollars(amount: f64) -> String {
+    let whole = amount.fract() < 0.005 || amount.fract() > 0.995;
+    if amount <= 0.0 {
+        "$0".to_owned()
+    } else if amount >= 100.0 || (amount >= 1.0 && whole) {
+        format!("${amount:.0}")
+    } else if amount >= 0.01 {
+        format!("${amount:.2}")
+    } else {
+        let places = 1 - amount.log10().floor() as i32;
+        format!("${amount:.*}", places.max(0) as usize)
     }
 }
 
@@ -134,22 +172,50 @@ impl App {
             }
             return opened;
         }
-        // Refetched even when cached: a list is cheap, and a stale one is how
-        // you end up picking a model the provider has since retired.
-        let key = self.config.ai_key().to_owned();
         // Open on the model in use, where a kept list has it — as the theme
         // picker opens on the theme — or it could be anywhere below the free
         // ones, out of sight.
         let before = self.config.ai_model.trim().to_owned();
         let current = self.highlight_model(&before);
-        let fetch = Task::perform(
+        // Refetched even when cached: a list is cheap, and a stale one is how
+        // you end up picking a model the provider has since retired.
+        Task::batch([opened, current, self.fetch_models()])
+    }
+
+    /// Asks the endpoint for its models. What comes back is kept for it
+    /// (`models_fetched`), whether or not a picker is waiting on it.
+    fn fetch_models(&self) -> Task<Message> {
+        let url = self.config.ai_url.trim().to_owned();
+        let key = self.config.ai_key().to_owned();
+        Task::perform(
             async move {
                 let models = thinkboard_core::ai::models(&url, &key).await;
                 (url, models)
             },
             |(url, models)| Message::ModelsFetched(url, models.map_err(|e| e.to_string())),
-        );
-        Task::batch([opened, current, fetch])
+        )
+    }
+
+    /// The list for the settings form's Model row, which says what the model
+    /// costs: fetched as the form opens, on OpenRouter — the one provider
+    /// whose list has prices, so the only one worth asking unasked — and only
+    /// while nothing's kept for it. Not again after a failure this launch
+    /// (no key yet, offline): each opening would ask once more for nothing.
+    /// The picker still asks every time it's opened, which is asking.
+    pub(super) fn fetch_models_for_form(&self) -> Task<Message> {
+        if !self.form_wants_models() {
+            return Task::none();
+        }
+        self.fetch_models()
+    }
+
+    /// Whether the form opening now should ask for the list
+    /// ([`App::fetch_models_for_form`]).
+    pub(super) fn form_wants_models(&self) -> bool {
+        let url = self.config.ai_url.trim();
+        let kept = self.ai.models.as_ref().is_some_and(|(kept, _)| kept == url);
+        let failed = self.ai.models_failed.as_deref() == Some(url);
+        super::sign_in::signs_in(url) && !kept && !failed
     }
 
     /// The picker, from the settings form, where the model is chosen
@@ -187,6 +253,7 @@ impl App {
                     .highlighted_model()
                     .or_else(|| self.model_picker.as_ref().map(|picker| picker.before.clone()));
                 self.ai.models = Some((url.clone(), models));
+                self.ai.models_failed = None;
                 if let Some(picker) = self.model_picker.as_mut().filter(|p| p.url == url) {
                     picker.loading = false;
                     picker.error = None;
@@ -201,6 +268,7 @@ impl App {
                     picker.loading = false;
                     picker.error = Some(error);
                 }
+                self.ai.models_failed = Some(url);
             }
         }
         Task::none()
@@ -241,13 +309,26 @@ impl App {
     /// one's kept for it, or else by the model's name — the list is fetched
     /// only when the picker opens.
     pub(super) fn asks_a_free_model(&self) -> bool {
+        self.model_in_use()
+            .map_or_else(|| thinkboard_core::ai::free_by_name(self.config.ai_model.trim()), |listed| listed.free)
+    }
+
+    /// The model in use, as the list kept for its endpoint has it.
+    pub(super) fn model_in_use(&self) -> Option<&Model> {
         let (url, model) = (self.config.ai_url.trim(), self.config.ai_model.trim());
-        self.ai
-            .models
-            .as_ref()
-            .filter(|(kept, _)| kept == url)
-            .and_then(|(_, models)| models.iter().find(|listed| listed.id == model))
-            .map_or_else(|| thinkboard_core::ai::free_by_name(model), |listed| listed.free)
+        let (_, models) = self.ai.models.as_ref().filter(|(kept, _)| kept == url)?;
+        models.iter().find(|listed| listed.id == model)
+    }
+
+    /// What the model in use costs, as the Model row says it, where the list
+    /// kept for its endpoint gives a price.
+    pub(super) fn price_in_use(&self) -> Option<String> {
+        let price = self.model_in_use().filter(|model| !model.free)?.price?;
+        Some(format!(
+            "{} in, {} out, per million tokens",
+            dollars(price.prompt * 1e6),
+            dollars(price.completion * 1e6)
+        ))
     }
 
     /// Where Ask AI sends a question, as the menu and the palette say beside
@@ -275,7 +356,7 @@ impl App {
     /// themselves, under a header that says what free means — limited, and
     /// the offers come and go, so none is put forward as one to rely on —
     /// then the paid. Sections only where the endpoint prices its models,
-    /// which is where any is free, so the rest are the priced ones.
+    /// which is where any can be free, so the rest are the priced ones.
     ///
     /// Typed into, the sections stay, each ranked within, and the one holding
     /// the best match leads — so the highlight and Enter are on it, as in one
@@ -296,13 +377,13 @@ impl App {
             [
                 ("Free · routes to an available model", router, Cost::Free),
                 ("Free · rate-limited", free, Cost::Free),
-                ("Paid", paid, Cost::Paid),
+                (PAID, paid, Cost::Paid),
             ]
         };
-        // Whether there are sections is the whole list's to say, so a search
-        // down to one model still says which it is.
-        let all: Vec<usize> = (0..models.len()).collect();
-        if sections(&all).iter().filter(|(_, rows, _)| !rows.is_empty()).count() < 2 {
+        // Sections where the endpoint prices its models — the whole list's to
+        // say, so a search down to one model still says which it is, and a
+        // list with nothing free still has the header its prices' unit is in.
+        if !models.iter().any(|model| model.free || model.price.is_some()) {
             return (ranked, Vec::new());
         }
         let mut found: Vec<_> = sections(&ranked).into_iter().filter(|(_, rows, _)| !rows.is_empty()).collect();
@@ -358,17 +439,22 @@ impl App {
                 // it is how you know the right one was chosen.
                 title: model.id.as_str().into(),
                 matched: thinkboard_core::fuzzy::matched(&picker.state.query, &model.id),
-                detail: match (model.id == picker.before, model.context) {
-                    (true, _) => "current".into(),
-                    // Otherwise the context window, which is usually what
-                    // decides between two models with near-identical names —
-                    // and whether it's free, which a search shows no section for.
-                    (false, Some(tokens)) if model.free => format!("free · {}", context(tokens)).into(),
-                    (false, Some(tokens)) => context(tokens).into(),
-                    (false, None) if model.free => "free".into(),
-                    (false, None) => "".into(),
-                },
+                // Whether it's the one in use, and what it costs, free or
+                // priced, where the endpoint says — the current one too, as
+                // the one to compare the rest against. Not the context
+                // window: a question from the board is a few hundred tokens,
+                // far inside any of them, and it took the price's room.
+                detail: [
+                    (model.id == picker.before).then(|| "current".to_owned()),
+                    if model.free { Some("free".to_owned()) } else { model.price.map(per_million) },
+                ]
+                .into_iter()
+                .flatten()
+                .collect::<Vec<_>>()
+                .join(" · ")
+                .into(),
                 detail_tint: (model.free && model.id != picker.before).then(|| tint(Cost::Free, &self.theme)),
+                gauge: model.price.filter(|_| !model.free).map(|price| ("$", rating(price), gold(&self.theme))),
                 keys: Vec::new(),
                 enabled: true,
                 font: None,
@@ -425,6 +511,26 @@ mod tests {
 
     fn rgba(c: iced::Color) -> thinkboard_core::color::Rgba {
         thinkboard_core::color::Rgba { r: c.r, g: c.g, b: c.b, a: 1.0 }
+    }
+
+    #[test]
+    fn a_price_reads_as_providers_quote_it() {
+        use thinkboard_core::ai::Price;
+        // Per token as /models gives it, with its floating-point dust.
+        assert_eq!(per_million(Price { prompt: 0.000003, completion: 0.000015 }), "$3 / $15");
+        assert_eq!(per_million(Price { prompt: 0.0000025, completion: 0.00001 }), "$2.50 / $10");
+        assert_eq!(per_million(Price { prompt: 0.00000015, completion: 0.0000006 }), "$0.15 / $0.60");
+        // At a glance: Llama 3.3 70B, Claude Haiku, Sonnet, Opus.
+        let per_m = |prompt: f64, completion: f64| Price { prompt: prompt / 1e6, completion: completion / 1e6 };
+        assert_eq!(rating(per_m(0.13, 0.39)), 1);
+        assert_eq!(rating(per_m(1.0, 5.0)), 2);
+        assert_eq!(rating(per_m(3.0, 15.0)), 3);
+        assert_eq!(rating(per_m(15.0, 75.0)), 4);
+        // What an answer costs: a fraction of a cent, to two figures.
+        assert_eq!(dollars(0.00031), "$0.00031");
+        assert_eq!(dollars(0.0075), "$0.0075");
+        assert_eq!(dollars(0.0), "$0");
+        assert_eq!(dollars(150.0), "$150");
     }
 
     #[test]

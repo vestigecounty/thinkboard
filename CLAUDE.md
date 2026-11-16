@@ -575,8 +575,10 @@ the endpoint: `GET {ai_url}/models`, which is part of the OpenAI API every
 preset implements, local runtimes included. **There is nothing provider-specific
 here** — OpenRouter and Fireworks were the ones worth browsing (421 models on
 OpenRouter), but neither needed its own code path. Fields past `id` are
-extensions: OpenRouter gives a display name and a context window, a plain
-endpoint gives neither, and both are read only when present.
+extensions: OpenRouter gives a display name and a price, a plain endpoint
+gives neither, and both are read only when present. Not the context window,
+which it gives too: a question from the board is a few hundred tokens, far
+inside any of them, and the number took the price's room in a row.
 
 **The model is chosen where the provider is.** A new config names a local
 runtime's model, which no hosted provider serves, so picking a provider and
@@ -660,6 +662,28 @@ naming its "data policy" — worded as that, not as nothing answering.
 **The picker opens on the model in use**, as the theme picker does, scrolled
 to it: under the free sections it was out of sight. A refetch landing keeps
 the highlight on its model rather than sending it back to the top.
+
+**What a model costs is said where it's read.** Picked from the form in the
+board, the form gives way to the picker and doesn't come back, so a priced
+row says its price ("$3 / $15", from `/models`' per-token `pricing`) — the
+current one too, as the one to compare against. Its unit, in and out per
+million tokens, is named once, in the Paid header: the sections are there
+wherever prices are, through a search too. Beside it, `$$$$`, always all
+four, the rightmost lit in gold by the mean of the two prices — under $1,
+$5, $20, and above (`picker::Row::gauge`) — so the extent is the same on
+every row and the big jumps show at a glance. The settings' Model row says it again
+for whoever opens them later, from the list kept for the endpoint, which the
+form fetches as it opens on OpenRouter — the one provider whose list has
+prices — where none is kept, and not again after a failure that launch
+(`fetch_models_for_form`). And what an answer actually cost is said under its
+last card once it's done (`board::Spent`), then fades: OpenRouter sends the
+usage and its cost in the stream's last chunk, unasked (`ai::Event::Usage`).
+Elsewhere it's the tokens where they're given, "free" for a free model, and
+nothing from a runtime on this machine, which gives no cost. The board asks
+for its own frames for it, one at the end of the hold and then each while it
+fades, so a label held still costs none. Prices exist only where `/models`
+lists them, which today means OpenRouter; a provider that prices in another
+shape would be code of its own.
 
 **OpenRouter can be signed into for a key** (`app::sign_in`, the protocol in
 `core::sign_in`) — not as a recommendation, but because it's the one provider

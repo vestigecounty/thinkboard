@@ -213,6 +213,7 @@ impl App {
                     "".into()
                 },
                 detail_tint: None,
+                gauge: None,
                 keys: Vec::new(),
                 enabled: true,
                 font: None,

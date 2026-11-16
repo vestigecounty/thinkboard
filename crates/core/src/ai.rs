@@ -15,16 +15,28 @@ use crate::chain;
 use crate::model::{CanvasEdge, CanvasNode, NodeKind};
 
 /// A streamed event from the endpoint.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     /// A chunk of the current card's text to append.
     Delta(String),
     /// The model asked to start a new sibling card.
     Split,
+    /// What the answer used, where the endpoint says: OpenRouter sends it in
+    /// the stream's last chunk, unasked, with what it cost.
+    Usage(Usage),
     /// The answer finished.
     Done,
     /// The request failed (human-readable reason).
     Error(String),
+}
+
+/// What an answer used: tokens each way, and what it cost where the endpoint
+/// says (OpenRouter's `usage.cost`, in its credits, which are dollars).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Usage {
+    pub prompt_tokens: u64,
+    pub completion_tokens: u64,
+    pub cost: Option<f64>,
 }
 
 /// A line of exactly this (per the system prompt) starts a new card.
@@ -82,13 +94,22 @@ pub struct Model {
     /// A human-readable title where the provider gives one ("Anthropic: Claude
     /// Sonnet 4"). OpenRouter does; a plain OpenAI-compatible endpoint doesn't.
     pub name: Option<String>,
-    /// Context window in tokens, where stated. Worth showing: it's the thing
-    /// most likely to decide between two models with similar names.
-    pub context: Option<u64>,
     /// Priced at nothing to ask and nothing to answer, and answering in text
     /// alone — where the endpoint says what it charges (OpenRouter does). A
     /// free model is rate-limited, and such offers come and go.
     pub free: bool,
+    /// What it charges, where the endpoint says (OpenRouter does; a plain
+    /// OpenAI-compatible endpoint doesn't).
+    pub price: Option<Price>,
+}
+
+/// A model's price, in dollars per token, as `/models` gives it.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Price {
+    /// Per token sent: the question, and the cards it's asked of.
+    pub prompt: f64,
+    /// Per token of the answer.
+    pub completion: f64,
 }
 
 /// The models an endpoint offers, by its OpenAI-compatible `GET /models`.
@@ -132,10 +153,10 @@ fn parse_models(body: &serde_json::Value) -> Vec<Model> {
                     .map(str::trim)
                     .filter(|name| !name.is_empty() && *name != id)
                     .map(str::to_owned),
-                context: ["context_length", "context_window", "max_context_length"]
-                    .iter()
-                    .find_map(|key| item.get(*key).and_then(serde_json::Value::as_u64)),
                 free: free(item),
+                price: price(item, "prompt")
+                    .zip(price(item, "completion"))
+                    .map(|(prompt, completion)| Price { prompt, completion }),
             })
         })
         .collect();
@@ -151,16 +172,21 @@ fn parse_models(body: &serde_json::Value) -> Vec<Model> {
 /// nothing too, and isn't one to ask a question of. Prices are decimal
 /// strings, per token; a model without them isn't free, only unpriced.
 fn free(item: &serde_json::Value) -> bool {
-    let zero = |side: &str| {
-        item.pointer(&format!("/pricing/{side}"))
-            .and_then(|price| price.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| price.as_f64()))
-            .is_some_and(|price| price == 0.0)
-    };
+    let zero = |side: &str| price(item, side).is_some_and(|price| price == 0.0);
     let text_out = item
         .pointer("/architecture/output_modalities")
         .and_then(serde_json::Value::as_array)
         .is_none_or(|out| out.iter().all(|modality| modality == "text"));
     zero("prompt") && zero("completion") && text_out
+}
+
+/// A `/models` entry's price per token for `side` (`prompt` or
+/// `completion`): a decimal string, or a number from an endpoint that sends
+/// one. Negative is OpenRouter's "varies", for a router — not a price.
+fn price(item: &serde_json::Value, side: &str) -> Option<f64> {
+    item.pointer(&format!("/pricing/{side}"))
+        .and_then(|price| price.as_str().and_then(|s| s.parse::<f64>().ok()).or_else(|| price.as_f64()))
+        .filter(|price| *price >= 0.0)
 }
 
 /// What a request was for, which decides what a refusal means.
@@ -871,6 +897,9 @@ async fn run(
             if let Some(delta) = parse_delta(data) {
                 content.push_str(&delta);
             }
+            if let Some(usage) = parse_usage(data) {
+                let _ = output.send(Event::Usage(usage)).await;
+            }
         }
         emit_segments(&mut content, output, false).await;
     }
@@ -973,6 +1002,23 @@ fn parse_delta(data: &str) -> Option<String> {
         .get("content")?
         .as_str()
         .map(str::to_owned)
+}
+
+/// The `usage` a streamed chunk carries, where it carries one: the last before
+/// `[DONE]`, from an endpoint that sends it at all. OpenAI, asked for it,
+/// sends `null` in every other chunk, which is none.
+fn parse_usage(data: &str) -> Option<Usage> {
+    if !data.contains("\"usage\"") {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(data).ok()?;
+    let usage = value.get("usage").filter(|usage| usage.is_object())?;
+    let tokens = |key: &str| usage.get(key).and_then(serde_json::Value::as_u64);
+    Some(Usage {
+        prompt_tokens: tokens("prompt_tokens")?,
+        completion_tokens: tokens("completion_tokens")?,
+        cost: usage.get("cost").and_then(serde_json::Value::as_f64),
+    })
 }
 
 #[cfg(test)]
@@ -1369,6 +1415,20 @@ mod tests {
     }
 
     #[test]
+    fn parse_usage_reads_openrouters_last_chunk_and_skips_the_rest() {
+        // OpenRouter's accounting frame: an empty delta, and the usage.
+        let last = r#"{"choices":[{"delta":{"content":""},"finish_reason":"stop"}],"usage":{"prompt_tokens":812,"completion_tokens":403,"total_tokens":1215,"cost":0.00031}}"#;
+        assert_eq!(parse_usage(last), Some(Usage { prompt_tokens: 812, completion_tokens: 403, cost: Some(0.00031) }));
+        // Tokens without a cost, as OpenAI reports them.
+        let tokens = r#"{"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":5,"total_tokens":15}}"#;
+        assert_eq!(parse_usage(tokens).and_then(|usage| usage.cost), None);
+        assert!(parse_usage(tokens).is_some());
+        // Every other chunk: none, or null.
+        assert_eq!(parse_usage(r#"{"choices":[{"delta":{"content":"hi"}}]}"#), None);
+        assert_eq!(parse_usage(r#"{"choices":[{"delta":{"content":"hi"}}],"usage":null}"#), None);
+    }
+
+    #[test]
     fn upstream_prompt_is_just_the_node_when_unlinked() {
         let nodes = [node("solo", "only me")];
         assert_eq!(upstream_prompt(&nodes, &[], "solo"), "only me");
@@ -1437,7 +1497,7 @@ mod tests {
 
     #[test]
     fn model_lists_are_read_from_either_shape() {
-        // OpenRouter: rich entries, a display name and a context window.
+        // OpenRouter: rich entries, a display name among them.
         let openrouter = serde_json::json!({"data": [
             {"id": "anthropic/claude-sonnet-4", "name": "Anthropic: Claude Sonnet 4",
              "context_length": 200000},
@@ -1447,7 +1507,6 @@ mod tests {
         assert_eq!(models.len(), 2);
         assert_eq!(models[0].id, "anthropic/claude-sonnet-4");
         assert_eq!(models[0].name.as_deref(), Some("Anthropic: Claude Sonnet 4"));
-        assert_eq!(models[0].context, Some(200_000));
 
         // Fireworks and plain OpenAI: an id and nothing else worth showing.
         let plain = serde_json::json!({"data": [
@@ -1456,7 +1515,6 @@ mod tests {
         let models = parse_models(&plain);
         assert_eq!(models.len(), 1);
         assert_eq!(models[0].name, None, "no name is better than a repeated id");
-        assert_eq!(models[0].context, None);
 
         // A bare array, which a couple of endpoints return instead of `data`.
         let bare = serde_json::json!([{"id": "local-model"}]);
@@ -1480,6 +1538,14 @@ mod tests {
         let models = parse_models(&body);
         let free: Vec<&str> = models.iter().filter(|m| m.free).map(|m| m.id.as_str()).collect();
         assert_eq!(free, ["google/gemma-4-31b-it:free", "openrouter/free"]);
+
+        // The price is kept, per token; none given is none known.
+        let price = |id: &str| models.iter().find(|m| m.id == id).and_then(|m| m.price);
+        assert_eq!(price("openai/gpt-4o"), Some(Price { prompt: 0.0000025, completion: 0.00001 }));
+        assert_eq!(price("local-model"), None);
+        // OpenRouter's "varies", for a router, isn't a price.
+        let auto = serde_json::json!([{"id": "openrouter/auto", "pricing": {"prompt": "-1", "completion": "-1"}}]);
+        assert_eq!(parse_models(&auto)[0].price, None);
     }
 
     #[test]

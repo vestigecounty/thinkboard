@@ -57,7 +57,7 @@ use links::*;
 use search::*;
 // What the rest of the app names through `board::`, where it was before
 // the board was split into these modules.
-pub use ai::{AiFlow, Ghost};
+pub use ai::{AiFlow, Ghost, SPENT_FADE, Spent};
 pub use cards::{content_height, scroll_offset, scrolls, text_frame};
 pub(crate) use cards::{GROUP_LABEL_PAD, GROUP_LABEL_SIZE, group_header};
 pub use clusters::cluster_opacity;
@@ -185,6 +185,8 @@ pub struct Board<'a> {
     /// Pending AI requests, each shimmered independently (its own clock) so
     /// concurrent generations don't share a sweep phase.
     pub ai_flows: &'a [AiFlow],
+    /// What finished answers cost, each under its last card for a moment.
+    pub spent: &'a [Spent],
     /// Copilot-style suggestion cards awaiting accept/dismiss.
     pub ghosts: &'a [Ghost],
     /// Opacity of the (non-placeholder) ghosts, fading toward 0 as they near
@@ -397,10 +399,15 @@ impl canvas::Program<Message> for Board<'_> {
             // Keep frames coming while the snap animation is mid-flight,
             // even with the mouse holding still.
             Event::Window(iced::window::Event::RedrawRequested(_)) => {
-                // ⌘ held by itself, waiting on the switcher's time.
+                // ⌘ held by itself, waiting on the switcher's time; an
+                // answer's cost, held until it's due to fade, and fading.
                 let wait = state
                     .command_held
-                    .map(|since| canvas::Action::request_redraw_at(since + SHOW_SWITCHER_AFTER));
+                    .map(|since| since + SHOW_SWITCHER_AFTER)
+                    .into_iter()
+                    .chain(self.spent_redraw())
+                    .min()
+                    .map(canvas::Action::request_redraw_at);
                 let Some(snap) = state.snap else {
                     return wait;
                 };
@@ -624,6 +631,7 @@ impl Stacked<Message> for Board<'_> {
             for flow in self.ai_flows {
                 self.draw_flow_shimmer(&mut overlay, flow);
             }
+            self.draw_spent(&mut overlay);
 
             if let Some(marquee) = &state.marquee {
                 let rect = rect_from_points(marquee.start, marquee.current);

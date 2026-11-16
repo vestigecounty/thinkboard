@@ -627,7 +627,7 @@ fn ready_to_list(config: &Config) -> bool {
 }
 
 /// Whether `url` points at this machine.
-fn is_local(url: &str) -> bool {
+pub(super) fn is_local(url: &str) -> bool {
     let rest = url.trim().split_once("://").map_or(url.trim(), |(_, rest)| rest);
     let host = rest.split(['/', ':']).next().unwrap_or_default();
     matches!(host, "localhost" | "127.0.0.1" | "0.0.0.0") || rest.starts_with("[::1]")
@@ -1074,7 +1074,7 @@ impl App {
     pub(super) fn open_settings_form(&mut self) -> Task<Message> {
         self.populate_settings_drafts();
         self.settings_focus = None;
-        self.preview_backdrops()
+        Task::batch([self.preview_backdrops(), self.fetch_models_for_form()])
     }
 
     /// Starts the overlay background tiles' pictures, each once per launch:

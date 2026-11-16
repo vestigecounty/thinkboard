@@ -42,6 +42,8 @@ pub(super) struct AiStream {
     /// stream finishes, so an unrelated action's snapshot doesn't capture a
     /// half-generated "…" node.
     pub(super) nodes: Vec<String>,
+    /// What the answer used, once the endpoint has said.
+    usage: Option<ai::Usage>,
 }
 
 /// Everything about in-flight AI generations.
@@ -68,6 +70,12 @@ pub(super) struct Ai {
     /// would only ever hold the one entry and outlive the setting that made it
     /// relevant.
     pub(super) models: Option<(String, Vec<thinkboard_core::ai::Model>)>,
+    /// The endpoint whose list last failed to come, until one comes: the
+    /// settings form doesn't ask it again this launch.
+    pub(super) models_failed: Option<String>,
+    /// What answers just finished cost, each said under its last card for a
+    /// moment.
+    pub(super) spent: Vec<board::Spent>,
 }
 
 /// A configured tint (an Obsidian preset "1"–"6") as a node color value, or
@@ -246,6 +254,7 @@ impl App {
                 count: 1,
                 handle,
                 nodes: vec![node_id],
+                usage: None,
             },
         );
         task
@@ -316,6 +325,12 @@ impl App {
         match event {
             ai::Event::Delta(text) => self.ai_delta(&stream_id, text),
             ai::Event::Split => self.ai_split(&stream_id),
+            ai::Event::Usage(usage) => {
+                if let Some(stream) = self.ai.streams.get_mut(&stream_id) {
+                    stream.usage = Some(usage);
+                }
+                Task::none()
+            }
             ai::Event::Done => self.ai_done(&stream_id),
             ai::Event::Error(error) => self.ai_error(&stream_id, error),
         }
@@ -400,7 +415,37 @@ impl App {
         // Settle the layout at the final size, tidying only this generation's
         // cards (the source and other nodes stay put).
         self.relayout_ai_siblings(&stream.source, &stream.nodes);
+        // What it cost, under its last card for a moment.
+        let fade = self.config.anim_secs(board::SPENT_FADE);
+        self.ai.spent.retain(|spent| spent.alpha(fade) > 0.0);
+        if let Some(words) = stream.usage.and_then(|usage| self.spent_words(usage))
+            && let Some(last) = stream.nodes.last()
+        {
+            self.ai.spent.push(board::Spent { node: last.clone(), words, since: Instant::now() });
+        }
         Task::batch([self.refresh_snapshots(), self.schedule_recluster()])
+    }
+
+    /// What an answer cost, as it's said under it: the money where the
+    /// endpoint says, "free" for a free model, and the tokens either way — or
+    /// nothing from a runtime on this machine, which charges nothing and says
+    /// so by giving no cost. (A proxy there to a hosted provider may give one.)
+    fn spent_words(&self, usage: ai::Usage) -> Option<String> {
+        if usage.cost.is_none() && super::settings::is_local(&self.config.ai_url) {
+            return None;
+        }
+        let tokens = match usage.prompt_tokens + usage.completion_tokens {
+            count @ 0..=999 => format!("{count} tokens"),
+            count @ 1000..=9_999 => format!("{:.1}k tokens", count as f64 / 1000.0),
+            count => format!("{}k tokens", count / 1000),
+        };
+        let cost = match usage.cost {
+            Some(cost) if cost > 0.0 => Some(super::model_picker::dollars(cost)),
+            Some(_) => Some("free".to_owned()),
+            None if self.asks_a_free_model() => Some("free".to_owned()),
+            None => None,
+        };
+        Some(cost.map_or_else(|| tokens.clone(), |cost| format!("{cost} · {tokens}")))
     }
 
     fn ai_error(&mut self, stream_id: &str, error: String) -> Task<Message> {

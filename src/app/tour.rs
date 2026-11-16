@@ -1003,13 +1003,12 @@ fn serve(mut stream: TcpStream, script: &Script) {
         let data: Vec<serde_json::Value> = script
             .models
             .iter()
-            // Priced as OpenRouter prices them, per token: a `:free` one at
-            // nothing, which is how the picker knows it's free.
+            // Priced as OpenRouter prices them (`price`), per token.
             .map(|(id, name, context)| {
-                let price = if id.ends_with(":free") || *id == "openrouter/free" { "0" } else { "0.000001" };
+                let (prompt, completion) = price(id);
                 serde_json::json!({
                     "id": id, "name": name, "context_length": context,
-                    "pricing": { "prompt": price, "completion": price },
+                    "pricing": { "prompt": prompt.to_string(), "completion": completion.to_string() },
                     "architecture": { "output_modalities": ["text"] },
                 })
             })
@@ -1030,14 +1029,41 @@ fn serve(mut stream: TcpStream, script: &Script) {
         return;
     }
     std::thread::sleep(FIRST_WORD);
-    for word in cued(script.answers, prompt).split_inclusive(' ') {
+    let answer = cued(script.answers, prompt);
+    for word in answer.split_inclusive(' ') {
         let event = serde_json::json!({ "choices": [{ "delta": { "content": word } }] });
         if stream.write_all(format!("data: {event}\n\n").as_bytes()).is_err() {
             return;
         }
         std::thread::sleep(NEXT_WORD);
     }
-    let _ = stream.write_all(b"data: [DONE]\n\n");
+    // What it used, as OpenRouter says it in a last chunk of its own: tokens
+    // as words and a third, and the cost they come to at the listed price.
+    let tokens = |text: &str| (text.split_whitespace().count() as f64 * 1.33).ceil() as u64;
+    let (prompt_tokens, completion_tokens) = (tokens(prompt) + 120, tokens(answer));
+    let (per_prompt, per_completion) = price(model);
+    let cost = prompt_tokens as f64 * per_prompt + completion_tokens as f64 * per_completion;
+    let usage = serde_json::json!({
+        "choices": [{ "delta": { "content": "" }, "finish_reason": "stop" }],
+        "usage": { "prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens, "cost": cost },
+    });
+    let _ = stream.write_all(format!("data: {usage}\n\ndata: [DONE]\n\n").as_bytes());
+}
+
+/// What the stand-in providers charge for `model`, per token as OpenRouter
+/// lists it: a `:free` one nothing, which is how the picker knows it's free,
+/// and the rest about what these cost there, an answer dearer than a prompt.
+fn price(model: &str) -> (f64, f64) {
+    match model {
+        id if id.ends_with(":free") || id == "openrouter/free" => (0.0, 0.0),
+        "anthropic/claude-haiku-4.5" => (0.000_001, 0.000_005),
+        "anthropic/claude-opus-4.1" => (0.000_015, 0.000_075),
+        "anthropic/claude-sonnet-4.5" => (0.000_003, 0.000_015),
+        "google/gemma-3-27b-it" => (0.000_000_09, 0.000_000_17),
+        "meta-llama/llama-3.3-70b-instruct" => (0.000_000_13, 0.000_000_39),
+        "qwen/qwen3-30b-a3b" => (0.000_000_08, 0.000_000_29),
+        _ => (0.000_000_1, 0.000_000_3),
+    }
 }
 
 /// The reply under whichever of `table`'s cues comes latest in `prompt`.
@@ -2203,6 +2229,9 @@ static TRIP: Script = Script {
 /// A provider with free models among the rest, as OpenRouter has.
 static WITH_FREE: Script = Script {
     models: &[
+        ("anthropic/claude-haiku-4.5", Some("Anthropic: Claude Haiku 4.5"), Some(200_000)),
+        ("anthropic/claude-opus-4.1", Some("Anthropic: Claude Opus 4.1"), Some(200_000)),
+        ("anthropic/claude-sonnet-4.5", Some("Anthropic: Claude Sonnet 4.5"), Some(1_000_000)),
         ("google/gemma-3-27b-it", Some("Google: Gemma 3 27B"), Some(131_072)),
         ("google/gemma-3-27b-it:free", Some("Google: Gemma 3 27B (free)"), Some(131_072)),
         ("meta-llama/llama-3.3-70b-instruct", Some("Meta: Llama 3.3 70B Instruct"), Some(131_072)),
@@ -2369,6 +2398,11 @@ fn ai_setup() {
     // Opened again, on the model in use.
     tour.palette("change ai model");
     tour.shot("model-picker-on-current");
+    tour.named(key::Named::Escape);
+    // The Model row says what it costs.
+    tour.palette("settings");
+    tour.click_label("AI");
+    tour.shot("model-row-priced");
     tour.named(key::Named::Escape);
 
     tour.right_click(tour.node_center(eat));

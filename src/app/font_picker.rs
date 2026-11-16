@@ -181,6 +181,7 @@ impl App {
                 title: title.into(),
                 detail: if entry.name == picker.before_font { "current".into() } else { "".into() },
                 detail_tint: None,
+                gauge: None,
                 keys: Vec::new(),
                 enabled: true,
                 // The point of the list: each name set in its own face — except

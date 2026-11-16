@@ -307,6 +307,7 @@ impl App {
                     entry.folder().into()
                 },
                 detail_tint: None,
+                gauge: None,
                 keys: Vec::new(),
                 enabled: true,
                 font: None,

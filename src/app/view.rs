@@ -210,6 +210,7 @@ impl App {
                 cards: &s.cards,
             }),
             ai_flows: &self.ai.flows,
+            spent: &self.ai.spent,
             ghosts: &self.ghosts.cards,
             ghost_fade: self.ghost_fade(),
             ghost_fade_in: self.ghost_fade_in(),
