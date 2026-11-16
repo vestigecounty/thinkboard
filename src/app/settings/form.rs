@@ -1414,14 +1414,14 @@ fn tile_words(backdrop: OverlayBackdrop, config: &Config) -> (&'static str, Stri
     match backdrop {
         OverlayBackdrop::Transparent => ("Transparent", "Live desktop".to_owned()),
         OverlayBackdrop::Theme => ("Theme color", "Opaque".to_owned()),
-        OverlayBackdrop::Wallpaper => ("Wallpaper", "Blurred · macOS".to_owned()),
+        OverlayBackdrop::Wallpaper => ("Wallpaper", "Blurred".to_owned()),
         // Named once there's one, so the tile says which picture it is.
         OverlayBackdrop::Image => {
             let name = Path::new(config.overlay_image.trim())
                 .file_name()
                 .map(|name| clip(&name.to_string_lossy(), 14))
                 .unwrap_or_else(|| "Choose…".to_owned());
-            ("Image", format!("{name} · macOS"))
+            ("Image", name)
         }
     }
 }

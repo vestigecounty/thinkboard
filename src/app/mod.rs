@@ -1127,7 +1127,7 @@ impl App {
                 return self.paste_at(world, true);
             }
             Message::SetNodeColor(color) => self.set_node_color(color),
-            Message::UseAsOverlayBackground => self.use_as_overlay_background(),
+            Message::UseAsOverlayBackground => return self.use_as_overlay_background(),
             Message::SelectToward { toward, extend } => self.select_toward(toward, extend),
             Message::NudgeSelection(toward) => self.nudge_selection(toward),
             Message::EditSelected => return self.edit_selected(),
@@ -1523,8 +1523,8 @@ impl App {
             Message::WindowShown => {
                 // Re-raise and re-frame the overlay window (also re-adapts
                 // to display changes while hidden).
-                self.configure_overlay_window();
                 self.overlay_shown_at = Some(Instant::now());
+                return self.configure_overlay_window();
             }
             Message::SpaceChanged => return self.space_changed(),
             Message::WindowCloseRequested(id) => {
@@ -1548,32 +1548,52 @@ impl App {
     /// The overlay treatment — raised, framed to the screen, over every Space
     /// — and as see-through as the setting says, which AppKit lets us set on
     /// a window that already exists.
-    fn configure_overlay_window(&self) {
+    fn configure_overlay_window(&mut self) -> Task<Message> {
         platform::configure_overlay_window();
-        self.apply_backdrop();
+        self.apply_backdrop()
     }
 
     /// Puts the overlay's background (`config::OverlayBackdrop`) in place:
     /// whether the board's window is see-through, and the picture under it —
-    /// prepared ahead of the summon that shows it.
-    pub(super) fn apply_backdrop(&self) {
+    /// prepared ahead of the summon that shows it, and, where the board draws
+    /// it itself, asked for (`backdrop_in_window`).
+    pub(super) fn apply_backdrop(&mut self) -> Task<Message> {
         let backdrop = config::OverlayBackdrop::shown(&self.config);
-        let blur = self.config.overlay_blur;
         platform::set_overlay_opaque(!backdrop.see_through());
-        match backdrop {
-            config::OverlayBackdrop::Wallpaper => platform::set_backdrop_picture(platform::BackdropPicture::Wallpaper, blur),
-            // Only a file that's there: the path is typed a key at a time,
-            // and each half-typed one would start a picture of its own. Until
-            // it names one, the last picture stays.
-            config::OverlayBackdrop::Image => {
-                let path = PathBuf::from(self.config.overlay_image.trim());
-                if path.is_file() {
-                    platform::set_backdrop_picture(platform::BackdropPicture::File(path), blur);
-                }
-            }
-            config::OverlayBackdrop::Transparent | config::OverlayBackdrop::Theme => {}
+        let picture = self.shown_picture();
+        if let Some(picture) = &picture {
+            platform::set_backdrop_picture(picture.clone(), self.config.overlay_blur);
         }
         self.sync_backdrop();
+        match picture {
+            Some(picture) if platform::PICTURE_IN_WINDOW => self.preview_backdrop(picture),
+            _ => Task::none(),
+        }
+    }
+
+    /// The picture under the overlay, where the background is one. A file of
+    /// your own only once it's there: the path is typed a key at a time, and
+    /// each half-typed one would start a picture of its own. Until it names
+    /// one, the last picture stays.
+    fn shown_picture(&self) -> Option<platform::BackdropPicture> {
+        match config::OverlayBackdrop::shown(&self.config) {
+            config::OverlayBackdrop::Wallpaper => Some(platform::BackdropPicture::Wallpaper),
+            config::OverlayBackdrop::Image => {
+                let path = PathBuf::from(self.config.overlay_image.trim());
+                path.is_file().then_some(platform::BackdropPicture::File(path))
+            }
+            config::OverlayBackdrop::Transparent | config::OverlayBackdrop::Theme => None,
+        }
+    }
+
+    /// The picture to draw under the board, where the board draws it
+    /// (`platform::PICTURE_IN_WINDOW`) and it's ready: the one its tile in the
+    /// form shows, prepared once and loaded once.
+    pub(super) fn backdrop_in_window(&self) -> Option<&image::Handle> {
+        if !self.overlay || !platform::PICTURE_IN_WINDOW {
+            return None;
+        }
+        self.backdrop_preview(&self.shown_picture()?)
     }
 
     /// The image file behind the selected card, when "Use as overlay
@@ -1594,16 +1614,18 @@ impl App {
     }
 
     /// Makes the selected image card the overlay's background.
-    fn use_as_overlay_background(&mut self) {
+    fn use_as_overlay_background(&mut self) -> Task<Message> {
+        let mut task = Task::none();
         if let Some(path) = self.selected_image_file() {
             self.config.overlay_image = path.to_string_lossy().into_owned();
             config::OverlayBackdrop::Image.set(&mut self.config);
             self.persist_config();
             self.settings_drafts.insert(settings::Field::OverlayImage, self.config.overlay_image.clone());
-            self.apply_backdrop();
+            task = self.apply_backdrop();
         }
         self.close_context_menu();
         self.selected.clear();
+        task
     }
 
     // --- Camera and viewport ---
@@ -1611,9 +1633,10 @@ impl App {
     fn viewport_resized(&mut self, size: Size) -> Task<Message> {
         self.camera.viewport = size;
         self.top_safe_inset = platform::top_safe_inset();
+        let mut backdrop = Task::none();
         if self.overlay && !self.overlay_configured {
             self.overlay_configured = true;
-            self.configure_overlay_window();
+            backdrop = self.configure_overlay_window();
             // Create the tray icon now that the app is running (macOS needs the
             // run loop live). It's parked in a main-thread slot for the process,
             // so later toggles (e.g. the monochrome icon) can retint it.
@@ -1636,7 +1659,7 @@ impl App {
             self.camera.fit(self.content_bounds());
         }
         self.cache.clear();
-        self.refresh_snapshots()
+        Task::batch([backdrop, self.refresh_snapshots()])
     }
 
     /// Installs `theme` as the one in use.

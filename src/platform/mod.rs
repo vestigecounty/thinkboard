@@ -11,6 +11,10 @@ mod windows;
 // Everything else (Linux/BSD, for now) gets no desktop-overlay treatment.
 #[cfg(not(any(target_os = "macos", windows)))]
 mod fallback;
+#[cfg(not(windows))]
+mod picture;
+#[cfg(any(not(any(target_os = "macos", windows)), test))]
+mod wallpaper;
 
 #[cfg(target_os = "macos")]
 use macos as backend;
@@ -68,9 +72,24 @@ fn names_cosmic(desktops: &str) -> bool {
 }
 
 /// Whether this platform can put a picture under the overlay
-/// (`config::OverlayBackdrop::Wallpaper` / `Image`): a window of its own,
-/// placed under the board's. macOS, for now.
+/// (`config::OverlayBackdrop::Wallpaper` / `Image`): in a window of its own
+/// under the board's on macOS, drawn in the board's own on Linux
+/// ([`PICTURE_IN_WINDOW`]). Not on Windows yet.
 pub const SUPPORTS_BACKDROP_PICTURE: bool = backend::SUPPORTS_BACKDROP_PICTURE;
+
+/// Whether the app draws the picture itself, in the board's own window and
+/// under the board — where it can't have a window of its own put under the
+/// overlay's, as on Linux, where Wayland gives an app no way to order its
+/// windows. The board's window is then opaque under a picture, where on
+/// macOS it's see-through over the picture's window. The board draws the
+/// picture the platform prepared, through [`preview_backdrop_picture`].
+pub const PICTURE_IN_WINDOW: bool = backend::PICTURE_IN_WINDOW;
+
+/// Whether the desktop's wallpaper can be found here, so offered as a
+/// background. Looked up once a launch.
+pub fn has_wallpaper() -> bool {
+    backend::has_wallpaper()
+}
 
 /// What the picture under the overlay is of.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -106,7 +125,8 @@ pub fn preview_backdrop_picture(
 }
 
 /// Shows the chosen picture under the overlay at `alpha` — faded with the
-/// board as it comes and goes — or puts it away at 0. Main thread only.
+/// board as it comes and goes — or puts it away at 0. Main thread only; a
+/// no-op where the app draws the picture itself ([`PICTURE_IN_WINDOW`]).
 pub fn show_backdrop_picture(alpha: f32) {
     backend::show_backdrop_picture(alpha);
 }

@@ -88,11 +88,12 @@ pub fn set_overlay_opaque(opaque: bool) {
 // **The wallpaper is read once per launch**, from the Space the app started
 // on. Each Space can have its own, and following them meant reading — and on a
 // Space not seen yet, blurring — at the moment of summoning, which is the one
-// moment that has to be instant. Every picture is prepared once, in the
-// background, as soon as it's chosen.
+// moment that has to be instant. How each picture is prepared is shared with
+// Linux (`platform::picture`).
 // ---------------------------------------------------------------------------
 
 use crate::platform::BackdropPicture;
+use crate::platform::picture::{self, Picture};
 
 /// The picture window under the overlay, made on first use, and what it's
 /// showing. AppKit objects, so the main thread's.
@@ -102,21 +103,15 @@ struct PictureWindow {
     showing: Option<Picture>,
 }
 
-/// A picture at a blur — `Config::overlay_blur`, by its bits. Prepared at one
-/// blur, it isn't the picture asked for at another.
-type Picture = (BackdropPicture, u32);
-
-/// A picture as PNG, filled in by a background thread — `None` inside if it
-/// couldn't be read, and the window shows black under the board's dim.
-type Prepared = std::sync::Arc<OnceLock<Option<Vec<u8>>>>;
-
-/// The picture chosen, and every one prepared this launch.
-type Pictures = (Option<Picture>, Vec<(Picture, Prepared)>);
-
 thread_local! {
     static PICTURE_WINDOW: RefCell<Option<PictureWindow>> = const { RefCell::new(None) };
-    static PICTURES: RefCell<Pictures> = const { RefCell::new((None, Vec::new())) };
 }
+
+/// Where macOS's pictures come from: the main screen's wallpaper, decoded by
+/// `sips`. A picture that can't be read leaves the window black under the
+/// board's dim.
+const SOURCE: picture::Source =
+    picture::Source { wallpaper: main_screen_wallpaper, screen: main_screen_pixels, make: blur_picture };
 
 /// `NSWindowBelow`, for `orderWindow:relativeTo:`.
 const ORDER_BELOW: isize = -1;
@@ -128,10 +123,16 @@ const BUFFERED: usize = 2;
 
 pub const SUPPORTS_BACKDROP_PICTURE: bool = true;
 
+/// A window of its own, under the overlay's.
+pub const PICTURE_IN_WINDOW: bool = false;
+
+/// There always is one.
+pub fn has_wallpaper() -> bool {
+    true
+}
+
 pub fn set_backdrop_picture(picture: BackdropPicture, blur: f32) {
-    let picture = (picture, blur.to_bits());
-    let _ = prepared(&picture);
-    PICTURES.with(|pictures| pictures.borrow_mut().0 = Some(picture));
+    picture::choose(picture, blur, &SOURCE);
 }
 
 pub fn preview_backdrop_picture(
@@ -139,8 +140,7 @@ pub fn preview_backdrop_picture(
     blur: f32,
     ready: impl FnOnce(Option<Vec<u8>>) + Send + 'static,
 ) {
-    let prepared = prepared(&(picture, blur.to_bits()));
-    std::thread::spawn(move || ready(prepared.wait().clone()));
+    picture::preview(picture, blur, &SOURCE, ready);
 }
 
 pub fn show_backdrop_picture(alpha: f32) {
@@ -155,7 +155,7 @@ pub fn show_backdrop_picture(alpha: f32) {
             }
             return;
         }
-        let Some(chosen) = PICTURES.with(|pictures| pictures.borrow().0.clone()) else {
+        let Some(chosen) = picture::chosen() else {
             return;
         };
         let Some(overlay) = NSApplication::sharedApplication(mtm).windows().into_iter().find(is_our_window) else {
@@ -166,7 +166,7 @@ pub fn show_backdrop_picture(alpha: f32) {
         if window.showing.as_ref() != Some(&chosen) {
             // Normally long done: preparing starts the moment it's chosen.
             // Only a summon in the first moments after that waits for it.
-            if let Some(png) = prepared(&chosen).wait() {
+            if let Some(png) = picture::prepared(&chosen, &SOURCE).wait() {
                 unsafe {
                     let data: Retained<AnyObject> =
                         msg_send![class!(NSData), dataWithBytes: png.as_ptr().cast::<c_void>(), length: png.len()];
@@ -186,58 +186,6 @@ pub fn show_backdrop_picture(alpha: f32) {
             let _: () = msg_send![&*window.window, orderWindow: ORDER_BELOW, relativeTo: number];
         }
     });
-}
-
-/// `picture`, prepared or being prepared — started now, in the background, if
-/// this is the first time it's asked for. Main thread, where the wallpaper's
-/// file and the screen's size are looked up.
-fn prepared(picture: &Picture) -> Prepared {
-    PICTURES.with(|pictures| {
-        let mut pictures = pictures.borrow_mut();
-        if let Some((_, prepared)) = pictures.1.iter().find(|(p, _)| p == picture) {
-            return prepared.clone();
-        }
-        let prepared = Prepared::default();
-        pictures.1.push((picture.clone(), prepared.clone()));
-        // The wallpaper heavily — it's there for the colour and the light, not
-        // the picture — and a picture of your own lightly, so it's still the
-        // picture you chose. Each as a share of the picture's longest side, so
-        // it's the same blur at whatever size it's prepared: 12 px at 640 and
-        // 2.5 px at 1280, before `overlay_blur` scales them.
-        let (source, spread) = match &picture.0 {
-            BackdropPicture::Wallpaper => (main_screen_wallpaper(), 12.0 / 640.0),
-            BackdropPicture::File(path) => (Some(path.to_string_lossy().into_owned()), 2.5 / 1280.0),
-        };
-        // A 4K display, should the main screen not say.
-        let screen = main_screen_pixels().unwrap_or(3840);
-        let (size, sigma) = preparation(spread * f32::from_bits(picture.1), screen);
-        let filling = prepared.clone();
-        std::thread::spawn(move || {
-            let _ = filling.set(source.as_deref().and_then(|path| blur_picture(path, size, sigma)));
-        });
-        prepared
-    })
-}
-
-/// A blur, in pixels of the picture as prepared, past which scaling it up to
-/// the screen doesn't show — what a picture of your own was always prepared
-/// with, at 1280.
-const HIDES_SCALING: f32 = 2.5;
-
-/// The smallest a picture is prepared: below it a blur can't hide the
-/// scaling, however wide.
-const MIN_PICTURE: u32 = 640;
-
-/// How large to prepare a picture blurred by `spread` of its longest side, and
-/// the blur in pixels at that size. As small as still hides being scaled up to
-/// the screen — the less blur, the larger — and at most `screen`, the screen's
-/// own longest side, which is where a sharp one goes.
-fn preparation(spread: f32, screen: u32) -> (u32, f32) {
-    if spread <= 0.0 {
-        return (screen, 0.0);
-    }
-    let size = ((HIDES_SCALING / spread).round() as u32).clamp(MIN_PICTURE.min(screen), screen);
-    (size, spread * size as f32)
 }
 
 /// The main screen's longest side, in pixels.
@@ -333,12 +281,7 @@ fn blur_picture(path: &str, size: u32, sigma: f32) -> Option<Vec<u8>> {
         eprintln!("overlay background: couldn't read {path}");
         return None;
     };
-    let blurred = ::image::imageops::blur(&decoded.to_rgba8(), sigma);
-    let mut bytes = Vec::new();
-    ::image::DynamicImage::ImageRgba8(blurred)
-        .write_to(&mut std::io::Cursor::new(&mut bytes), ::image::ImageFormat::Png)
-        .ok()?;
-    Some(bytes)
+    picture::blurred_png(decoded.to_rgba8(), sigma)
 }
 
 /// The main screen's top safe-area inset (px) — the MacBook notch / menu-bar
@@ -857,28 +800,4 @@ fn morph_into_panel(window: &Retained<NSWindow>) {
         AnyObject::set_class(object, OverlayPanel::class());
     }
     window.setStyleMask(window.styleMask() | NSWindowStyleMask::NonactivatingPanel);
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn the_default_blur_prepares_pictures_as_they_always_were() {
-        let screen = 3024;
-        assert_eq!(preparation(12.0 / 640.0, screen), (640, 12.0), "the wallpaper");
-        assert_eq!(preparation(2.5 / 1280.0, screen), (1280, 2.5), "a picture of your own");
-    }
-
-    #[test]
-    fn less_blur_is_prepared_larger_and_none_at_the_screen() {
-        let screen = 3024;
-        // Half the blur: twice the size, the same 2.5 px — half as wide a share.
-        assert_eq!(preparation(1.25 / 1280.0, screen), (2560, 2.5));
-        assert_eq!(preparation(0.0, screen), (screen, 0.0), "sharp is the screen, unblurred");
-        // Never larger than the screen, however little the blur.
-        assert_eq!(preparation(0.1 / 1280.0, screen).0, screen);
-        // Twice the wallpaper's blur stays at the floor, twice as wide there.
-        assert_eq!(preparation(24.0 / 640.0, screen), (640, 24.0));
-    }
 }

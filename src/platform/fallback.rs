@@ -42,20 +42,65 @@ pub const LIVE_TRANSPARENCY: bool = false;
 /// Nothing to switch (see [`LIVE_TRANSPARENCY`]).
 pub fn set_overlay_opaque(_opaque: bool) {}
 
-/// No window of our own under the overlay here.
-pub const SUPPORTS_BACKDROP_PICTURE: bool = false;
+// A picture under the overlay, drawn by the app in the board's own window,
+// under the board (`PICTURE_IN_WINDOW`): Wayland gives an app no way to order
+// one of its windows under another. Prepared as macOS's are
+// (`platform::picture`), and decoded by the `image` crate — JPEG and PNG,
+// which wallpapers here mostly are.
 
-/// Nothing to choose (see [`SUPPORTS_BACKDROP_PICTURE`]).
-pub fn set_backdrop_picture(_picture: super::BackdropPicture, _blur: f32) {}
+use super::BackdropPicture;
+use super::picture;
 
-/// Nothing to preview (see [`SUPPORTS_BACKDROP_PICTURE`]).
-pub fn preview_backdrop_picture(
-    _picture: super::BackdropPicture,
-    _blur: f32,
-    ready: impl FnOnce(Option<Vec<u8>>) + Send + 'static,
-) {
-    ready(None);
+pub const SUPPORTS_BACKDROP_PICTURE: bool = true;
+
+/// Drawn by the app, under the board.
+pub const PICTURE_IN_WINDOW: bool = true;
+
+/// Where Linux's pictures come from: the desktop's wallpaper as each desktop
+/// keeps it (`platform::wallpaper`), decoded here.
+const SOURCE: picture::Source = picture::Source { wallpaper: wallpaper_file, screen: no_screen, make: decode_picture };
+
+pub fn has_wallpaper() -> bool {
+    super::wallpaper::find().is_some()
 }
 
-/// Nothing to show (see [`SUPPORTS_BACKDROP_PICTURE`]).
+pub fn set_backdrop_picture(picture: BackdropPicture, blur: f32) {
+    picture::choose(picture, blur, &SOURCE);
+}
+
+pub fn preview_backdrop_picture(
+    picture: BackdropPicture,
+    blur: f32,
+    ready: impl FnOnce(Option<Vec<u8>>) + Send + 'static,
+) {
+    picture::preview(picture, blur, &SOURCE, ready);
+}
+
+/// The app draws the picture itself (see [`PICTURE_IN_WINDOW`]).
 pub fn show_backdrop_picture(_alpha: f32) {}
+
+fn wallpaper_file() -> Option<String> {
+    super::wallpaper::find().map(|path| path.to_string_lossy().into_owned())
+}
+
+/// Nothing to ask for the screen's size before there's a window on it; the
+/// preparation takes a 4K one.
+fn no_screen() -> Option<u32> {
+    None
+}
+
+/// The picture at `path`, scaled down to fit `size` and blurred by `sigma`, as
+/// PNG — never up: the board scales it to the window, which a blur hides as
+/// well as scaling here would.
+fn decode_picture(path: &str, size: u32, sigma: f32) -> Option<Vec<u8>> {
+    let Ok(decoded) = ::image::open(path) else {
+        eprintln!("overlay background: couldn't read {path}");
+        return None;
+    };
+    let decoded = if decoded.width().max(decoded.height()) > size {
+        decoded.resize(size, size, ::image::imageops::FilterType::Triangle)
+    } else {
+        decoded
+    };
+    picture::blurred_png(decoded.to_rgba8(), sigma)
+}

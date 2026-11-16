@@ -124,6 +124,14 @@ pub fn set_overlay_opaque(_opaque: bool) {}
 /// No window of our own under the overlay here.
 pub const SUPPORTS_BACKDROP_PICTURE: bool = false;
 
+/// No picture to draw (see [`SUPPORTS_BACKDROP_PICTURE`]).
+pub const PICTURE_IN_WINDOW: bool = false;
+
+/// Not looked for (see [`SUPPORTS_BACKDROP_PICTURE`]).
+pub fn has_wallpaper() -> bool {
+    false
+}
+
 /// Nothing to choose (see [`SUPPORTS_BACKDROP_PICTURE`]).
 pub fn set_backdrop_picture(_picture: super::BackdropPicture, _blur: f32) {}
 

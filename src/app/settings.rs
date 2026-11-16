@@ -868,10 +868,10 @@ impl App {
             crate::platform::set_summon_gesture_enabled(self.overlay && self.config.summon_gesture);
         }
         super::tray::set_monochrome(self.config.tray_icon_monochrome);
-        if self.overlay {
-            self.apply_backdrop();
-        }
         let mut tasks = Vec::new();
+        if self.overlay {
+            tasks.push(self.apply_backdrop());
+        }
         // The tiles were prepared at the old blur; Reload is on the form, so
         // they're on screen.
         if before.overlay_blur != self.config.overlay_blur {
@@ -896,9 +896,11 @@ impl App {
     fn after_setting_change(&mut self, field: Field) -> Task<Message> {
         // Where the overlay can change in place, it does; elsewhere the row
         // says it waits for a restart.
-        if matches!(field, Field::OverlayBackdrop | Field::OverlayImage) && self.overlay {
-            self.apply_backdrop();
-        }
+        let backdrop = if matches!(field, Field::OverlayBackdrop | Field::OverlayImage) && self.overlay {
+            self.apply_backdrop()
+        } else {
+            Task::none()
+        };
         // A new picture of your own, for its tile.
         let previews = if field == Field::OverlayImage { self.preview_backdrops() } else { Task::none() };
         self.cache.clear();
@@ -940,7 +942,7 @@ impl App {
             }
             _ => Task::none(),
         };
-        Task::batch([previews, effect])
+        Task::batch([backdrop, previews, effect])
     }
 
     /// Asks for a path for `field` with a file dialog — clearing the overlay
@@ -1082,25 +1084,31 @@ impl App {
         if !crate::platform::SUPPORTS_BACKDROP_PICTURE {
             return Task::none();
         }
-        let mut wanted = vec![BackdropPicture::Wallpaper];
+        let mut wanted = Vec::new();
+        if OverlayBackdrop::offered().contains(&OverlayBackdrop::Wallpaper) {
+            wanted.push(BackdropPicture::Wallpaper);
+        }
         let image = PathBuf::from(self.config.overlay_image.trim());
         if image.is_file() {
             wanted.push(BackdropPicture::File(image));
         }
-        let blur = self.config.overlay_blur;
-        let mut tasks = Vec::new();
-        for picture in wanted {
-            if self.backdrop_previews.iter().any(|(asked, _)| *asked == picture) {
-                continue;
-            }
-            self.backdrop_previews.push((picture.clone(), Preview::Pending));
-            let (sender, receiver) = iced::futures::channel::oneshot::channel();
-            crate::platform::preview_backdrop_picture(picture.clone(), blur, move |png| {
-                let _ = sender.send(png);
-            });
-            tasks.push(Task::perform(receiver, move |png| Message::BackdropPreview(picture, blur, png.ok().flatten())));
+        Task::batch(wanted.into_iter().map(|picture| self.preview_backdrop(picture)))
+    }
+
+    /// Starts `picture`'s preview, unless it's been asked for already: for its
+    /// tile, and on Linux for the board, which draws the same picture under
+    /// itself (`App::backdrop_in_window`).
+    pub(super) fn preview_backdrop(&mut self, picture: BackdropPicture) -> Task<Message> {
+        if self.backdrop_previews.iter().any(|(asked, _)| *asked == picture) {
+            return Task::none();
         }
-        Task::batch(tasks)
+        let blur = self.config.overlay_blur;
+        self.backdrop_previews.push((picture.clone(), Preview::Pending));
+        let (sender, receiver) = iced::futures::channel::oneshot::channel();
+        crate::platform::preview_backdrop_picture(picture.clone(), blur, move |png| {
+            let _ = sender.send(png);
+        });
+        Task::perform(receiver, move |png| Message::BackdropPreview(picture, blur, png.ok().flatten()))
     }
 
     /// A tile's picture, ready — at the blur it was asked for at, or it's

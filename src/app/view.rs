@@ -256,6 +256,18 @@ impl App {
         let board = layered(self.board(camera));
 
         let mut layers = stack![backdrop, shadow_layer, board];
+        // Under all of it, where the board draws the picture behind it itself
+        // (`platform::PICTURE_IN_WINDOW`): filling the window at its own
+        // proportions, as a desktop shows a wallpaper, and faded in with the
+        // board, as macOS fades the window it's in there.
+        if let Some(picture) = self.backdrop_in_window() {
+            let picture = iced::widget::image(picture.clone())
+                .width(Fill)
+                .height(Fill)
+                .content_fit(iced::ContentFit::Cover)
+                .opacity(content_alpha);
+            layers = stack![picture, layers];
+        }
 
         if let Some(editor) = self.editor_overlay(camera) {
             layers = layers.push(editor);

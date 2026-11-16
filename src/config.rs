@@ -501,9 +501,11 @@ impl Antialiasing {
 /// A transparent board is composited over every window under it, every frame,
 /// and those windows count as visible, so their apps keep drawing: over a busy
 /// desktop, on a ProMotion display, it drops from 120 Hz to 60. The rest cover
-/// what's under it — the theme's colour in an opaque board, or a picture in a
-/// window of its own beneath a transparent one. The wallpaper is any app's to
-/// read, where the windows on the desktop would take Screen Recording.
+/// what's under it — the theme's colour in an opaque board, or a picture: in a
+/// window of its own beneath a transparent board on macOS, drawn under the
+/// board in its own opaque window on Linux (`platform::PICTURE_IN_WINDOW`).
+/// The wallpaper is any app's to read, where the windows on the desktop would
+/// take Screen Recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OverlayBackdrop {
     /// The desktop itself, live, through a see-through board.
@@ -517,14 +519,15 @@ pub enum OverlayBackdrop {
 }
 
 impl OverlayBackdrop {
-    /// What this platform offers, in the order the form does. A picture needs
-    /// a window of its own placed under the overlay, which only macOS does for
-    /// now.
+    /// What this platform offers, in the order the form does: the pictures
+    /// where it can show one, which Windows can't yet — and the wallpaper
+    /// only where it's found, which on Linux depends on the desktop.
     pub fn offered() -> Vec<OverlayBackdrop> {
         let pictures = crate::platform::SUPPORTS_BACKDROP_PICTURE;
         [OverlayBackdrop::Transparent, OverlayBackdrop::Theme, OverlayBackdrop::Wallpaper, OverlayBackdrop::Image]
             .into_iter()
             .filter(|backdrop| pictures || !backdrop.is_picture())
+            .filter(|&backdrop| backdrop != OverlayBackdrop::Wallpaper || crate::platform::has_wallpaper())
             .collect()
     }
 
@@ -548,15 +551,20 @@ impl OverlayBackdrop {
         }
     }
 
-    /// Whether it's a picture, in a window of its own under the board.
+    /// Whether it's a picture, under the board.
     pub fn is_picture(self) -> bool {
         matches!(self, OverlayBackdrop::Wallpaper | OverlayBackdrop::Image)
     }
 
     /// Whether the board's own window is see-through: it is over the desktop,
-    /// and over a picture's window, which sits under it.
+    /// and over a picture's window, which sits under it — but not where the
+    /// picture is drawn in the board's own window, which it fills.
     pub fn see_through(self) -> bool {
-        self != OverlayBackdrop::Theme
+        match self {
+            OverlayBackdrop::Transparent => true,
+            OverlayBackdrop::Theme => false,
+            OverlayBackdrop::Wallpaper | OverlayBackdrop::Image => !crate::platform::PICTURE_IN_WINDOW,
+        }
     }
 
     /// The backdrop a config names, as the form shows it. Empty — a config

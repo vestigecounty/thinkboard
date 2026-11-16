@@ -1302,7 +1302,16 @@ throwaway `--config` run kill the everyday copy. So:
   X11, and under Wayland, which arboard reaches through XWayland — and arboard
   hands it over only while a `Clipboard` lives, so one is held for the app's
   life (`clipboard::system`). Opened and dropped per copy, a copy pasted as
-  nothing wherever no clipboard manager took it.
+  nothing wherever no clipboard manager took it. **A picture behind the
+  overlay is drawn in the board's own window**, under the board
+  (`platform::PICTURE_IN_WINDOW`), which is then opaque: Wayland gives an
+  app no way to order one of its windows under another, as macOS's picture
+  window is. It's prepared as macOS's are (`platform::picture`, shared), the
+  board drawing the same prepared picture as the form's tile. The wallpaper
+  is found per desktop (`platform::wallpaper`: GNOME's settings, KDE's
+  appletsrc, Xfce's xfconf, COSMIC's own config) and offered only where it
+  is, and is a JPEG or PNG — a slideshow or a JPEG XL isn't offered rather
+  than shown black.
 - **Windows** — release builds use the GUI subsystem (no console); the
   `no-console` feature forces that in any profile.
 
