@@ -1244,11 +1244,15 @@ mod tests {
         assert_eq!(OverlayBackdrop::of(&c), OverlayBackdrop::Theme);
         c.overlay_transparent = true;
         assert_eq!(OverlayBackdrop::of(&c), OverlayBackdrop::Transparent);
-        // Chosen, the name wins, and the toggle follows it for older builds.
+        // Chosen, the name wins, and the toggle follows it for older builds:
+        // on where the window is see-through, which over a picture drawn in
+        // the board's own window (Linux, Windows) it isn't.
         for backdrop in OverlayBackdrop::offered() {
             backdrop.set(&mut c);
             assert_eq!(OverlayBackdrop::of(&c), backdrop);
-            assert_eq!(c.overlay_transparent, backdrop != OverlayBackdrop::Theme);
+            let see_through = backdrop == OverlayBackdrop::Transparent
+                || (backdrop.is_picture() && !crate::platform::PICTURE_IN_WINDOW);
+            assert_eq!(c.overlay_transparent, see_through);
         }
     }
 

@@ -568,9 +568,15 @@ mod tests {
         use super::socket_name;
         use std::path::Path;
 
+        // Absolute where the test runs, or the name would hash wherever it ran
+        // from: on Windows `/tmp` is on the current drive.
+        #[cfg(not(windows))]
+        let (x, y, name) = ("/tmp/x.json", "/tmp/y.json", "thinkboard-a04df78558a74320");
+        #[cfg(windows)]
+        let (x, y, name) = (r"C:\tmp\x.json", r"C:\tmp\y.json", "thinkboard-e4a56e360f7db21b");
         assert_eq!(socket_name(None), "thinkboard");
-        assert_eq!(socket_name(Some(Path::new("/tmp/x.json"))), "thinkboard-a04df78558a74320");
-        assert_ne!(socket_name(Some(Path::new("/tmp/y.json"))), socket_name(Some(Path::new("/tmp/x.json"))));
+        assert_eq!(socket_name(Some(Path::new(x))), name);
+        assert_ne!(socket_name(Some(Path::new(y))), socket_name(Some(Path::new(x))));
     }
 
         #[test]

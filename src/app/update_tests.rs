@@ -2675,7 +2675,9 @@ fn reload_takes_what_the_file_says_and_keeps_the_board_open() {
 
 #[test]
 fn a_reload_that_changes_the_blur_waits_for_tiles_at_the_new_one() {
-    if !crate::platform::SUPPORTS_BACKDROP_PICTURE {
+    // Without a wallpaper to find — a Linux CI runner has no desktop — there's
+    // no tile to wait for.
+    if !crate::config::OverlayBackdrop::offered().contains(&crate::config::OverlayBackdrop::Wallpaper) {
         return;
     }
     use crate::platform::BackdropPicture;
