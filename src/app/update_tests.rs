@@ -806,6 +806,47 @@ fn a_new_frame_immediately_carries_its_members() {
     assert_eq!((app.nodes[0].x, app.nodes[0].y), (ax + 50.0, ay + 20.0));
 }
 
+#[test]
+fn a_cluster_drag_carries_the_groups_wholly_in_it() {
+    // A cluster's members are cards, never frames, so its groups were left
+    // where they were as their cards went.
+    let frame = |id: &str, x: f32, y: f32| CanvasNode { x, y, width: 400.0, height: 300.0, ..node_of(id, "group") };
+    let card = |id: &str, x: f32, y: f32| CanvasNode { x, y, ..text_node(id, id) };
+    let mut app = app_with(
+        vec![
+            frame("whole", 0.0, 0.0),
+            card("a", 20.0, 60.0),
+            card("b", 150.0, 160.0),
+            frame("split", 600.0, 0.0),
+            card("c", 620.0, 60.0),
+            card("d", 750.0, 160.0),
+            // Empty, and in the way of the drag below.
+            frame("empty", 0.0, 500.0),
+        ],
+        Vec::new(),
+    );
+    app.clusters.list = vec![crate::cluster::Cluster {
+        bounds: Rectangle::new(Point::ORIGIN, Size::new(900.0, 300.0)),
+        text: "a".to_owned(),
+        font_size: 20.0,
+        image_id: None,
+        members: vec![1, 2, 4],
+    }];
+    let before = app.nodes.clone();
+
+    // Down over the empty group, in two moves as a drag makes many.
+    send(&mut app, Message::MoveCluster { index: 0, delta: Vector::new(0.0, 300.0) });
+    send(&mut app, Message::MoveCluster { index: 0, delta: Vector::new(0.0, 300.0) });
+    send(&mut app, Message::ClusterDragEnd);
+
+    let moved = |i: usize| app.nodes[i].y - before[i].y;
+    assert_eq!([moved(0), moved(1), moved(2)], [600.0; 3], "the group whose cards all went, with them");
+    assert_eq!(moved(4), 600.0, "the split group's card in the cluster");
+    assert_eq!([moved(3), moved(5)], [0.0; 2], "the split group stays, with its card outside the cluster");
+    assert_eq!(moved(6), 0.0, "an empty group dragged across isn't picked up");
+    assert!(app.clusters.carried.is_none(), "forgotten when the drag ends");
+}
+
 // --- Group labels ---
 
 /// Creates a frame around two nodes and returns its index, leaving the caption

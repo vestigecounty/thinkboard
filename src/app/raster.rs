@@ -142,6 +142,10 @@ pub(super) struct Clusters {
     pending: bool,
     /// A change arrived while a recluster was in flight; recompute again.
     dirty: bool,
+    /// The groups a cluster drag carries, by the cluster it's dragging:
+    /// decided as it starts (`App::move_cluster`), or a cluster would pick up
+    /// an empty group it was dragged across.
+    pub(super) carried: Option<(usize, Vec<usize>)>,
 }
 
 impl Clusters {

@@ -1067,6 +1067,7 @@ impl App {
                 self.move_cluster(index, delta);
             }
             Message::ClusterDragEnd => {
+                self.clusters.carried = None;
                 self.end_gesture();
                 return self.schedule_recluster();
             }
@@ -1974,9 +1975,28 @@ impl App {
         let Some(cluster) = self.clusters.list.get(index) else {
             return;
         };
-        // Move every member node and the card itself; the drag ends with a
-        // recluster to resettle bounds.
-        for &m in &cluster.members.clone() {
+        // Frames are no cluster's members, so a group goes along only when
+        // every card it encloses does — one split between clusters stays.
+        // Decided once, at the drag's first move.
+        if self.clusters.carried.as_ref().is_none_or(|(dragging, _)| *dragging != index) {
+            let members: std::collections::HashSet<usize> = cluster.members.iter().copied().collect();
+            let carried = (0..self.nodes.len())
+                .filter(|&frame| self.nodes[frame].is_group())
+                .filter(|&frame| {
+                    let cards: Vec<usize> =
+                        self.enclosed_by(frame).into_iter().filter(|&i| !self.nodes[i].is_group()).collect();
+                    !cards.is_empty() && cards.iter().all(|card| members.contains(card))
+                })
+                .collect();
+            self.clusters.carried = Some((index, carried));
+        }
+        let carried = self.clusters.carried.as_ref().map(|(_, frames)| frames.clone()).unwrap_or_default();
+        let Some(cluster) = self.clusters.list.get(index) else {
+            return;
+        };
+        // Move every member node, the groups that go with them, and the card
+        // itself; the drag ends with a recluster to resettle bounds.
+        for &m in cluster.members.clone().iter().chain(&carried) {
             if let Some(node) = self.nodes.get_mut(m) {
                 node.x += delta.x;
                 node.y += delta.y;

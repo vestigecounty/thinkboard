@@ -2080,8 +2080,10 @@ fn laying_out_a_group() {
     let mut tour = Tour::new("laying_out_a_group", first_launch(board));
     tour.chord(Modifiers::COMMAND, "0");
     tour.shot("before");
-    // Every card, and so the group's three, but not its frame.
+    // Every card, and the group with its three, which it covers whole.
     tour.drag(Point::new(12.0, 12.0), Point::new(1428.0, 888.0));
+    assert!(tour.app.selected.contains(&0), "the group the marquee covers");
+    assert_eq!(tour.app.selected.len(), 8, "with every card");
     let porto = tour.find("Weekend");
     tour.right_click(tour.node_center(porto));
     tour.click_label("Auto-layout \u{2192}");
@@ -2093,16 +2095,24 @@ fn laying_out_a_group() {
         assert!(model::centre_within(&tour.app.nodes[card], &tour.app.nodes[frame]), "{id} is still in the group");
     }
 
-    // The second step: the group's own cards, laid out inside it.
+    // The second step: the group's own cards, laid out inside it — swept up
+    // by a marquee drawn inside the group, below its header, which takes
+    // the cards and leaves the group.
     tour.click(Point::new(40.0, 860.0));
     assert!(tour.app.selected.is_empty(), "a click on the board deselects");
     let cards = ["Passport", "Charger", "Rain jacket"].map(|text| tour.find(text));
-    tour.click(tour.node_center(cards[0]));
-    tour.hold(Modifiers::COMMAND);
-    tour.click(tour.node_center(cards[1]));
-    tour.click(tour.node_center(cards[2]));
-    tour.hold(Modifiers::empty());
-    assert_eq!(tour.app.selected.len(), 3, "the group's three cards");
+    let group = tour.app.nodes[frame].clone();
+    let camera = tour.app.camera;
+    let inside = |x: f32, y: f32| camera.to_screen(Point::new(x, y));
+    tour.drag(
+        inside(group.x + 6.0, group.y + 40.0),
+        inside(group.x + group.width - 6.0, group.y + group.height - 6.0),
+    );
+    let mut selected = tour.app.selected.clone();
+    selected.sort_unstable();
+    let mut expected = cards.to_vec();
+    expected.sort_unstable();
+    assert_eq!(selected, expected, "the group's three cards, not the group");
     tour.right_click(tour.node_center(cards[1]));
     tour.click_label("\u{2193}");
     tour.chord(Modifiers::COMMAND, "0");

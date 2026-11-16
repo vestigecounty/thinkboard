@@ -1078,16 +1078,25 @@ impl Board<'_> {
         )
     }
 
-    /// Indices of nodes whose on-screen rectangle intersects `rect` (screen
-    /// coordinates); used by the rubber-band selection.
+    /// Indices of the nodes a rubber-band selection takes, `rect` in screen
+    /// coordinates: every card it touches, and every group it covers whole.
+    /// A marquee over a group's contents means the cards inside it, never the
+    /// group; one drawn round the whole group means the group with its cards,
+    /// so it's moved, copied and deleted whole rather than left behind.
     pub(super) fn nodes_in_rect(&self, rect: Rectangle) -> Vec<usize> {
+        let covers = |inner: Rectangle| {
+            rect.x <= inner.x
+                && rect.y <= inner.y
+                && inner.x + inner.width <= rect.x + rect.width
+                && inner.y + inner.height <= rect.y + rect.height
+        };
         self.nodes
             .iter()
             .enumerate()
-            // Frames are excluded: a marquee over a group's contents means the
-            // nodes inside it, never the group itself.
-            .filter(|(_, node)| !node.is_group())
-            .filter(|(index, node)| rect.intersects(&self.node_screen_rect(*index, node)))
+            .filter(|(index, node)| {
+                let on_screen = self.node_screen_rect(*index, node);
+                if node.is_group() { covers(on_screen) } else { rect.intersects(&on_screen) }
+            })
             .map(|(index, _)| index)
             .collect()
     }

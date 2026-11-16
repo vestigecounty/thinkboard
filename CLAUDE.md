@@ -947,13 +947,20 @@ gaps with dummy nodes. Ours come from the file.
   differ from what absence means — so an untouched file round-trips byte for
   byte and an edited one looks the way Obsidian would have written it.
 - **Groups are frames, not cards.** They draw behind everything, are grabbable
-  only by their header strip, and are excluded from clustering, marquee
-  selection, ports, shadows — and, importantly, from every *obstacle* set
+  only by their header strip, and are excluded from clustering, from a
+  marquee that doesn't cover them whole, ports, shadows — and, importantly,
+  from every *obstacle* set
   (placement, auto-size neighbours, AI sibling stacking). A frame encloses
   other nodes, so counting it as occupied space pins the cards inside it.
   Dragging one carries whatever it encloses (`App::drag_riders`), which is also
   where multi-selection drags are resolved — as a set, so nothing that
-  qualifies twice moves at double speed. Auto-layout takes a group whole the
+  qualifies twice moves at double speed. Moving a stretch of board takes its
+  groups: a marquee drawn round a whole group selects the group with its
+  cards (`Board::nodes_in_rect`; one inside it still means its cards), and a
+  cluster dragged at semantic zoom carries each group whose cards are all its
+  own (`App::move_cluster`) — decided as the drag starts, or it picked up an
+  empty group it was dragged across. Both used to leave the frames where they
+  were. Auto-layout takes a group whole the
   same way (`layout::framed_layout`): a selected card stands for its group,
   which is laid out as one node with every link of what it encloses, and
   carries its inside as arranged — laid out card by card, a marquee's
