@@ -1186,8 +1186,8 @@ fn auto_layout_inside_a_group_grows_it_to_hold_the_result() {
     let frame = &app.nodes[0];
     assert!(app.nodes[1].x < app.nodes[2].x && app.nodes[2].x < app.nodes[3].x, "laid out left to right");
     assert!(frame.width > before.width, "grown to fit a row wider than it was");
-    for m in 1..=3 {
-        assert!(inside(&app.nodes[m], frame), "{} stays in the group", app.nodes[m].id);
+    for member in &app.nodes[1..=3] {
+        assert!(inside(member, frame), "{} stays in the group", member.id);
     }
     assert!(frame.x <= before.x && frame.y <= before.y, "grown, never moved inward");
     assert!(frame.x + frame.width >= before.x + before.width);

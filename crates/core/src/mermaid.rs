@@ -62,10 +62,9 @@ pub fn parse(text: &str) -> Option<Flowchart> {
 /// group on a board is. Cards must be sized first; links are anchored to the
 /// sides that face along the flow.
 pub fn arrange(chart: &mut Flowchart, rank_gap: f32, node_gap: f32, pad: f32, head: f32) {
-    let n = chart.nodes.len();
     let mut children: HashMap<Option<usize>, Vec<usize>> = HashMap::new();
-    for i in 0..n {
-        children.entry(chart.parents[i]).or_default().push(i);
+    for (i, &parent) in chart.parents.iter().enumerate() {
+        children.entry(parent).or_default().push(i);
     }
     lay_out(chart, &children, None, rank_gap, node_gap, pad, head);
 
