@@ -44,9 +44,9 @@ pub fn set_overlay_opaque(_opaque: bool) {}
 
 // A picture under the overlay, drawn by the app in the board's own window,
 // under the board (`PICTURE_IN_WINDOW`): Wayland gives an app no way to order
-// one of its windows under another. Prepared as macOS's are
-// (`platform::picture`), and decoded by the `image` crate — JPEG and PNG,
-// which wallpapers here mostly are.
+// one of its windows under another. Prepared and decoded as the other
+// platforms' are (`platform::picture`) — JPEG and PNG, which wallpapers here
+// mostly are.
 
 use super::BackdropPicture;
 use super::picture;
@@ -58,7 +58,7 @@ pub const PICTURE_IN_WINDOW: bool = true;
 
 /// Where Linux's pictures come from: the desktop's wallpaper as each desktop
 /// keeps it (`platform::wallpaper`), decoded here.
-const SOURCE: picture::Source = picture::Source { wallpaper: wallpaper_file, screen: no_screen, make: decode_picture };
+const SOURCE: picture::Source = picture::Source { wallpaper: wallpaper_file, screen: no_screen, make: picture::decoded };
 
 pub fn has_wallpaper() -> bool {
     super::wallpaper::find().is_some()
@@ -89,18 +89,3 @@ fn no_screen() -> Option<u32> {
     None
 }
 
-/// The picture at `path`, scaled down to fit `size` and blurred by `sigma`, as
-/// PNG — never up: the board scales it to the window, which a blur hides as
-/// well as scaling here would.
-fn decode_picture(path: &str, size: u32, sigma: f32) -> Option<Vec<u8>> {
-    let Ok(decoded) = ::image::open(path) else {
-        eprintln!("overlay background: couldn't read {path}");
-        return None;
-    };
-    let decoded = if decoded.width().max(decoded.height()) > size {
-        decoded.resize(size, size, ::image::imageops::FilterType::Triangle)
-    } else {
-        decoded
-    };
-    picture::blurred_png(decoded.to_rgba8(), sigma)
-}

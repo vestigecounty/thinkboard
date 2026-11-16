@@ -1313,7 +1313,14 @@ throwaway `--config` run kill the everyday copy. So:
   is, and is a JPEG or PNG — a slideshow or a JPEG XL isn't offered rather
   than shown black.
 - **Windows** — release builds use the GUI subsystem (no console); the
-  `no-console` feature forces that in any profile.
+  `no-console` feature forces that in any profile. A picture behind the
+  overlay is drawn in the board's own window, as on Linux
+  (`platform::PICTURE_IN_WINDOW`): one window to keep in order, and an
+  opaque one, which doesn't need the see-through swapchain. The wallpaper is
+  the file `SPI_GETDESKWALLPAPER` names, or — where that's gone or isn't a
+  JPEG or PNG — the copy Windows keeps of the one it shows,
+  `TranscodedWallpaper`, a JPEG with no extension, which is why the shared
+  decoder reads a file's format from its content.
 
 ## Releasing
 

@@ -503,7 +503,8 @@ impl Antialiasing {
 /// desktop, on a ProMotion display, it drops from 120 Hz to 60. The rest cover
 /// what's under it — the theme's colour in an opaque board, or a picture: in a
 /// window of its own beneath a transparent board on macOS, drawn under the
-/// board in its own opaque window on Linux (`platform::PICTURE_IN_WINDOW`).
+/// board in its own opaque window on Linux and Windows
+/// (`platform::PICTURE_IN_WINDOW`).
 /// The wallpaper is any app's to read, where the windows on the desktop would
 /// take Screen Recording.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -519,9 +520,9 @@ pub enum OverlayBackdrop {
 }
 
 impl OverlayBackdrop {
-    /// What this platform offers, in the order the form does: the pictures
-    /// where it can show one, which Windows can't yet — and the wallpaper
-    /// only where it's found, which on Linux depends on the desktop.
+    /// What this platform offers, in the order the form does — the
+    /// wallpaper only where one is found: on Linux that depends on the
+    /// desktop, and on Windows a solid colour names no picture.
     pub fn offered() -> Vec<OverlayBackdrop> {
         let pictures = crate::platform::SUPPORTS_BACKDROP_PICTURE;
         [OverlayBackdrop::Transparent, OverlayBackdrop::Theme, OverlayBackdrop::Wallpaper, OverlayBackdrop::Image]

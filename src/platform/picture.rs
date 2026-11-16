@@ -118,6 +118,27 @@ fn preparation(spread: f32, screen: u32) -> (u32, f32) {
     (size, spread * size as f32)
 }
 
+/// The picture at `path`, scaled down to fit `size` and blurred by `sigma`, as
+/// PNG — never up: the board scales it to the window, which a blur hides as
+/// well as scaling here would. Its format is read from the file, not its name:
+/// Windows keeps the wallpaper it shows in a file with no extension. Linux's
+/// and Windows' decoder, by the `image` crate — JPEG and PNG; macOS's is
+/// `sips`, which reads HEIC too.
+#[cfg(not(target_os = "macos"))]
+pub(super) fn decoded(path: &str, size: u32, sigma: f32) -> Option<Vec<u8>> {
+    let read = ::image::ImageReader::open(path).ok().and_then(|reader| reader.with_guessed_format().ok());
+    let Some(decoded) = read.and_then(|reader| reader.decode().ok()) else {
+        eprintln!("overlay background: couldn't read {path}");
+        return None;
+    };
+    let decoded = if decoded.width().max(decoded.height()) > size {
+        decoded.resize(size, size, ::image::imageops::FilterType::Triangle)
+    } else {
+        decoded
+    };
+    blurred_png(decoded.to_rgba8(), sigma)
+}
+
 /// `image` blurred by `sigma`, as PNG — none at 0, which `blur` would take for
 /// its own default.
 pub(super) fn blurred_png(image: ::image::RgbaImage, sigma: f32) -> Option<Vec<u8>> {

@@ -23,8 +23,9 @@ use windows::Win32::Foundation::{BOOL, FALSE, HWND, LPARAM, TRUE};
 use windows::Win32::System::Threading::GetCurrentThreadId;
 use windows::Win32::UI::WindowsAndMessaging::{
     EnumThreadWindows, GWL_EXSTYLE, GW_OWNER, GetSystemMetrics, GetWindow, GetWindowLongPtrW,
-    HWND_TOPMOST, IsWindowVisible, SM_CXSCREEN, SM_CYSCREEN, SWP_NOACTIVATE, SWP_SHOWWINDOW,
-    SetWindowLongPtrW, SetWindowPos, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    HWND_TOPMOST, IsWindowVisible, SM_CXSCREEN, SM_CYSCREEN, SPI_GETDESKWALLPAPER,
+    SWP_NOACTIVATE, SWP_SHOWWINDOW, SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS, SetWindowLongPtrW,
+    SetWindowPos, SystemParametersInfoW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 
 /// Windows has no macOS-style Space-change notification we track, so the
@@ -121,28 +122,89 @@ pub const LIVE_TRANSPARENCY: bool = false;
 /// Nothing to switch (see [`LIVE_TRANSPARENCY`]).
 pub fn set_overlay_opaque(_opaque: bool) {}
 
-/// No window of our own under the overlay here.
-pub const SUPPORTS_BACKDROP_PICTURE: bool = false;
+// A picture under the overlay, drawn by the app in the board's own window,
+// under the board, as on Linux (`PICTURE_IN_WINDOW`): one window rather than
+// two to keep in order, and under a picture the board's window is opaque, so
+// it doesn't need the see-through swapchain. Prepared and decoded as the other
+// platforms' are (`platform::picture`).
 
-/// No picture to draw (see [`SUPPORTS_BACKDROP_PICTURE`]).
-pub const PICTURE_IN_WINDOW: bool = false;
+use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
-/// Not looked for (see [`SUPPORTS_BACKDROP_PICTURE`]).
+use super::BackdropPicture;
+use super::picture;
+
+pub const SUPPORTS_BACKDROP_PICTURE: bool = true;
+
+/// Drawn by the app, under the board.
+pub const PICTURE_IN_WINDOW: bool = true;
+
+/// Where Windows' pictures come from: the desktop's wallpaper, as Windows
+/// names it, at the primary screen's size.
+const SOURCE: picture::Source =
+    picture::Source { wallpaper: wallpaper_file, screen: primary_screen_pixels, make: picture::decoded };
+
 pub fn has_wallpaper() -> bool {
-    false
+    wallpaper().is_some()
 }
 
-/// Nothing to choose (see [`SUPPORTS_BACKDROP_PICTURE`]).
-pub fn set_backdrop_picture(_picture: super::BackdropPicture, _blur: f32) {}
+pub fn set_backdrop_picture(picture: BackdropPicture, blur: f32) {
+    picture::choose(picture, blur, &SOURCE);
+}
 
-/// Nothing to preview (see [`SUPPORTS_BACKDROP_PICTURE`]).
 pub fn preview_backdrop_picture(
-    _picture: super::BackdropPicture,
-    _blur: f32,
+    picture: BackdropPicture,
+    blur: f32,
     ready: impl FnOnce(Option<Vec<u8>>) + Send + 'static,
 ) {
-    ready(None);
+    picture::preview(picture, blur, &SOURCE, ready);
 }
 
-/// Nothing to show (see [`SUPPORTS_BACKDROP_PICTURE`]).
+/// The app draws the picture itself (see [`PICTURE_IN_WINDOW`]).
 pub fn show_backdrop_picture(_alpha: f32) {}
+
+fn wallpaper_file() -> Option<String> {
+    wallpaper().map(|path| path.to_string_lossy().into_owned())
+}
+
+/// The desktop's wallpaper, looked up once a launch: the picture Windows was
+/// given — or, where that's gone or isn't a JPEG or PNG, the copy Windows
+/// keeps of the one it shows, which is also a slideshow's current one. None
+/// for a solid colour, which names no picture.
+fn wallpaper() -> Option<&'static Path> {
+    static FOUND: OnceLock<Option<PathBuf>> = OnceLock::new();
+    FOUND
+        .get_or_init(|| {
+            let mut name = [0u16; 1024];
+            let asked = unsafe {
+                SystemParametersInfoW(
+                    SPI_GETDESKWALLPAPER,
+                    name.len() as u32,
+                    Some(name.as_mut_ptr().cast()),
+                    SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+                )
+            };
+            asked.ok()?;
+            let length = name.iter().position(|&c| c == 0).unwrap_or(name.len());
+            let given = PathBuf::from(String::from_utf16_lossy(&name[..length]));
+            if given.as_os_str().is_empty() {
+                return None;
+            }
+            let readable = given
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| ["png", "jpg", "jpeg", "jfif"].contains(&extension.to_ascii_lowercase().as_str()));
+            if readable && given.is_file() {
+                return Some(given);
+            }
+            let kept = PathBuf::from(std::env::var_os("APPDATA")?).join(r"Microsoft\Windows\Themes\TranscodedWallpaper");
+            kept.is_file().then_some(kept)
+        })
+        .as_deref()
+}
+
+/// The primary screen's longest side, in pixels.
+fn primary_screen_pixels() -> Option<u32> {
+    let (width, height) = unsafe { (GetSystemMetrics(SM_CXSCREEN), GetSystemMetrics(SM_CYSCREEN)) };
+    u32::try_from(width.max(height)).ok().filter(|&pixels| pixels > 0)
+}

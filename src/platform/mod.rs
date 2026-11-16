@@ -11,7 +11,6 @@ mod windows;
 // Everything else (Linux/BSD, for now) gets no desktop-overlay treatment.
 #[cfg(not(any(target_os = "macos", windows)))]
 mod fallback;
-#[cfg(not(windows))]
 mod picture;
 #[cfg(any(not(any(target_os = "macos", windows)), test))]
 mod wallpaper;
@@ -73,14 +72,14 @@ fn names_cosmic(desktops: &str) -> bool {
 
 /// Whether this platform can put a picture under the overlay
 /// (`config::OverlayBackdrop::Wallpaper` / `Image`): in a window of its own
-/// under the board's on macOS, drawn in the board's own on Linux
-/// ([`PICTURE_IN_WINDOW`]). Not on Windows yet.
+/// under the board's on macOS, drawn in the board's own on Linux and Windows
+/// ([`PICTURE_IN_WINDOW`]).
 pub const SUPPORTS_BACKDROP_PICTURE: bool = backend::SUPPORTS_BACKDROP_PICTURE;
 
 /// Whether the app draws the picture itself, in the board's own window and
 /// under the board — where it can't have a window of its own put under the
 /// overlay's, as on Linux, where Wayland gives an app no way to order its
-/// windows. The board's window is then opaque under a picture, where on
+/// windows, or where one window is simpler than two, as on Windows. The board's window is then opaque under a picture, where on
 /// macOS it's see-through over the picture's window. The board draws the
 /// picture the platform prepared, through [`preview_backdrop_picture`].
 pub const PICTURE_IN_WINDOW: bool = backend::PICTURE_IN_WINDOW;
