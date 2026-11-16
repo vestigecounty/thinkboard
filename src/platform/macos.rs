@@ -17,13 +17,14 @@ use std::sync::{Mutex, Once, OnceLock};
 
 use block2::RcBlock;
 use objc2::rc::Retained;
-use objc2::runtime::AnyObject;
-use objc2::{ClassType, MainThreadOnly, class, define_class, msg_send};
+use objc2::runtime::{AnyObject, NSObject};
+use objc2::{ClassType, MainThreadOnly, class, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy,
     NSRunningApplication, NSEvent, NSEventMask, NSPanel, NSScreen,
     NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
-    NSWorkspaceActiveSpaceDidChangeNotification,
+    NSWorkspaceActiveSpaceDidChangeNotification, NSWorkspaceApplicationKey,
+    NSWorkspaceDidActivateApplicationNotification,
 };
 use objc2::rc::Allocated;
 use objc2_foundation::{NSNotification, NSRect, NSString};
@@ -663,6 +664,103 @@ fn start_space_observer() {
     });
 }
 
+/// Opening the app while it runs reaches the copy running as an Apple Event.
+pub const HEARS_REOPEN: bool = true;
+
+type ReopenHandler = Box<dyn Fn() + Send + Sync>;
+static REOPEN_HANDLER: OnceLock<ReopenHandler> = OnceLock::new();
+static REOPEN_LISTENER: Once = Once::new();
+
+/// The last other app to come to the front, by pid. 0 before one has.
+static LAST_OTHER_APP: AtomicI32 = AtomicI32::new(0);
+
+/// `kCoreEventClass` and `kAEReopenApplication`.
+const CORE_EVENT_CLASS: u32 = u32::from_be_bytes(*b"aevt");
+const REOPEN_APPLICATION: u32 = u32::from_be_bytes(*b"rapp");
+
+/// Registers the app's handler for the app being opened again. The Apple
+/// Event handler is installed by [`listen_for_reopen`].
+pub fn set_reopen_handler(handler: impl Fn() + Send + Sync + 'static) {
+    let _ = REOPEN_HANDLER.set(Box::new(handler));
+}
+
+/// Takes the reopen Apple Event, once. Opened from Finder, Spotlight or `open`
+/// while it runs, the app isn't started again: LaunchServices puts the copy
+/// running in front and asks it to reopen, so no second launch hands over to
+/// it (`summon::hand_over`), and with nothing on screen nothing seemed to
+/// happen. AppKit installs a handler of its own as it starts, over any set
+/// before, so this is called once the app is up.
+///
+/// It also follows which other app was last in front: the reopen arrives
+/// with this one there already, and dismissing the board gives the keyboard
+/// back to what it took the front from ([`release_focus`]). Target and
+/// observer are leaked to live for the app.
+pub fn listen_for_reopen() {
+    let Some(mtm) = MainThreadMarker::new() else {
+        return;
+    };
+    REOPEN_LISTENER.call_once(|| {
+        let target: Retained<ReopenTarget> = unsafe { msg_send![ReopenTarget::alloc(mtm), init] };
+        unsafe {
+            let manager: Retained<AnyObject> = msg_send![class!(NSAppleEventManager), sharedAppleEventManager];
+            let _: () = msg_send![
+                &*manager,
+                setEventHandler: &*target,
+                andSelector: sel!(handleReopen:withReplyEvent:),
+                forEventClass: CORE_EVENT_CLASS,
+                andEventID: REOPEN_APPLICATION
+            ];
+        }
+        // The manager doesn't retain its handler.
+        std::mem::forget(target);
+
+        let ours = std::process::id() as i32;
+        let workspace = NSWorkspace::sharedWorkspace();
+        if let Some(front) = workspace.frontmostApplication()
+            && front.processIdentifier() != ours
+        {
+            LAST_OTHER_APP.store(front.processIdentifier(), Ordering::Relaxed);
+        }
+        let block = RcBlock::new(move |notification: NonNull<NSNotification>| {
+            let info: Option<Retained<AnyObject>> = unsafe { msg_send![notification.as_ref(), userInfo] };
+            let app: Option<Retained<NSRunningApplication>> =
+                info.and_then(|info| unsafe { msg_send![&*info, objectForKey: NSWorkspaceApplicationKey] });
+            if let Some(app) = app
+                && app.processIdentifier() != ours
+            {
+                LAST_OTHER_APP.store(app.processIdentifier(), Ordering::Relaxed);
+            }
+        });
+        let observer = unsafe {
+            workspace.notificationCenter().addObserverForName_object_queue_usingBlock(
+                Some(NSWorkspaceDidActivateApplicationNotification),
+                None,
+                None,
+                &block,
+            )
+        };
+        std::mem::forget(observer);
+        std::mem::forget(block);
+    });
+}
+
+define_class!(
+    /// Where the reopen Apple Event is sent (see [`listen_for_reopen`]).
+    #[unsafe(super(NSObject))]
+    #[thread_kind = MainThreadOnly]
+    #[name = "ThinkBoardReopenTarget"]
+    struct ReopenTarget;
+
+    impl ReopenTarget {
+        #[unsafe(method(handleReopen:withReplyEvent:))]
+        fn handle_reopen(&self, _event: &AnyObject, _reply: &AnyObject) {
+            if let Some(handler) = REOPEN_HANDLER.get() {
+                handler();
+            }
+        }
+    }
+);
+
 define_class!(
     /// A non-activating panel that can still take key input (for Esc and
     /// the node text editor). Mirrors winit's `WinitWindow` overrides,
@@ -739,10 +837,15 @@ pub fn configure_overlay_window() {
     // no other app asking to be frontmost, leaves us active with our window
     // gone — which is exactly the symptom, a board that vanishes while the next
     // keystroke still arrives here.
-    if let Some(front) = NSWorkspace::sharedWorkspace().frontmostApplication() {
-        let pid = front.processIdentifier();
-        if pid != std::process::id() as i32 {
-            PREVIOUS_APP.store(pid, Ordering::Relaxed);
+    let front = NSWorkspace::sharedWorkspace().frontmostApplication().map(|front| front.processIdentifier());
+    match front {
+        Some(pid) if pid != std::process::id() as i32 => PREVIOUS_APP.store(pid, Ordering::Relaxed),
+        // Opened again (`listen_for_reopen`), the app was put in front before
+        // it was asked to reopen, so what it took the front from is the last
+        // other app that was there.
+        _ => {
+            let last = LAST_OTHER_APP.load(Ordering::Relaxed);
+            let _ = PREVIOUS_APP.compare_exchange(0, last, Ordering::Relaxed, Ordering::Relaxed);
         }
     }
 

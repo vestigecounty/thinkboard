@@ -50,6 +50,15 @@ pub fn set_gesture_handler(_handler: impl Fn() + Send + Sync + 'static) {}
 /// No gesture tap to toggle (see [`SUPPORTS_GESTURES`]).
 pub fn set_summon_gesture_enabled(_enable: bool) {}
 
+/// Opening the app again is a second launch here, which hands over.
+pub const HEARS_REOPEN: bool = false;
+
+/// No reopen to hear (see [`HEARS_REOPEN`]).
+pub fn set_reopen_handler(_handler: impl Fn() + Send + Sync + 'static) {}
+
+/// No reopen to hear (see [`HEARS_REOPEN`]).
+pub fn listen_for_reopen() {}
+
 /// Makes the app window a non-activating, taskbar-hidden, topmost overlay
 /// covering the primary monitor.
 pub fn configure_overlay_window() {

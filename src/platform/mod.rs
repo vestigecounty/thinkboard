@@ -212,6 +212,24 @@ pub fn set_summon_gesture_enabled(enable: bool) {
     backend::set_summon_gesture_enabled(enable);
 }
 
+/// Whether opening the app while it runs reaches the copy running as an event
+/// rather than as a second launch, which elsewhere hands itself over
+/// (`summon::hand_over`). Only macOS, where LaunchServices asks the running
+/// app to reopen.
+pub const HEARS_REOPEN: bool = backend::HEARS_REOPEN;
+
+/// Registers the handler fired when the app is opened again while it runs.
+/// Pair with [`listen_for_reopen`]. A no-op where [`HEARS_REOPEN`] is false.
+pub fn set_reopen_handler(handler: impl Fn() + Send + Sync + 'static) {
+    backend::set_reopen_handler(handler);
+}
+
+/// Starts listening for the app being opened again. Main thread only, once
+/// the app is up. A no-op where [`HEARS_REOPEN`] is false.
+pub fn listen_for_reopen() {
+    backend::listen_for_reopen();
+}
+
 /// Stops this app being the active one, so the keyboard goes back to whatever
 /// was in front before the overlay was summoned.
 ///

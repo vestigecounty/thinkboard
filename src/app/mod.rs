@@ -1635,6 +1635,9 @@ impl App {
         let mut backdrop = Task::none();
         if self.overlay && !self.overlay_configured {
             self.overlay_configured = true;
+            // Before the window's configured, which takes from it which app
+            // was in front before this one.
+            platform::listen_for_reopen();
             backdrop = self.configure_overlay_window();
             // Create the tray icon now that the app is running (macOS needs the
             // run loop live). It's parked in a main-thread slot for the process,
@@ -2739,6 +2742,11 @@ impl App {
         }
         // A later launch, in either mode (`summon::hand_over`).
         subscriptions.push(Subscription::run_with(!self.overlay, summon::launches));
+        // The app opened again, where that's no launch (macOS). Overlay only:
+        // a normal window comes to the front with the app, as any app's does.
+        if platform::HEARS_REOPEN && self.overlay {
+            subscriptions.push(Subscription::run(summon::reopens));
+        }
         // Auto-dismiss when the active workspace/Space changes, unless
         // configured to persist. Only where the platform reports it
         // (event-driven, no polling).

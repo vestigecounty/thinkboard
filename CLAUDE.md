@@ -1253,6 +1253,12 @@ throwaway `--config` run kill the everyday copy. So:
   only toggles — `cargo run` without a change in between hides the board.
 - **Nothing answering, on the default config**, is an older build or a hung
   one, and is killed as before.
+- **The macOS app opened again isn't launched again**: LaunchServices puts
+  the copy running in front and asks it to reopen, an Apple Event
+  (`platform::listen_for_reopen`), taken as a second launch of the same
+  build (`summon::reopens`). It arrives with the app in front already, so
+  the summon hands the keyboard back on dismissal to the last other app
+  that was.
 
 - **macOS** — the overlay is an `NSPanel` via a class-morph on winit's window;
   that leaves winit's KVO teardown inconsistent, so `save_and_exit` flushes the

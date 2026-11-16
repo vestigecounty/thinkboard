@@ -14,16 +14,22 @@
 //! COSMIC has no such portal, so there the shortcut is added to its own
 //! custom shortcuts instead — once, and kept by it from then on (`cosmic`).
 //!
-//! **A second launch hands over to the copy running** (macOS, Linux), over a
-//! socket in the user's runtime directory: it does what the summon key does
-//! there — shows or hides the overlay, brings a window forward — or, given a
-//! board, shows it and opens that board, and exits. So a desktop without the
-//! portal (sway, an older GNOME, COSMIC) can bind a key to `thinkboard`, and
-//! the app menu summons rather than restarts. A launch of another build, or in
-//! the other mode, asks the copy running to quit — it saves first — and starts
-//! in its place: what a freshly built binary, an upgrade, or a change to "Run
-//! as a normal window" wants. Every launch used to kill every other copy, which
-//! lost an edit made inside the autosave's debounce.
+//! **A second launch hands over to the copy running**, over a socket in the
+//! user's runtime directory (on Windows, its temp directory): it does what the
+//! summon key does there — shows or hides the overlay, brings a window
+//! forward — or, given a board, shows it and opens that board, and exits. So
+//! a desktop without the portal (sway, an older GNOME, COSMIC) can bind a key
+//! to `thinkboard`, and the app menu summons rather than restarts. A launch of
+//! another build, or in the other mode, asks the copy running to quit — it
+//! saves first — and starts in its place: what a freshly built binary, an
+//! upgrade, or a change to "Run as a normal window" wants. Every launch used
+//! to kill every other copy, which lost an edit made inside the autosave's
+//! debounce.
+//!
+//! **The macOS app opened again isn't launched again**: LaunchServices puts
+//! the copy running in front and asks it to reopen, an Apple Event, which is
+//! taken as a second launch of the same build (`reopens`). Opened from Finder
+//! or Spotlight, it did nothing visible.
 
 #[cfg(any(target_os = "linux", test))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
@@ -454,6 +460,23 @@ pub(super) fn launches(windowed: &bool) -> impl iced::futures::Stream<Item = Mes
         });
         while let Some(launch) = receiver.next().await {
             let _ = output.send(Message::Launched(launch)).await;
+        }
+    })
+}
+
+/// The app opened again while it runs, where that's an event rather than a
+/// launch (`platform::HEARS_REOPEN`), passed on as the second launch it would
+/// be elsewhere: what the summon key does.
+pub(super) fn reopens() -> impl iced::futures::Stream<Item = Message> {
+    iced::stream::channel(4, |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
+        use iced::futures::{SinkExt, StreamExt};
+
+        let (sender, mut receiver) = iced::futures::channel::mpsc::unbounded();
+        crate::platform::set_reopen_handler(move || {
+            let _ = sender.unbounded_send(());
+        });
+        while receiver.next().await.is_some() {
+            let _ = output.send(Message::Launched(Launch::Summon)).await;
         }
     })
 }
