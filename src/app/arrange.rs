@@ -625,17 +625,18 @@ impl App {
             self.grow_frame_around(frame, &moves);
         }
 
-        // Post-layout centers for every node (moved -> target, else unchanged).
-        let mut centers: Vec<(f32, f32)> = self
+        // Post-layout rects for every node (moved -> target, else unchanged).
+        let mut rects: Vec<(f32, f32, f32, f32)> = self
             .nodes
             .iter()
-            .map(|n| (n.x + n.width / 2.0, n.y + n.height / 2.0))
+            .map(|n| (n.x, n.y, n.width, n.height))
             .collect();
         let mut unit_of = HashMap::new();
         for (&(i, x, y), &unit) in moves.iter().zip(&framed.units) {
-            centers[i] = (x + self.nodes[i].width / 2.0, y + self.nodes[i].height / 2.0);
+            (rects[i].0, rects[i].1) = (x, y);
             unit_of.insert(i, unit);
         }
+        let centre = |(x, y, w, h): (f32, f32, f32, f32)| (x + w / 2.0, y + h / 2.0);
 
         // Re-anchor links touching a moved node to the facing ports.
         let id_index: HashMap<String, usize> = self
@@ -653,11 +654,22 @@ impl App {
             // Touched by the layout, and not inside one group that moved as a
             // whole — that kept its shape, so it keeps its ports. Two ends
             // that didn't move are both `None`, and equal too.
-            if unit_of.get(&from) != unit_of.get(&to) {
-                let (fs, ts) = layout::facing_sides(centers[from], centers[to], dir);
-                edge.from_side = fs.to_owned();
-                edge.to_side = ts.to_owned();
+            let (from_unit, to_unit) = (unit_of.get(&from), unit_of.get(&to));
+            if from_unit == to_unit {
+                continue;
             }
+            // Both ends on the layout's ranks follow its flow. An end that
+            // stayed put is on none of them, wherever it is, so its link
+            // meets the side that faces it — by the flow, a card off to the
+            // left was linked up into the first card's bottom, the port its
+            // own next link leaves by.
+            let (fs, ts) = if from_unit.is_some() && to_unit.is_some() {
+                layout::facing_sides(centre(rects[from]), centre(rects[to]), dir)
+            } else {
+                layout::sides_between(rects[from], rects[to])
+            };
+            edge.from_side = fs.to_owned();
+            edge.to_side = ts.to_owned();
         }
 
         // Ease each node from its current spot to the target.

@@ -315,6 +315,28 @@ pub fn facing_sides(
     }
 }
 
+/// The `(from_side, to_side)` of two cards, each `(x, y, w, h)`, that face
+/// each other across the wider of the gaps between them — for a link with one
+/// end outside a relayout, which is on none of its ranks, so the flow says
+/// nothing about where it is. Gaps rather than centres, or two wide cards one
+/// above the other but offset sideways would meet side to side.
+pub fn sides_between(
+    from: (f32, f32, f32, f32),
+    to: (f32, f32, f32, f32),
+) -> (&'static str, &'static str) {
+    let (dx, dy) = ((to.0 + to.2 / 2.0) - (from.0 + from.2 / 2.0), (to.1 + to.3 / 2.0) - (from.1 + from.3 / 2.0));
+    // Negative where the two overlap along that axis.
+    let gap_x = dx.abs() - (from.2 + to.2) / 2.0;
+    let gap_y = dy.abs() - (from.3 + to.3) / 2.0;
+    if gap_x > gap_y {
+        if dx >= 0.0 { ("right", "left") } else { ("left", "right") }
+    } else if dy >= 0.0 {
+        ("bottom", "top")
+    } else {
+        ("top", "bottom")
+    }
+}
+
 /// Top-left targets for `children` (each `(width, height)`) laid out as a
 /// single rank of siblings hanging off `source` (its top-left `(x, y)` and
 /// `(width, height)`), centered on the source's cross axis.
@@ -575,6 +597,17 @@ mod tests {
             facing_sides((0.0, 0.0), (0.0, 100.0), Direction::Right),
             ("bottom", "top")
         );
+    }
+
+    #[test]
+    fn sides_between_face_across_the_wider_gap() {
+        // Far to the left and a little below: side to side, whatever the flow.
+        assert_eq!(sides_between((-1200.0, 600.0, 200.0, 80.0), (0.0, 0.0, 200.0, 80.0)), ("right", "left"));
+        assert_eq!(sides_between((0.0, 0.0, 200.0, 80.0), (-1200.0, 600.0, 200.0, 80.0)), ("left", "right"));
+        // Wide cards, the second further across than down by their centres,
+        // but overlapping across: one is below the other.
+        assert_eq!(sides_between((0.0, 0.0, 400.0, 100.0), (300.0, 250.0, 400.0, 100.0)), ("bottom", "top"));
+        assert_eq!(sides_between((300.0, 250.0, 400.0, 100.0), (0.0, 0.0, 400.0, 100.0)), ("top", "bottom"));
     }
 
     #[test]

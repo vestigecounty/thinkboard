@@ -1195,6 +1195,23 @@ fn auto_layout_inside_a_group_grows_it_to_hold_the_result() {
 }
 
 #[test]
+fn a_link_from_a_card_left_out_of_the_layout_meets_the_side_facing_it() {
+    // The group's cards laid out top-down, `in` far off to the left and below,
+    // `out` to the right and above. By the flow, `in` came up into m1's
+    // bottom, the port m1 -> m2 leaves by, and m3 left by its top for `out`.
+    let mut app = app_with(a_group_between_two_cards(), chain_through_the_group());
+    send(&mut app, Message::SelectNodes(vec![1, 2, 3]));
+    send(&mut app, Message::AutoLayout(layout::Direction::Down));
+    finish_layout(&mut app);
+
+    let sides = |i: usize| (app.edges[i].from_side.as_str(), app.edges[i].to_side.as_str());
+    assert_eq!(sides(0), ("right", "left"), "in -> m1, side to side");
+    assert_eq!(sides(1), ("bottom", "top"), "m1 -> m2, in the flow");
+    assert_eq!(sides(2), ("bottom", "top"));
+    assert_eq!(sides(3), ("right", "left"), "m3 -> out, side to side");
+}
+
+#[test]
 fn a_card_added_beside_a_group_lays_the_group_out_whole() {
     // "Auto-layout when adding a linked card" lays out the whole graph the
     // new card joins, which runs into the group here.
