@@ -12,7 +12,7 @@
 
 use iced::{Element, Task};
 
-use super::picker::{self, Panel, Row, Shell};
+use super::picker::{self, Header, Panel, Row, Shell};
 use super::{App, Message};
 use thinkboard_core::ai::Model;
 
@@ -47,6 +47,17 @@ pub(crate) fn key_event(
     picker::panel_key(&event, Panel::Model)
 }
 
+/// What a free section's header warns of, at its right. OpenRouter doesn't
+/// train on what it's sent, but many of its free models' providers say they
+/// log it and may, and the free sections come first, the router to them at
+/// the top. Said where the eye is when choosing from one: a line over the
+/// whole list stood there whatever was chosen, and as a muted note it read as
+/// a hint the list didn't need.
+const FREE_WARNING: &str = "May train on prompts";
+
+/// The same, on the settings' Model row while a free model is in use.
+pub(super) const FREE_CAVEAT: &str = "What you send a free model may be kept by its provider and used for training.";
+
 /// Which a section of models is, for the colour its header is set in.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Cost {
@@ -61,13 +72,25 @@ pub(super) enum Cost {
 /// (3:1), so a light theme gets it darker and a dark one lighter, and neither
 /// leaves the colours the board already uses.
 fn tint(cost: Cost, theme: &crate::theme::Theme) -> iced::Color {
-    use thinkboard_core::theme::{ACCENT_CONTRAST, contrast};
-    let rgba = |c: iced::Color| thinkboard_core::color::Rgba { r: c.r, g: c.g, b: c.b, a: 1.0 };
     let base = match cost {
         Cost::Free => thinkboard_core::model::parse_color("4")
             .map_or(theme.accent, |green| super::chrome::mix(crate::document::IntoColor::into_color(green), theme.text_muted, 0.3)),
         Cost::Paid => theme.accent,
     };
+    readable(base, theme)
+}
+
+/// A warning's colour: a card's orange, taken toward the text as [`tint`]'s
+/// are until it reads on the panel.
+pub(super) fn warning_tint(theme: &crate::theme::Theme) -> iced::Color {
+    let orange = thinkboard_core::model::parse_color("2").map(crate::document::IntoColor::into_color);
+    readable(orange.unwrap_or(theme.accent), theme)
+}
+
+/// `base`, taken toward the text until it reads on the panel at 3:1.
+fn readable(base: iced::Color, theme: &crate::theme::Theme) -> iced::Color {
+    use thinkboard_core::theme::{ACCENT_CONTRAST, contrast};
+    let rgba = |c: iced::Color| thinkboard_core::color::Rgba { r: c.r, g: c.g, b: c.b, a: 1.0 };
     let surface = rgba(theme.elevated());
     (0..=10)
         .map(|step| super::chrome::mix(base, theme.text, step as f32 / 10.0))
@@ -114,6 +137,11 @@ impl App {
         // Refetched even when cached: a list is cheap, and a stale one is how
         // you end up picking a model the provider has since retired.
         let key = self.config.ai_key().to_owned();
+        // Open on the model in use, where a kept list has it — as the theme
+        // picker opens on the theme — or it could be anywhere below the free
+        // ones, out of sight.
+        let before = self.config.ai_model.trim().to_owned();
+        let current = self.highlight_model(&before);
         let fetch = Task::perform(
             async move {
                 let models = thinkboard_core::ai::models(&url, &key).await;
@@ -121,7 +149,7 @@ impl App {
             },
             |(url, models)| Message::ModelsFetched(url, models.map_err(|e| e.to_string())),
         );
-        Task::batch([opened, fetch])
+        Task::batch([opened, current, fetch])
     }
 
     /// The picker, from the settings form, where the model is chosen
@@ -148,14 +176,24 @@ impl App {
 
     /// A finished fetch. Kept against the endpoint it was for, so switching
     /// providers mid-flight can't leave one list labelled as another's.
-    pub(super) fn models_fetched(&mut self, url: String, models: Result<Vec<Model>, String>) {
+    pub(super) fn models_fetched(&mut self, url: String, models: Result<Vec<Model>, String>) -> Task<Message> {
         match models {
             Ok(models) => {
+                // The highlight stays on its model as the list under it is
+                // replaced — the one in use, unless it's been moved — rather
+                // than jumping to the top when a refetch lands.
+                let open = self.model_picker.as_ref().is_some_and(|p| p.url == url);
+                let keep = self
+                    .highlighted_model()
+                    .or_else(|| self.model_picker.as_ref().map(|picker| picker.before.clone()));
                 self.ai.models = Some((url.clone(), models));
                 if let Some(picker) = self.model_picker.as_mut().filter(|p| p.url == url) {
                     picker.loading = false;
                     picker.error = None;
                     picker.state.reset();
+                }
+                if let Some(id) = keep.filter(|_| open) {
+                    return self.highlight_model(&id);
                 }
             }
             Err(error) => {
@@ -165,6 +203,26 @@ impl App {
                 }
             }
         }
+        Task::none()
+    }
+
+    /// Moves the open picker's highlight onto `id`, where it's listed, and
+    /// scrolls the list to it.
+    fn highlight_model(&mut self, id: &str) -> Task<Message> {
+        let Some(picker) = &self.model_picker else {
+            return Task::none();
+        };
+        let listed = self.model_matches(&picker.state.query);
+        let models = self.models();
+        let Some(at) = listed.iter().position(|&index| models.get(index).is_some_and(|model| model.id == id)) else {
+            return Task::none();
+        };
+        let headers = self.panel_headers(Panel::Model);
+        let Some(picker) = &mut self.model_picker else {
+            return Task::none();
+        };
+        picker.state.selected = at;
+        picker::navigate(&mut picker.state, picker::Nav::Step(0), listed.len(), &headers, Panel::Model.list_id())
     }
 
     /// The models fetched for the open picker's endpoint.
@@ -177,6 +235,26 @@ impl App {
             .as_ref()
             .filter(|(url, _)| *url == picker.url)
             .map_or(&[], |(_, models)| models.as_slice())
+    }
+
+    /// Whether questions go to a free model: as the endpoint's list says, where
+    /// one's kept for it, or else by the model's name — the list is fetched
+    /// only when the picker opens.
+    pub(super) fn asks_a_free_model(&self) -> bool {
+        let (url, model) = (self.config.ai_url.trim(), self.config.ai_model.trim());
+        self.ai
+            .models
+            .as_ref()
+            .filter(|(kept, _)| kept == url)
+            .and_then(|(_, models)| models.iter().find(|listed| listed.id == model))
+            .map_or_else(|| thinkboard_core::ai::free_by_name(model), |listed| listed.free)
+    }
+
+    /// Where Ask AI sends a question, as the menu and the palette say beside
+    /// it: the provider, and whether the model is a free one.
+    pub(super) fn ask_ai_destination(&self) -> String {
+        let place = thinkboard_core::ai::destination(&self.config.ai_url);
+        if self.asks_a_free_model() { format!("{place} · free") } else { place }
     }
 
     /// The models matching what's been typed, best first.
@@ -197,28 +275,42 @@ impl App {
     /// themselves, under a header that says what free means — limited, and
     /// the offers come and go, so none is put forward as one to rely on —
     /// then the paid. Sections only where the endpoint prices its models,
-    /// which is where any is free, so the rest are the priced ones. Typed
-    /// into, it's one ranked list, as the palette's is.
+    /// which is where any is free, so the rest are the priced ones.
+    ///
+    /// Typed into, the sections stay, each ranked within, and the one holding
+    /// the best match leads — so the highlight and Enter are on it, as in one
+    /// ranked list, and a free model found is still under a header warning
+    /// of what its provider may do. A tie goes to the paid: a model searched
+    /// for by name is more likely meant than its free variant, rate-limited
+    /// and perhaps trained on what it's sent.
     pub(super) fn model_listing(&self, query: &str) -> (Vec<usize>, Vec<(usize, &'static str, Cost)>) {
         // The id first — it's what gets sent, and what a half-remembered name is
         // usually a fragment of; the display name is the hidden term behind it.
-        let ranked = thinkboard_core::fuzzy::rank(self.models(), |model| {
-            thinkboard_core::fuzzy::score_alias(query, &model.id, model.name.as_deref())
-        });
+        let score = |model: &Model| thinkboard_core::fuzzy::score_alias(query, &model.id, model.name.as_deref());
         let models = self.models();
-        let (free, paid): (Vec<usize>, Vec<usize>) = ranked.iter().partition(|&&index| models[index].free);
-        let (router, free): (Vec<usize>, Vec<usize>) =
-            free.into_iter().partition(|&index| models[index].id == thinkboard_core::ai::FREE_ROUTER);
-        let sections = [
-            ("Free · routes to an available model", router, Cost::Free),
-            ("Free · rate-limited", free, Cost::Free),
-            ("Paid", paid, Cost::Paid),
-        ];
-        if !query.trim().is_empty() || sections.iter().filter(|(_, rows, _)| !rows.is_empty()).count() < 2 {
+        let ranked = thinkboard_core::fuzzy::rank(models, score);
+        let sections = |rows: &[usize]| {
+            let (free, paid): (Vec<usize>, Vec<usize>) = rows.iter().partition(|&&index| models[index].free);
+            let (router, free): (Vec<usize>, Vec<usize>) =
+                free.into_iter().partition(|&index| models[index].id == thinkboard_core::ai::FREE_ROUTER);
+            [
+                ("Free · routes to an available model", router, Cost::Free),
+                ("Free · rate-limited", free, Cost::Free),
+                ("Paid", paid, Cost::Paid),
+            ]
+        };
+        // Whether there are sections is the whole list's to say, so a search
+        // down to one model still says which it is.
+        let all: Vec<usize> = (0..models.len()).collect();
+        if sections(&all).iter().filter(|(_, rows, _)| !rows.is_empty()).count() < 2 {
             return (ranked, Vec::new());
         }
+        let mut found: Vec<_> = sections(&ranked).into_iter().filter(|(_, rows, _)| !rows.is_empty()).collect();
+        if !query.trim().is_empty() {
+            found.sort_by_key(|(_, rows, cost)| (std::cmp::Reverse(score(&models[rows[0]])), *cost == Cost::Free));
+        }
         let (mut order, mut headers) = (Vec::new(), Vec::new());
-        for (label, rows, cost) in sections.into_iter().filter(|(_, rows, _)| !rows.is_empty()) {
+        for (label, rows, cost) in found {
             headers.push((order.len(), label, cost));
             order.extend(rows);
         }
@@ -296,7 +388,18 @@ impl App {
                 glyph: super::chrome::Glyph::Magnifier,
                 on_submit: Message::CommitModel,
                 verb: "Choose",
-                headers: headers.into_iter().map(|(heads, label, cost)| (heads, label.into(), Some(tint(cost, &self.theme)))).collect(),
+                // A free section says what its provider may do with what's
+                // sent, where the eye is when choosing from it — a line over
+                // the list stood there whatever was chosen.
+                headers: headers
+                    .into_iter()
+                    .map(|(heads, label, cost)| Header {
+                        heads,
+                        label: label.into(),
+                        tint: Some(tint(cost, &self.theme)),
+                        warning: (cost == Cost::Free).then(|| (FREE_WARNING.into(), warning_tint(&self.theme))),
+                    })
+                    .collect(),
                 // Asked, and nothing kept from before: rows still to come, at
                 // the list's full height, rather than a one-row panel that grows.
                 loading: self.model_picker_waiting(),

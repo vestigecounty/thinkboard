@@ -614,16 +614,19 @@ pub(super) fn rows<'a>(app: &'a App, state: &picker::State) -> (Vec<Row<'a>>, Ve
         .into_iter()
         .map(|entry| {
             let unavailable = entry.unavailable(app);
+            let asks = entry.command() == Some(CommandId::AskAi);
             let (glyph, press) = match entry.action {
                 Action::Run(id) => (None, Message::RunCommand(id)),
                 Action::Open(path) => (Some(Glyph::Board), Message::OpenListedBoard(path)),
             };
+            // Where a question goes, as the context menu says beside it.
+            let detail = if asks && app.config.ai_enabled() { app.ask_ai_destination().into() } else { entry.detail };
             Row {
                 matched: thinkboard_core::fuzzy::matched(&state.query, &entry.title),
                 title: entry.title,
                 // The reason replaces the shortcut: a chord for something that
                 // can't run is the one thing on the row with no use.
-                detail: unavailable.map_or(entry.detail, Cow::Borrowed),
+                detail: unavailable.map_or(detail, Cow::Borrowed),
                 detail_tint: None,
                 keys: if unavailable.is_some() { Vec::new() } else { entry.keys },
                 enabled: unavailable.is_none(),
@@ -633,7 +636,8 @@ pub(super) fn rows<'a>(app: &'a App, state: &picker::State) -> (Vec<Row<'a>>, Ve
             }
         })
         .collect();
-    (rows, headers.into_iter().map(|(heads, label)| (heads, label.into(), None)).collect())
+    let headers = headers.into_iter().map(|(heads, label)| picker::Header { heads, label: label.into(), tint: None, warning: None });
+    (rows, headers.collect())
 }
 
 /// The palette panel: a focused input over the listing.

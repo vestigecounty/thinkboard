@@ -2306,6 +2306,31 @@ fn sign_in() {
     tour.shot("models-free-first");
     tour.type_text("qwen");
     tour.shot("models-searched");
+    for _ in 0.."qwen".len() {
+        tour.named(key::Named::Backspace);
+    }
+    // Searched for what's free: the sections stay, warnings and all.
+    tour.type_text("free");
+    tour.shot("models-searched-free");
+    for _ in 0.."free".len() {
+        tour.named(key::Named::Backspace);
+    }
+
+    // The free router chosen: where a question goes is said beside Ask AI,
+    // in the menu and the palette, and the Model row says what the picker did.
+    tour.named(key::Named::Enter);
+    tour.palette("settings");
+    tour.click_label("AI");
+    tour.shot("free-model-row");
+    tour.named(key::Named::Escape);
+    let eat = tour.find("Where should");
+    tour.right_click(tour.node_center(eat));
+    tour.shot("free-note-menu");
+    tour.named(key::Named::Escape);
+    tour.hand_click(tour.node_center(eat));
+    tour.chord(Modifiers::COMMAND | Modifiers::SHIFT, "p");
+    tour.type_text("ask");
+    tour.shot("free-palette");
 }
 
 /// Asking for the first time: no provider yet, then one chosen in settings
@@ -2340,6 +2365,10 @@ fn ai_setup() {
     tour.shot("model-picker-filtered");
     tour.named(key::Named::Enter);
     tour.shot("model-chosen");
+    tour.named(key::Named::Escape);
+    // Opened again, on the model in use.
+    tour.palette("change ai model");
+    tour.shot("model-picker-on-current");
     tour.named(key::Named::Escape);
 
     tour.right_click(tour.node_center(eat));
@@ -3827,7 +3856,7 @@ impl Recording {
                 "selected": state.selected,
                 "offset": state.offset,
                 "rows": rows.iter().map(row).collect::<Vec<_>>(),
-                "headers": headers.iter().map(|(heads, label, _)| serde_json::json!([heads, label])).collect::<Vec<_>>(),
+                "headers": headers.iter().map(|header| serde_json::json!([header.heads, header.label])).collect::<Vec<_>>(),
             }))
         } else {
             app.theme_picker.as_ref().map(|picker| {

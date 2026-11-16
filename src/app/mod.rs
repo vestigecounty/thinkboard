@@ -1438,7 +1438,7 @@ impl App {
             Message::PickFont(name) => return self.pick_font(&name),
 
             Message::OpenModelPicker => return self.open_model_picker(),
-            Message::ModelsFetched(url, models) => self.models_fetched(url, models),
+            Message::ModelsFetched(url, models) => return self.models_fetched(url, models),
             Message::CommitModel => return self.commit_model(),
             Message::PickModel(id) => return self.pick_model(&id),
 

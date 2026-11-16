@@ -2441,7 +2441,7 @@ fn choosing_a_model_writes_the_id_the_endpoint_gave() {
 }
 
 #[test]
-fn free_models_come_first_with_nothing_typed_and_rank_with_the_rest_when_searched() {
+fn free_models_come_first_with_nothing_typed_and_a_search_keeps_the_sections_best_first() {
     let mut app = app_with(two_nodes(), Vec::new());
     app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
     send(&mut app, Message::OpenModelPicker);
@@ -2460,8 +2460,82 @@ fn free_models_come_first_with_nothing_typed_and_rank_with_the_rest_when_searche
     assert_eq!(headers[2].1, "Paid");
     assert_eq!(app.highlighted_model().as_deref(), Some("openrouter/free"), "the highlight is on the first row shown");
 
-    send(&mut app, Message::PanelInput(picker::Panel::Model, "o".to_owned()));
-    assert!(app.model_listing("o").1.is_empty(), "a search is one ranked list");
+    // Searched, the sections stay — a free model found is still under its
+    // header — and the one with the best match leads, so Enter takes it.
+    let labels = |query: &str| app.model_listing(query).1.into_iter().map(|(_, label, _)| label).collect::<Vec<_>>();
+    assert_eq!(labels("gpt"), ["Paid"], "one section left is still named");
+    assert_eq!(ids(&app, "gpt"), ["openai/gpt-4o"]);
+    assert_eq!(labels("gemma"), ["Free · rate-limited"]);
+    assert_eq!(labels("free")[0], "Free · routes to an available model");
+    assert_eq!(ids(&app, "claude")[0], "anthropic/claude-sonnet-4");
+    send(&mut app, Message::PanelInput(picker::Panel::Model, "gpt".to_owned()));
+    assert_eq!(app.highlighted_model().as_deref(), Some("openai/gpt-4o"));
+}
+
+#[test]
+fn a_model_searched_for_by_name_leads_its_free_variant() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
+    send(&mut app, Message::OpenModelPicker);
+    let url = app.config.ai_url.clone();
+    let models = vec![model("qwen/qwen3-30b-a3b"), Model { free: true, ..model("qwen/qwen3-30b-a3b:free") }];
+    send(&mut app, Message::ModelsFetched(url, Ok(models)));
+    let labels: Vec<_> = app.model_listing("qwen").1.into_iter().map(|(_, label, _)| label).collect();
+    assert_eq!(labels, ["Paid", "Free · rate-limited"], "a tie goes to the paid");
+    // With nothing typed, free still comes first.
+    assert_eq!(app.model_listing("").1[0].1, "Free · rate-limited");
+}
+
+#[test]
+fn the_picker_opens_on_the_model_in_use_and_keeps_its_highlight_as_the_list_is_refetched() {
+    // Asked for the first time, the highlight lands on it with the list.
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
+    app.config.ai_model = "qwen/qwen3-30b-a3b".to_owned();
+    send(&mut app, Message::OpenModelPicker);
+    let url = app.config.ai_url.clone();
+    let listed = |ids: &[&str]| Ok(ids.iter().map(|id| model(id)).collect());
+    let ids = ["anthropic/claude-sonnet-4", "openai/gpt-4o", "qwen/qwen3-30b-a3b"];
+    send(&mut app, Message::ModelsFetched(url.clone(), listed(&ids)));
+    assert_eq!(app.highlighted_model().as_deref(), Some("qwen/qwen3-30b-a3b"));
+
+    // Opened again, on the list kept from before, at once.
+    send(&mut app, Message::ClosePanel(picker::Panel::Model));
+    send(&mut app, Message::OpenModelPicker);
+    assert_eq!(app.highlighted_model().as_deref(), Some("qwen/qwen3-30b-a3b"));
+
+    // Moved, it stays where it was moved to when the refetch lands, though
+    // the list under it has grown.
+    send(&mut app, Message::PanelNav(picker::Panel::Model, picker::Nav::Step(-1)));
+    send(&mut app, Message::ModelsFetched(url, listed(&["aaa/new", ids[0], ids[1], ids[2]])));
+    assert_eq!(app.highlighted_model().as_deref(), Some("openai/gpt-4o"));
+}
+
+#[test]
+fn ask_ai_says_where_a_question_goes_and_whether_to_a_free_model() {
+    // Before any list is fetched, the name says it: OpenRouter's `:free`
+    // variants and its router.
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
+    app.config.ai_model = "openrouter/free".to_owned();
+    assert_eq!(app.ask_ai_destination(), "OpenRouter · free");
+    app.config.ai_model = "openai/gpt-4o".to_owned();
+    assert_eq!(app.ask_ai_destination(), "OpenRouter");
+
+    // Once one is, its price does, whatever the name: free offers come and go.
+    send(&mut app, Message::OpenModelPicker);
+    let url = app.config.ai_url.clone();
+    let models = vec![Model { free: true, ..model("openrouter/sonoma-alpha") }, model("acme/fast:free")];
+    send(&mut app, Message::ModelsFetched(url, Ok(models)));
+    app.config.ai_model = "openrouter/sonoma-alpha".to_owned();
+    assert!(app.asks_a_free_model());
+    app.config.ai_model = "acme/fast:free".to_owned();
+    assert!(!app.asks_a_free_model(), "listed with a price");
+
+    // A runtime on this machine, by its name.
+    app.config.ai_url = "http://localhost:11434/v1".to_owned();
+    app.config.ai_model = "llama3".to_owned();
+    assert_eq!(app.ask_ai_destination(), "Ollama");
 }
 
 #[test]

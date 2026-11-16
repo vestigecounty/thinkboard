@@ -261,7 +261,16 @@ pub(super) struct Row<'a> {
 
 /// A section header: the row it heads, what it says, and the colour it's set
 /// in where it isn't the muted one.
-pub(super) type Header<'a> = (usize, Cow<'a, str>, Option<Color>);
+pub(super) struct Header<'a> {
+    /// The row it heads.
+    pub heads: usize,
+    pub label: Cow<'a, str>,
+    /// Its colour, where it isn't the muted one.
+    pub tint: Option<Color>,
+    /// What to beware of in the section, at the header's right: a few words
+    /// after a warning mark, both in the colour given.
+    pub warning: Option<(Cow<'a, str>, Color)>,
+}
 
 /// What makes a shell one panel rather than another.
 ///
@@ -379,8 +388,8 @@ pub(super) fn view<'a>(
         // Its right inset inside the scrollable, so that's where the bar runs.
         let mut list = column![].padding(iced::Padding::default().right(LIST_PAD));
         for (i, entry) in rows.into_iter().enumerate() {
-            while let Some((_, label, tint)) = headers.next_if(|(heads, ..)| *heads == i) {
-                list = list.push(header(label, strong, tint.unwrap_or(muted), padding));
+            while let Some(Header { label, tint, warning, .. }) = headers.next_if(|header| header.heads == i) {
+                list = list.push(header(label, warning, strong, tint.unwrap_or(muted), padding));
             }
             list = list.push(list_row(entry, i == state.selected, Look { ct, font, strong, faint }, padding));
         }
@@ -552,8 +561,24 @@ fn scrollbar(ct: &crate::theme::Theme, status: scrollable::Status) -> scrollable
 
 /// A section header, in a row's slot: its label sits at the slot's foot, so
 /// the space above it is what parts it from the section before.
-fn header<'a>(label: Cow<'a, str>, strong: Font, color: Color, padding: iced::Padding) -> Element<'a, Message> {
-    container(text(label.to_uppercase()).size(11).font(strong).color(color).wrapping(text::Wrapping::None))
+fn header<'a>(
+    label: Cow<'a, str>,
+    warning: Option<(Cow<'a, str>, Color)>,
+    strong: Font,
+    color: Color,
+    padding: iced::Padding,
+) -> Element<'a, Message> {
+    let caps = |words: Cow<'a, str>, color| {
+        text(words.to_uppercase()).size(11).font(strong).color(color).wrapping(text::Wrapping::None)
+    };
+    let mut line = row![caps(label, color)].spacing(6).align_y(Alignment::Center);
+    if let Some((words, tint)) = warning {
+        line = line
+            .push(Space::new().width(Length::Fill))
+            .push(canvas(super::chrome::Icon { glyph: super::chrome::Glyph::Warning, color: tint }).width(14).height(14))
+            .push(caps(words, tint));
+    }
+    container(line)
         .width(Length::Fill)
         .height(Length::Fixed(ROW_HEIGHT))
         .padding(padding.bottom(5.0))

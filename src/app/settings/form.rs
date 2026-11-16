@@ -513,12 +513,17 @@ fn ai(app: &App, look: Look) -> Vec<Element<'_, Message>> {
         ]
         .spacing(8)
         .align_y(Alignment::Center);
-        ask.push(
-            setting(Field::AiModel)
-                .control(model)
-                .desc("Lists what the endpoint serves, so you needn't type a name exactly.")
-                .build(app, look),
-        );
+        let mut model = setting(Field::AiModel)
+            .control(model)
+            .desc("Lists what the endpoint serves, so you needn't type a name exactly.");
+        // Always shown while it holds: whoever comes back here later should
+        // read it too. Chosen from the board's form, the picker takes the
+        // form's place and says it over the list.
+        if app.asks_a_free_model() {
+            let tint = crate::app::model_picker::warning_tint(&app.theme);
+            model = model.note(warning(look, tint, crate::app::model_picker::FREE_CAVEAT));
+        }
+        ask.push(model.build(app, look));
         // A runtime on this machine asks for no key — greyed, not locked, as
         // a local proxy can still want one.
         let local = is_local(&c.ai_url);
@@ -1653,6 +1658,19 @@ fn clip(words: &str, room: usize) -> String {
 /// Small muted text: a note under a label.
 fn quiet<'a>(look: Look, words: impl text::IntoFragment<'a>) -> Element<'a, Message> {
     say(words, Type::Small, look.font, look.muted).into()
+}
+
+/// A note marked as a warning, as the model picker's is: the mark in the
+/// warning's colour and the words in the text's — muted, it read as one more
+/// hint.
+fn warning<'a>(look: Look, tint: Color, words: &'static str) -> Element<'a, Message> {
+    use crate::app::chrome::{Glyph, Icon};
+    row![
+        canvas::Canvas::new(Icon { glyph: Glyph::Warning, color: tint }).width(14).height(14),
+        say(words, Type::Small, look.font, look.text),
+    ]
+    .spacing(7)
+    .into()
 }
 
 /// A note with an ⓘ before it, for a fact about the choices rather than a

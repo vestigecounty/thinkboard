@@ -631,11 +631,35 @@ card's green, softened toward the muted text; "Paid" in the theme's accent;
 each taken toward the text until it reads on the panel at 3:1
 (`model_picker::tint`), so no theme gets a colour of ours it can't read. Free is read live from `/models`, never a list of
 names: nothing charged to ask or to answer, and text the only output
-(OpenRouter lists music models at nothing too). Typed into, it's one ranked
-list, a free row saying so beside its context window. A refusal from one is
+(OpenRouter lists music models at nothing too). Typed into, the sections
+stay, each ranked within, and the one holding the best match leads, so Enter
+takes it as it would from one ranked list; a tie goes to the paid, since a
+model searched for by name is more likely meant than its free variant.
+Whether there are sections is the whole list's to say, so a search down to
+one model still says which it is. A refusal from one is
 worded for it in `ai::describe_failure`: a 429 is the free models' limit,
 which a moment's wait may not lift, and a 402 wants credits, which a balance
 below nothing does even for a free model.
+
+**A free model isn't private, and the app says so where it matters.**
+OpenRouter doesn't train on what it's sent, but many of its free models'
+providers say they log it and may, and those come first in the picker. So
+each free section's header warns at its right ("May train on prompts", a
+warning mark, a card's orange taken toward the text until it reads) — where
+the eye is when choosing from it. Two things were tried and dropped: a muted
+line over the list read as a hint the list didn't need, and a warning band
+there stood over the list whatever was chosen. The settings' Model row says
+it in full while a free model is in use, and Ask AI, in the node menu and
+the palette, names where a question goes beside it (`ai::destination`: the
+preset, or the host), "· free" after it for a free model. Whether the model
+in use is free is read from the list kept for the endpoint, or from its name
+before one's been fetched (`ai::free_by_name`). OpenRouter's privacy
+settings can rule out every provider of a model, which it answers with a 404
+naming its "data policy" — worded as that, not as nothing answering.
+
+**The picker opens on the model in use**, as the theme picker does, scrolled
+to it: under the free sections it was out of sight. A refetch landing keeps
+the highlight on its model rather than sending it back to the top.
 
 **OpenRouter can be signed into for a key** (`app::sign_in`, the protocol in
 `core::sign_in`) — not as a recommendation, but because it's the one provider

@@ -701,11 +701,18 @@ impl App {
         let menu_width = self.node_menu_width();
         let mut items: Vec<Element<Message>> =
             vec![container(self.color_row()).padding([6, 12]).width(Fill).into()];
-        // "Ask AI" only when an AI endpoint is configured (not "Off").
+        // "Ask AI" only when an AI endpoint is configured (not "Off"), saying
+        // where the question goes: off this machine, and to a free model,
+        // whose provider may train on it, is worth knowing as it's asked.
         if self.config.ai_enabled() {
             items.push(sep().into());
+            let destination = text(self.ask_ai_destination()).size(12).color(self.theme.text_muted);
             items.push(
-                button(text("Ask AI").size(14))
+                button(
+                    row![text("Ask AI").size(14), Space::new().width(Fill), destination]
+                        .spacing(8)
+                        .align_y(iced::alignment::Vertical::Center),
+                )
                     .width(Fill)
                     .on_press(Message::AskAi)
                     .padding([6, 12])

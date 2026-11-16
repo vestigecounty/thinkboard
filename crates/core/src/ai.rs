@@ -190,6 +190,20 @@ fn describe_failure(status: reqwest::StatusCode, body: &str, base_url: &str, api
     if let Some(model) = unserved {
         return format!("{provider} doesn't serve “{model}” — choose another model in Settings → AI.");
     }
+    // OpenRouter's privacy settings can rule out every provider of a model —
+    // a free one's may all train on what they're sent — and it says so with a
+    // 404, which read as nothing answering at the URL. Its words name the
+    // setting and link to it.
+    if status.is_client_error() && detail.to_lowercase().contains("data policy") {
+        let of = match asked {
+            Asked::Chat { model } => format!(" of “{model}”"),
+            Asked::Models => String::new(),
+        };
+        return format!(
+            "Your privacy settings on {provider} rule out every provider{of} — change them there, or choose \
+             another model in Settings → AI. ({detail})"
+        );
+    }
     match status.as_u16() {
         // Sent with no key at all, a refusal is a request for one, not a
         // verdict on it.
@@ -219,8 +233,9 @@ fn describe_failure(status: reqwest::StatusCode, body: &str, base_url: &str, api
 pub const FREE_ROUTER: &str = "openrouter/free";
 
 /// Whether a model's name says it's a free one: OpenRouter's `:free`
-/// variants, and its router to them. A refusal carries the name, not the price.
-fn free_by_name(model: &str) -> bool {
+/// variants, and its router to them. A refusal carries the name, not the
+/// price — nor does a config, until the endpoint's list has been fetched.
+pub fn free_by_name(model: &str) -> bool {
     model.ends_with(":free") || model == FREE_ROUTER
 }
 
@@ -273,6 +288,16 @@ fn unreachable(base_url: &str) -> String {
 fn provider_name(base_url: &str) -> Option<&'static str> {
     let url = base_url.trim().trim_end_matches('/');
     PRESETS.iter().find(|preset| preset.url.trim_end_matches('/') == url).map(|preset| preset.name)
+}
+
+/// Where `base_url` sends a question, as a person would name it: its preset,
+/// or else the host it's at, with the port where one's given.
+pub fn destination(base_url: &str) -> String {
+    if let Some(name) = provider_name(base_url) {
+        return name.to_owned();
+    }
+    let rest = base_url.trim().split_once("://").map_or(base_url.trim(), |(_, rest)| rest);
+    rest.split('/').next().unwrap_or_default().to_owned()
 }
 
 fn system_prompt(max_nodes: usize) -> String {
@@ -1485,6 +1510,21 @@ mod tests {
             assert!(limited(free).contains("limit for its free models"), "{}", limited(free));
         }
         assert!(limited("openai/gpt-4o").contains("wait a moment"), "a paid model's limit lifts by itself");
+
+        // Every provider of a free model ruled out by the account's privacy
+        // settings: a 404, which isn't nothing answering at the URL.
+        let body = r#"{"error": {"message": "No endpoints found matching your data policy (Free model training). Configure: https://openrouter.ai/settings/privacy", "code": 404}}"#;
+        let ruled_out = describe_failure(StatusCode::NOT_FOUND, body, openrouter, "sk-or", Asked::Chat { model: "openrouter/free" });
+        assert!(ruled_out.starts_with("Your privacy settings on OpenRouter rule out every provider of “openrouter/free”"), "{ruled_out}");
+        assert!(ruled_out.contains("https://openrouter.ai/settings/privacy"), "the link to the setting: {ruled_out}");
+    }
+
+    #[test]
+    fn a_destination_is_named_as_a_person_would() {
+        assert_eq!(destination("https://openrouter.ai/api/v1/"), "OpenRouter");
+        assert_eq!(destination("http://localhost:1234/v1"), "LM Studio");
+        assert_eq!(destination("http://localhost:8080/v1"), "localhost:8080");
+        assert_eq!(destination("https://api.example.com/v1"), "api.example.com");
     }
 
     #[test]
