@@ -463,29 +463,50 @@ pub fn read() -> Option<Clip> {
 mod system {
     use super::Clip;
 
-    pub fn set_text(text: String) {
-        if let Ok(mut clipboard) = arboard::Clipboard::new() {
-            let _ = clipboard.set_text(text);
+    /// Runs `f` with the platform's clipboard: on Linux, one held for the
+    /// app's life; elsewhere, one opened for the call.
+    ///
+    /// Under X11 — and under Wayland, which arboard reaches through XWayland —
+    /// what's copied stays with the app that copied it, which hands it over
+    /// when it's pasted, and arboard does that only while a `Clipboard` lives.
+    /// Dropping the last one gives the data to a clipboard manager, waiting up
+    /// to 100 ms for one, and with none, it's gone. Opened and dropped for
+    /// each copy, a copy could paste as nothing, here or anywhere, and stalled
+    /// a frame on the way. macOS and Windows keep what's copied themselves.
+    fn with<T>(f: impl FnOnce(&mut arboard::Clipboard) -> Option<T>) -> Option<T> {
+        #[cfg(target_os = "linux")]
+        {
+            use std::sync::{Mutex, PoisonError};
+            static HELD: Mutex<Option<arboard::Clipboard>> = Mutex::new(None);
+            let mut held = HELD.lock().unwrap_or_else(PoisonError::into_inner);
+            if held.is_none() {
+                *held = arboard::Clipboard::new().ok();
+            }
+            f(held.as_mut()?)
         }
+        #[cfg(not(target_os = "linux"))]
+        f(&mut arboard::Clipboard::new().ok()?)
+    }
+
+    pub fn set_text(text: String) {
+        with(|clipboard| clipboard.set_text(text).ok());
     }
 
     /// `html`, with `text` beside it for the apps that paste plain text.
     pub fn set_html(html: String, text: String) {
-        if let Ok(mut clipboard) = arboard::Clipboard::new() {
-            let _ = clipboard.set_html(html, Some(text));
-        }
+        with(|clipboard| clipboard.set_html(html, Some(text)).ok());
     }
 
     pub fn text() -> Option<String> {
-        arboard::Clipboard::new().ok()?.get_text().ok()
+        with(|clipboard| clipboard.get_text().ok())
     }
 
     pub fn html() -> Option<String> {
-        arboard::Clipboard::new().ok()?.get().html().ok()
+        with(|clipboard| clipboard.get().html().ok())
     }
 
     pub fn image() -> Option<Clip> {
-        let image = arboard::Clipboard::new().ok()?.get_image().ok()?;
+        let image = with(|clipboard| clipboard.get_image().ok())?;
         Some(Clip::Image { width: image.width, height: image.height, rgba: image.bytes.into_owned() })
     }
 }

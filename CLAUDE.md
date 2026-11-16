@@ -1289,7 +1289,11 @@ throwaway `--config` run kill the everyday copy. So:
   app id, `com.vestigecounty.ThinkBoard`, which is why the `.desktop` file and
   the window's `app_id` are named for it. Tray uses `ksni` (pure-Rust D-Bus, no
   GTK) so the zig cross-build works; the dialogs use the xdg-portal backend for
-  the same reason.
+  the same reason. **What's copied stays with the app that copied it** — under
+  X11, and under Wayland, which arboard reaches through XWayland — and arboard
+  hands it over only while a `Clipboard` lives, so one is held for the app's
+  life (`clipboard::system`). Opened and dropped per copy, a copy pasted as
+  nothing wherever no clipboard manager took it.
 - **Windows** — release builds use the GUI subsystem (no console); the
   `no-console` feature forces that in any profile.
 
