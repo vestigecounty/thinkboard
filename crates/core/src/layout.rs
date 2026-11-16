@@ -6,10 +6,13 @@
 //! are both in the set count; isolated nodes fall on rank 0. The result is
 //! recentered on the selection's original centroid, so it lands roughly where
 //! it was rather than jumping to the origin.
+//!
+//! [`framed_layout`] is the same over groups taken whole: a frame and what it
+//! encloses are laid out as one node, and move together.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-use crate::model::{CanvasEdge, CanvasNode};
+use crate::model::{self, CanvasEdge, CanvasNode};
 
 /// Flow direction of the layout.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,8 +34,7 @@ pub fn layered_layout(
     rank_gap: f32,
     node_gap: f32,
 ) -> Vec<(usize, f32, f32)> {
-    let k = selected.len();
-    if k == 0 {
+    if selected.is_empty() {
         return Vec::new();
     }
 
@@ -54,12 +56,26 @@ pub fn layered_layout(
             edge_list.push((u, v));
         }
     }
+    place(nodes, selected, &edge_list, dir, rank_gap, node_gap)
+}
+
+/// [`layered_layout`] once its links are known: `edge_list` is between local
+/// indices into `selected`, which is not empty.
+fn place(
+    nodes: &[CanvasNode],
+    selected: &[usize],
+    edge_list: &[(usize, usize)],
+    dir: Direction,
+    rank_gap: f32,
+    node_gap: f32,
+) -> Vec<(usize, f32, f32)> {
+    let k = selected.len();
 
     // Longest-path ranking; the iteration cap tolerates cycles.
     let mut rank = vec![0usize; k];
     for _ in 0..k {
         let mut changed = false;
-        for &(u, v) in &edge_list {
+        for &(u, v) in edge_list {
             if rank[v] < rank[u] + 1 {
                 rank[v] = rank[u] + 1;
                 changed = true;
@@ -81,7 +97,7 @@ pub fn layered_layout(
     // toward the average position of its neighbors in the adjacent rank.
     let mut preds: Vec<Vec<usize>> = vec![Vec::new(); k];
     let mut succs: Vec<Vec<usize>> = vec![Vec::new(); k];
-    for &(u, v) in &edge_list {
+    for &(u, v) in edge_list {
         succs[u].push(v);
         preds[v].push(u);
     }
@@ -158,6 +174,115 @@ pub fn layered_layout(
             )
         })
         .collect()
+}
+
+/// What [`framed_layout`] decided: where everything goes, and the frame it
+/// happened in.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct Framed {
+    /// New top-left `(node_index, x, y)` of every node that moves: each unit,
+    /// and whatever a frame among them encloses, by that frame's delta.
+    pub moves: Vec<(usize, f32, f32)>,
+    /// The unit each of `moves` moved as — itself, or the frame that carried
+    /// it — in the same order. A link between two nodes of one unit kept its
+    /// shape, so it keeps its ports.
+    pub units: Vec<usize>,
+    /// The frame enclosing the whole selection, which the layout happened
+    /// inside. It's the caller's to grow around the result, or what spread
+    /// past its edge would leave the group.
+    pub container: Option<usize>,
+}
+
+/// [`layered_layout`] with each group taken whole, as a drag takes it.
+///
+/// Membership of a group is positional (see [`model::enclosed_by`]), so laid
+/// out card by card a group's cards left its rect and the frame stayed put.
+/// Instead the layout happens one level below the selection's *container* —
+/// the innermost frame enclosing all of it, or the board — and each selected
+/// node stands for the outermost frame below the container that encloses it,
+/// or for itself. One of a group's cards is enough to bring the group. A frame
+/// is laid out as one node the size of its rect; a link to or from anything it
+/// encloses is the frame's, a link inside it drops out, and everything inside
+/// moves by the frame's delta, so it stays as it was arranged. Arranging the
+/// inside is a second step: select only its cards, and the frame is then the
+/// container.
+pub fn framed_layout(
+    nodes: &[CanvasNode],
+    edges: &[CanvasEdge],
+    selected: &[usize],
+    dir: Direction,
+    rank_gap: f32,
+    node_gap: f32,
+) -> Framed {
+    if selected.is_empty() {
+        return Framed::default();
+    }
+    let encloses = |frame: usize, i: usize| frame != i && model::centre_within(&nodes[i], &nodes[frame]);
+    let area = |i: usize| nodes[i].width * nodes[i].height;
+    let frames: Vec<usize> = (0..nodes.len()).filter(|&i| nodes[i].is_group()).collect();
+
+    let container = frames
+        .iter()
+        .copied()
+        .filter(|&frame| selected.iter().all(|&i| encloses(frame, i)))
+        .min_by(|&a, &b| area(a).total_cmp(&area(b)));
+    // The frames that can stand for a card: those inside the container.
+    let below: Vec<usize> = frames
+        .iter()
+        .copied()
+        .filter(|&frame| container.is_none_or(|c| encloses(c, frame)))
+        .collect();
+    let unit_of = |i: usize| {
+        below
+            .iter()
+            .copied()
+            .filter(|&frame| encloses(frame, i))
+            .max_by(|&a, &b| area(a).total_cmp(&area(b)))
+            .unwrap_or(i)
+    };
+
+    // Units in the selection's order, which is the layout's starting order.
+    let mut units: Vec<usize> = Vec::new();
+    let mut claimed: HashSet<usize> = HashSet::new();
+    for &i in selected {
+        let unit = unit_of(i);
+        if claimed.insert(unit) {
+            units.push(unit);
+        }
+    }
+    // What each carries. Frames that overlap without nesting can both enclose
+    // a node; the first to claim it takes it, so nothing moves twice.
+    let carried: Vec<Vec<usize>> = units
+        .iter()
+        .map(|&unit| {
+            let mut members = vec![unit];
+            if nodes[unit].is_group() {
+                members.extend((0..nodes.len()).filter(|&j| encloses(unit, j) && claimed.insert(j)));
+            }
+            members
+        })
+        .collect();
+
+    let local_of: HashMap<&str, usize> = carried
+        .iter()
+        .enumerate()
+        .flat_map(|(local, members)| members.iter().map(move |&j| (nodes[j].id.as_str(), local)))
+        .collect();
+    let edge_list: Vec<(usize, usize)> = edges
+        .iter()
+        .filter_map(|edge| Some((*local_of.get(edge.from_node.as_str())?, *local_of.get(edge.to_node.as_str())?)))
+        .filter(|(u, v)| u != v)
+        .collect();
+
+    let mut framed = Framed { container, ..Framed::default() };
+    for (local, (unit, x, y)) in place(nodes, &units, &edge_list, dir, rank_gap, node_gap).into_iter().enumerate() {
+        let (dx, dy) = (x - nodes[unit].x, y - nodes[unit].y);
+        for &j in &carried[local] {
+            framed.moves.push((j, nodes[j].x + dx, nodes[j].y + dy));
+            framed.units.push(unit);
+        }
+    }
+    framed
 }
 
 /// The `(from_side, to_side)` to re-anchor a link to after a relayout, biased
@@ -511,5 +636,115 @@ mod tests {
     #[test]
     fn sibling_stack_of_no_children_is_empty() {
         assert!(sibling_stack(SRC, &[], Direction::Right, 70.0, 40.0).is_empty());
+    }
+
+    // --- Groups taken whole ---
+
+    fn frame(id: &str, x: f32, y: f32, width: f32, height: f32) -> CanvasNode {
+        CanvasNode { kind: "group".to_owned(), text: None, x, y, width, height, ..fixtures::node(id) }
+    }
+
+    /// A group of three cards linked in a chain, a card linked into it from
+    /// the left and one it links out to, both well away from it.
+    fn a_group_between_two_cards() -> (Vec<CanvasNode>, Vec<CanvasEdge>) {
+        let nodes = vec![
+            frame("g", 0.0, 0.0, 300.0, 300.0),
+            node("m1", 20.0, 40.0),
+            node("m2", 150.0, 120.0),
+            node("m3", 20.0, 220.0),
+            node("in", -900.0, 500.0),
+            node("out", 900.0, -500.0),
+        ];
+        let edges = vec![edge("in", "m1"), edge("m1", "m2"), edge("m2", "m3"), edge("m3", "out")];
+        (nodes, edges)
+    }
+
+    /// `nodes` with `framed`'s moves made.
+    fn moved(nodes: &[CanvasNode], framed: &Framed) -> Vec<CanvasNode> {
+        let mut nodes = nodes.to_vec();
+        for &(i, x, y) in &framed.moves {
+            (nodes[i].x, nodes[i].y) = (x, y);
+        }
+        nodes
+    }
+
+    /// Asserts each of `members` sits where it did relative to `frame`, and
+    /// so still inside it.
+    fn kept_inside(before: &[CanvasNode], after: &[CanvasNode], frame: usize, members: &[usize]) {
+        for &m in members {
+            let offset = |nodes: &[CanvasNode]| (nodes[m].x - nodes[frame].x, nodes[m].y - nodes[frame].y);
+            assert_eq!(offset(after), offset(before), "{} kept its place in the group", before[m].id);
+            assert!(model::centre_within(&after[m], &after[frame]), "{} is still in the group", before[m].id);
+        }
+    }
+
+    #[test]
+    fn a_groups_cards_are_laid_out_with_it_not_out_of_it() {
+        // A marquee over a group selects its cards, never the frame.
+        let (nodes, edges) = a_group_between_two_cards();
+        let framed = framed_layout(&nodes, &edges, &[1, 2, 3, 4, 5], Direction::Right, 70.0, 40.0);
+        let after = moved(&nodes, &framed);
+
+        assert_eq!(framed.container, None);
+        kept_inside(&nodes, &after, 0, &[1, 2, 3]);
+        // Links to and from its cards are the group's: it's ranked between them.
+        assert!(after[4].x + after[4].width < after[0].x, "in, then the group");
+        assert!(after[0].x + after[0].width < after[5].x, "the group, then out");
+        // And its cards moved as the group, so the links inside keep their ports.
+        for (&(i, _, _), &unit) in framed.moves.iter().zip(&framed.units) {
+            assert_eq!(unit, if i <= 3 { 0 } else { i });
+        }
+    }
+
+    #[test]
+    fn one_of_a_groups_cards_brings_the_whole_group() {
+        let (nodes, edges) = a_group_between_two_cards();
+        let framed = framed_layout(&nodes, &edges, &[2, 4], Direction::Right, 70.0, 40.0);
+        let after = moved(&nodes, &framed);
+
+        assert!(after[0].x != nodes[0].x || after[0].y != nodes[0].y, "the frame moved");
+        kept_inside(&nodes, &after, 0, &[1, 2, 3]);
+    }
+
+    #[test]
+    fn a_selected_frame_is_laid_out_whole() {
+        // A click on its header, then a ⌘-click on each card beside it.
+        let (nodes, edges) = a_group_between_two_cards();
+        let framed = framed_layout(&nodes, &edges, &[0, 4, 5], Direction::Right, 70.0, 40.0);
+        let after = moved(&nodes, &framed);
+
+        kept_inside(&nodes, &after, 0, &[1, 2, 3]);
+        assert!(after[4].x + after[4].width < after[0].x);
+    }
+
+    #[test]
+    fn a_selection_inside_one_group_is_laid_out_inside_it() {
+        // The second step: the group's own cards, arranged among themselves.
+        let (nodes, edges) = a_group_between_two_cards();
+        let framed = framed_layout(&nodes, &edges, &[1, 2, 3], Direction::Down, 70.0, 40.0);
+        let after = moved(&nodes, &framed);
+
+        assert_eq!(framed.container, Some(0), "the caller grows it around them");
+        assert!(framed.moves.iter().all(|&(i, _, _)| i != 0), "the frame stays put");
+        assert_eq!(framed.units, vec![1, 2, 3], "each card on its own");
+        assert!(after[1].y < after[2].y && after[2].y < after[3].y, "the chain, top to bottom");
+    }
+
+    #[test]
+    fn a_nested_group_moves_with_the_group_around_it() {
+        let nodes = vec![
+            frame("outer", 0.0, 0.0, 600.0, 600.0),
+            frame("inner", 20.0, 40.0, 300.0, 300.0),
+            node("card", 60.0, 100.0),
+            node("other", 400.0, 400.0),
+            node("beside", -900.0, 0.0),
+        ];
+        let edges = vec![edge("beside", "card")];
+        let framed = framed_layout(&nodes, &edges, &[2, 4], Direction::Right, 70.0, 40.0);
+        let after = moved(&nodes, &framed);
+
+        assert_eq!(framed.container, None);
+        kept_inside(&nodes, &after, 0, &[1, 2, 3]);
+        assert!(after[4].x + after[4].width < after[0].x, "the outer group is what's ranked");
     }
 }

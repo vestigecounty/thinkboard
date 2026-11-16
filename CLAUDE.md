@@ -889,16 +889,22 @@ gaps with dummy nodes. Ours come from the file.
   other nodes, so counting it as occupied space pins the cards inside it.
   Dragging one carries whatever it encloses (`App::drag_riders`), which is also
   where multi-selection drags are resolved — as a set, so nothing that
-  qualifies twice moves at double speed. `App::group_selection` creates one
-  around two or more selected non-frame nodes (command palette, or the node
-  context menu); `groupable_selection` is the single predicate all three call
-  sites gate on. A new frame is labelled "Untitled group"
-  (`model::UNTITLED_GROUP`), as Obsidian names one, and drops straight into
-  naming it with that selected; double-clicking a frame's header reopens the
-  caption. A caption cleared goes back to "Untitled group" rather than
-  deleting the frame — unlike a drag-created card, which *is* taken back when
-  left empty. A frame another tool left unnamed stays unnamed unless it's
-  given a name: a double-click and an Esc isn't a change to the file.
+  qualifies twice moves at double speed. Auto-layout takes a group whole the
+  same way (`layout::framed_layout`): a selected card stands for its group,
+  which is laid out as one node with every link of what it encloses, and
+  carries its inside as arranged — laid out card by card, a marquee's
+  selection of a group's cards left the frame behind. Its own cards selected
+  alone are laid out inside it, and the frame grows to hold them.
+  `App::group_selection` creates one around two or more selected non-frame
+  nodes (command palette, or the node context menu); `groupable_selection` is
+  the single predicate all three call sites gate on. A new frame is labelled
+  "Untitled group" (`model::UNTITLED_GROUP`), as Obsidian names one, and
+  drops straight into naming it with that selected; double-clicking a frame's
+  header reopens the caption. A caption cleared goes back to "Untitled group"
+  rather than deleting the frame — unlike a drag-created card, which *is*
+  taken back when left empty. A frame another tool left unnamed stays unnamed
+  unless it's given a name: a double-click and an Esc isn't a change to the
+  file.
 - **The editor edits two things.** `EditTarget::Body` is a text node's text over
   the whole card; `EditTarget::Label` is a frame's caption along its header
   strip. They share the widget, the text-level undo and the key bindings —

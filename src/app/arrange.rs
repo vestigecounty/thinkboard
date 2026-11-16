@@ -593,15 +593,16 @@ impl App {
     }
 
     /// Lays out `subset` as a Mermaid-style layered graph flowing in `dir`,
-    /// re-anchoring touched links and easing nodes to their targets. Streaming
-    /// relayouts pass `record_undo = false` so they don't flood the undo stack.
+    /// each group in it whole (`layout::framed_layout`), re-anchoring touched
+    /// links and easing nodes to their targets. Streaming relayouts pass
+    /// `record_undo = false` so they don't flood the undo stack.
     pub(super) fn apply_layered_layout(
         &mut self,
         subset: &[usize],
         dir: layout::Direction,
         record_undo: bool,
     ) {
-        let moves = layout::layered_layout(
+        let framed = layout::framed_layout(
             &self.nodes,
             &self.edges,
             subset,
@@ -609,11 +610,18 @@ impl App {
             self.config.layout_rank_gap,
             self.config.layout_card_gap,
         );
+        let moves = framed.moves;
         if moves.is_empty() {
             return;
         }
         if record_undo {
             self.push_undo();
+        }
+        // Laid out inside a group, the cards can spread past its edge, and a
+        // card whose centre crosses it has left the group. So the frame grows
+        // to hold them — at once, while they ease into it.
+        if let Some(frame) = framed.container {
+            self.grow_frame_around(frame, &moves);
         }
 
         // Post-layout centers for every node (moved -> target, else unchanged).
@@ -622,10 +630,10 @@ impl App {
             .iter()
             .map(|n| (n.x + n.width / 2.0, n.y + n.height / 2.0))
             .collect();
-        let mut moved = HashSet::new();
-        for &(i, x, y) in &moves {
+        let mut unit_of = HashMap::new();
+        for (&(i, x, y), &unit) in moves.iter().zip(&framed.units) {
             centers[i] = (x + self.nodes[i].width / 2.0, y + self.nodes[i].height / 2.0);
-            moved.insert(i);
+            unit_of.insert(i, unit);
         }
 
         // Re-anchor links touching a moved node to the facing ports.
@@ -641,7 +649,10 @@ impl App {
             else {
                 continue;
             };
-            if moved.contains(&from) || moved.contains(&to) {
+            // Touched by the layout, and not inside one group that moved as a
+            // whole — that kept its shape, so it keeps its ports. Two ends
+            // that didn't move are both `None`, and equal too.
+            if unit_of.get(&from) != unit_of.get(&to) {
                 let (fs, ts) = layout::facing_sides(centers[from], centers[to], dir);
                 edge.from_side = fs.to_owned();
                 edge.to_side = ts.to_owned();
@@ -659,6 +670,25 @@ impl App {
         });
         self.mark_dirty();
         self.cache.clear();
+    }
+
+    /// Grows `frame` to enclose where `moves` put their nodes, leaving the room
+    /// a new group leaves around its members. Never shrinks it.
+    fn grow_frame_around(&mut self, frame: usize, moves: &[(usize, f32, f32)]) {
+        let Some(f) = self.nodes.get(frame) else {
+            return;
+        };
+        let (mut left, mut top) = (f.x, f.y);
+        let (mut right, mut bottom) = (f.x + f.width, f.y + f.height);
+        for &(i, x, y) in moves {
+            let node = &self.nodes[i];
+            left = left.min(x - GROUP_PAD);
+            top = top.min(y - GROUP_HEAD_PAD);
+            right = right.max(x + node.width + GROUP_PAD);
+            bottom = bottom.max(y + node.height + GROUP_PAD);
+        }
+        let f = &mut self.nodes[frame];
+        (f.x, f.y, f.width, f.height) = (left, top, right - left, bottom - top);
     }
 
     /// The `auto_layout_direction` config as a layout direction.

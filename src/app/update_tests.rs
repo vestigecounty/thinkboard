@@ -1063,6 +1063,117 @@ fn a_new_node_can_still_be_placed_inside_a_frame() {
     assert_eq!(app.find_free_placement(inside, 250.0, 120.0), inside);
 }
 
+// --- Auto-layout over groups ---
+
+/// A group of three cards in a column, linked down it, and two cards well
+/// away from it: `in` linked to the first, the last linked to `out`.
+fn a_group_between_two_cards() -> Vec<CanvasNode> {
+    let mut frame = node_of("frame", "group");
+    (frame.width, frame.height) = (260.0, 420.0);
+    let card = |id: &str, y: f32| CanvasNode { x: 30.0, y, ..text_node(id, id) };
+    vec![
+        frame,
+        card("m1", 50.0),
+        card("m2", 170.0),
+        card("m3", 290.0),
+        CanvasNode { x: -1200.0, y: 600.0, ..text_node("in", "in") },
+        CanvasNode { x: 1200.0, y: -600.0, ..text_node("out", "out") },
+    ]
+}
+
+fn chain_through_the_group() -> Vec<CanvasEdge> {
+    vec![edge("in", "m1"), edge("m1", "m2"), edge("m2", "m3"), edge("m3", "out")]
+}
+
+/// Runs the layout's easing to its end.
+fn finish_layout(app: &mut App) {
+    send(app, Message::Tick(Instant::now() + std::time::Duration::from_secs(10)));
+    assert!(app.layout_anim.is_none());
+}
+
+fn inside(node: &CanvasNode, frame: &CanvasNode) -> bool {
+    node.x >= frame.x
+        && node.y >= frame.y
+        && node.x + node.width <= frame.x + frame.width
+        && node.y + node.height <= frame.y + frame.height
+}
+
+#[test]
+fn auto_layout_takes_a_group_whole_rather_than_pulling_its_cards_out() {
+    // A marquee over a group and the cards beside it selects the group's
+    // cards, never its frame. Laid out as loose cards, they left the frame.
+    let mut edges = chain_through_the_group();
+    // A link inside the group, between ports a top-down layout wouldn't pick.
+    edges[1].from_side = "right".to_owned();
+    edges[1].to_side = "right".to_owned();
+    let mut app = app_with(a_group_between_two_cards(), edges);
+    let before = app.nodes.clone();
+
+    send(&mut app, Message::SelectNodes(vec![1, 2, 3, 4, 5]));
+    send(&mut app, Message::AutoLayout(layout::Direction::Down));
+    finish_layout(&mut app);
+
+    let frame = &app.nodes[0];
+    assert_ne!((frame.x, frame.y), (before[0].x, before[0].y), "the group moved");
+    for m in 1..=3 {
+        assert!(inside(&app.nodes[m], frame), "{} stays in the group", app.nodes[m].id);
+        assert_eq!(app.nodes[m].x - frame.x, before[m].x - before[0].x, "and where it was in it");
+        assert_eq!(app.nodes[m].y - frame.y, before[m].y - before[0].y);
+    }
+    // It's ranked by its cards' links: `in` above it, `out` below.
+    assert!(app.nodes[4].y + app.nodes[4].height < frame.y);
+    assert!(frame.y + frame.height < app.nodes[5].y);
+    // Links into it are re-anchored, the one inside it left as it was.
+    assert_eq!((app.edges[0].from_side.as_str(), app.edges[0].to_side.as_str()), ("bottom", "top"));
+    assert_eq!((app.edges[1].from_side.as_str(), app.edges[1].to_side.as_str()), ("right", "right"));
+
+    send(&mut app, Message::Undo);
+    let place = |nodes: &[CanvasNode]| nodes.iter().map(|n| (n.x, n.y)).collect::<Vec<_>>();
+    assert_eq!(place(&app.nodes), place(&before), "one undo step");
+}
+
+#[test]
+fn auto_layout_inside_a_group_grows_it_to_hold_the_result() {
+    // The second step: the group's own cards, now side by side.
+    let mut app = app_with(a_group_between_two_cards(), vec![edge("m1", "m2"), edge("m2", "m3")]);
+    let before = app.nodes[0].clone();
+
+    send(&mut app, Message::SelectNodes(vec![1, 2, 3]));
+    send(&mut app, Message::AutoLayout(layout::Direction::Right));
+    finish_layout(&mut app);
+
+    let frame = &app.nodes[0];
+    assert!(app.nodes[1].x < app.nodes[2].x && app.nodes[2].x < app.nodes[3].x, "laid out left to right");
+    assert!(frame.width > before.width, "grown to fit a row wider than it was");
+    for m in 1..=3 {
+        assert!(inside(&app.nodes[m], frame), "{} stays in the group", app.nodes[m].id);
+    }
+    assert!(frame.x <= before.x && frame.y <= before.y, "grown, never moved inward");
+    assert!(frame.x + frame.width >= before.x + before.width);
+    assert!(frame.y + frame.height >= before.y + before.height);
+}
+
+#[test]
+fn a_card_added_beside_a_group_lays_the_group_out_whole() {
+    // "Auto-layout when adding a linked card" lays out the whole graph the
+    // new card joins, which runs into the group here.
+    let mut app = app_with(a_group_between_two_cards(), chain_through_the_group());
+    app.config.auto_layout = true;
+    let before = app.nodes.clone();
+
+    send(&mut app, Message::SelectNode(Some(4)));
+    send(&mut app, Message::AddLinkedNode);
+    finish_layout(&mut app);
+
+    assert_eq!(app.nodes.len(), 7, "a card was added");
+    let frame = &app.nodes[0];
+    for m in 1..=3 {
+        assert!(inside(&app.nodes[m], frame), "{} stays in the group", app.nodes[m].id);
+        assert_eq!(app.nodes[m].x - frame.x, before[m].x - before[0].x);
+        assert_eq!(app.nodes[m].y - frame.y, before[m].y - before[0].y);
+    }
+}
+
 // --- Auto-size ---
 
 #[test]

@@ -324,20 +324,19 @@ pub fn enclosed_by(nodes: &[CanvasNode], frame: usize) -> Vec<usize> {
     let Some(bounds) = nodes.get(frame) else {
         return Vec::new();
     };
-    let (left, top) = (bounds.x, bounds.y);
-    let (right, bottom) = (bounds.x + bounds.width, bounds.y + bounds.height);
     nodes
         .iter()
         .enumerate()
-        .filter(|&(i, node)| {
-            if i == frame {
-                return false;
-            }
-            let (cx, cy) = (node.x + node.width / 2.0, node.y + node.height / 2.0);
-            cx >= left && cx <= right && cy >= top && cy <= bottom
-        })
+        .filter(|&(i, node)| i != frame && centre_within(node, bounds))
         .map(|(i, _)| i)
         .collect()
+}
+
+/// Whether `node`'s centre falls inside `frame`'s rect — the test
+/// [`enclosed_by`] makes of each node, for a caller asking about one.
+pub fn centre_within(node: &CanvasNode, frame: &CanvasNode) -> bool {
+    let (cx, cy) = (node.x + node.width / 2.0, node.y + node.height / 2.0);
+    cx >= frame.x && cx <= frame.x + frame.width && cy >= frame.y && cy <= frame.y + frame.height
 }
 
 /// Removes the edge at `index`, returning whether the list changed. An

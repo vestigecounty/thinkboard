@@ -1941,6 +1941,85 @@ fn laying_out_a_trip() {
     }
 }
 
+/// Auto-layout over a group: a marquee takes the group's cards but not its
+/// frame, and the group is laid out whole, its inside as it was; then its own
+/// cards, selected alone, are laid out inside it, and it grows to hold them.
+fn laying_out_a_group() {
+    let board = |_: &ColorTheme| {
+        use thinkboard_core::fixtures::{edge, node};
+        let card = |id: &str, text: &str, x: f32, y: f32| CanvasNode {
+            text: Some(text.to_owned()),
+            x,
+            y,
+            width: 160.0,
+            height: 50.0,
+            ..node(id)
+        };
+        let mut packing = CanvasNode {
+            kind: "group".to_owned(),
+            text: None,
+            x: 300.0,
+            y: 300.0,
+            width: 460.0,
+            height: 300.0,
+            ..node("packing")
+        };
+        packing.set_label("Packing");
+        CanvasDocument {
+            nodes: vec![
+                packing,
+                card("porto", "Weekend in Porto", 0.0, 0.0),
+                // Inside the group, scattered.
+                card("passport", "Passport", 330.0, 360.0),
+                card("charger", "Charger", 570.0, 420.0),
+                card("jacket", "Rain jacket", 380.0, 520.0),
+                card("train", "Book the train", -420.0, 520.0),
+                card("hotel", "Pick a hotel", 900.0, -220.0),
+                card("forecast", "Check the forecast", -160.0, 820.0),
+            ],
+            edges: vec![
+                edge("porto", "train"),
+                edge("porto", "hotel"),
+                edge("porto", "passport"),
+                edge("passport", "charger"),
+                edge("charger", "jacket"),
+                edge("jacket", "forecast"),
+            ],
+            extra: serde_json::Map::new(),
+        }
+    };
+    let mut tour = Tour::new("laying_out_a_group", first_launch(board));
+    tour.chord(Modifiers::COMMAND, "0");
+    tour.shot("before");
+    // Every card, and so the group's three, but not its frame.
+    tour.drag(Point::new(12.0, 12.0), Point::new(1428.0, 888.0));
+    let porto = tour.find("Weekend");
+    tour.right_click(tour.node_center(porto));
+    tour.click_label("Auto-layout \u{2192}");
+    tour.chord(Modifiers::COMMAND, "0");
+    tour.shot("across");
+    let frame = 0;
+    for id in ["passport", "charger", "jacket"] {
+        let card = tour.app.nodes.iter().position(|n| n.id == id).expect("a card in the group");
+        assert!(model::centre_within(&tour.app.nodes[card], &tour.app.nodes[frame]), "{id} is still in the group");
+    }
+
+    // The second step: the group's own cards, laid out inside it.
+    tour.click(Point::new(40.0, 860.0));
+    assert!(tour.app.selected.is_empty(), "a click on the board deselects");
+    let cards = ["Passport", "Charger", "Rain jacket"].map(|text| tour.find(text));
+    tour.click(tour.node_center(cards[0]));
+    tour.hold(Modifiers::COMMAND);
+    tour.click(tour.node_center(cards[1]));
+    tour.click(tour.node_center(cards[2]));
+    tour.hold(Modifiers::empty());
+    assert_eq!(tour.app.selected.len(), 3, "the group's three cards");
+    tour.right_click(tour.node_center(cards[1]));
+    tour.click_label("\u{2193}");
+    tour.chord(Modifiers::COMMAND, "0");
+    tour.shot("inside-down");
+}
+
 fn arranging() {
     let messy = |_: &ColorTheme| {
         use thinkboard_core::fixtures::{edge, node};
@@ -3789,6 +3868,7 @@ const SCENES: &[(&str, fn())] = &[
     ("card_kinds", card_kinds),
     ("arranging", arranging),
     ("laying_out_a_trip", laying_out_a_trip),
+    ("laying_out_a_group", laying_out_a_group),
     ("ai_setup", ai_setup),
     ("ai_answers", ai_answers),
     ("ai_errors", ai_errors),

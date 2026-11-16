@@ -105,8 +105,9 @@ impl Document {
             .map_err(|message| CanvasError::Serialize { message })
     }
 
-    /// Lay out every node as a layered graph flowing in `direction`, returning
-    /// each node's computed top-left position keyed by node id. `rankGap` is
+    /// Lay out every node as a layered graph flowing in `direction`, each group
+    /// whole with what it encloses, returning each node's computed top-left
+    /// position keyed by node id. `rankGap` is
     /// the spacing between ranks (layout depth); `nodeGap` between siblings
     /// within a rank. Non-mutating: the caller decides whether to apply the
     /// result.
@@ -118,7 +119,8 @@ impl Document {
     ) -> Vec<LayoutPosition> {
         let doc = self.inner.lock().unwrap();
         let selected: Vec<usize> = (0..doc.nodes.len()).collect();
-        layout::layered_layout(&doc.nodes, &doc.edges, &selected, direction.into(), rank_gap, node_gap)
+        layout::framed_layout(&doc.nodes, &doc.edges, &selected, direction.into(), rank_gap, node_gap)
+            .moves
             .into_iter()
             .map(|(i, x, y)| LayoutPosition { id: doc.nodes[i].id.clone(), x, y })
             .collect()
@@ -190,7 +192,7 @@ impl Document {
     pub fn apply_layout(&self, direction: LayoutDirection, rank_gap: f32, node_gap: f32) {
         let mut doc = self.inner.lock().unwrap();
         let selected: Vec<usize> = (0..doc.nodes.len()).collect();
-        let positions = layout::layered_layout(
+        let positions = layout::framed_layout(
             &doc.nodes,
             &doc.edges,
             &selected,
@@ -198,7 +200,7 @@ impl Document {
             rank_gap,
             node_gap,
         );
-        for (i, x, y) in positions {
+        for (i, x, y) in positions.moves {
             doc.nodes[i].x = x;
             doc.nodes[i].y = y;
         }
