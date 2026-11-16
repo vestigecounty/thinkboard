@@ -26,6 +26,8 @@ global-hotkey = "0.8.0"
 iced = { version = "0.14.0", features = ["advanced", "canvas", "image", "tokio"] }
 # The (patched) vendored iced_graphics, for its editor line-alignment control.
 iced_graphics = "0.14"
+# The (patched) vendored iced_wgpu, to choose the antialiasing once the GPU is known.
+iced_wgpu = "0.14"
 image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
 notify = "8.2.0"
 reqwest = { version = "0.12", default-features = false, features = ["json", "stream", "rustls-tls"] }

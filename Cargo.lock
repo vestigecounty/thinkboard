@@ -5328,6 +5328,7 @@ dependencies = [
  "iced",
  "iced_graphics",
  "iced_runtime",
+ "iced_wgpu",
  "image",
  "ksni",
  "notify",

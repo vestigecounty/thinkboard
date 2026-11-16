@@ -48,7 +48,16 @@ real one — use it for any run that might write settings.
     — see **Font features** below.
   - `iced_wgpu` — honors wgpu backend env vars so
     `WGPU_DX12_PRESENTATION_SYSTEM=visual` can pick the DirectComposition
-    swapchain (transparent overlay on Windows).
+    swapchain (transparent overlay on Windows). And it asks the app how much
+    to antialias once the adapter is known (`set_msaa_choice`), giving it the
+    most samples the GPU can draw up to that — iced's builder can only say
+    yes (4×) or no, before there's an adapter. The app's answer is
+    `config.antialiasing`, file-only: `auto` is 4×, but none on OpenGL,
+    where VMware's SVGA3D driver, in a Linux VM, drew the board's cards over
+    the settings panel and only the last of several canvases on a page.
+    OpenGL is what's left where there's no Vulkan — a VM, or a GPU old
+    enough to spare the samples — so its edges are rougher rather than
+    wrong. `off`, or `2x` to `16x`, overrides it.
 
   - `cosmic-text` (0.15.0, the only 0.15 — iced 0.14 pins it) — its ASCII
     shaping fast path shaped a whole word in its first character's style, so

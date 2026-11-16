@@ -7,6 +7,19 @@ use crate::graphics::{self, Shell, Viewport};
 use crate::settings::{self, Settings};
 use crate::{Engine, Renderer};
 
+/// ThinkBoard patch: how many samples a pixel the app wants to antialias
+/// with, given whether the adapter is OpenGL — asked once the adapter is
+/// known, since iced's builder can only say yes or no before it is. 1 is
+/// none. Unset, the builder's choice stands.
+static MSAA_CHOICE: std::sync::OnceLock<Box<dyn Fn(bool) -> u32 + Send + Sync>> =
+    std::sync::OnceLock::new();
+
+/// Sets the app's choice of multisampling (see [`MSAA_CHOICE`]). Only the
+/// first call counts, and only before the first window is made.
+pub fn set_msaa_choice(choose: impl Fn(bool) -> u32 + Send + Sync + 'static) {
+    let _ = MSAA_CHOICE.set(Box::new(choose));
+}
+
 /// A window graphics backend for iced powered by `wgpu`.
 pub struct Compositor {
     instance: wgpu::Instance,
@@ -100,6 +113,7 @@ impl Compositor {
 
         log::info!("Selected: {:#?}", adapter.get_info());
 
+
         let (format, alpha_mode) = compatible_surface
             .as_ref()
             .and_then(|surface| {
@@ -149,6 +163,35 @@ impl Compositor {
             "Selected format: {format:?} with alpha mode: {alpha_mode:?}"
         );
 
+        // ThinkBoard patch: the app chooses the multisampling once the adapter
+        // is known (`set_msaa_choice`) — iced's builder says yes or no before
+        // there is one, and its yes is always 4×. It gets the most samples
+        // this adapter can draw the window's format with, up to what it asked
+        // for. 4 is all a device can do without asking; 2, 8 and 16 take an
+        // adapter-specific feature, asked for only when one is used.
+        let mut settings = settings;
+        let mut required_features = wgpu::Features::empty();
+        if let Some(choose) = MSAA_CHOICE.get() {
+            let specific = wgpu::Features::TEXTURE_ADAPTER_SPECIFIC_FORMAT_FEATURES;
+            let flags = adapter.get_texture_format_features(format).flags;
+            let drawable = |n: u32| {
+                n == 1 || (flags.sample_count_supported(n) && (n == 4 || adapter.features().contains(specific)))
+            };
+            let wanted = choose(adapter.get_info().backend == wgpu::Backend::Gl);
+            let samples = [16, 8, 4, 2, 1].into_iter().find(|&n| n <= wanted && drawable(n)).unwrap_or(1);
+            if samples != 1 && samples != 4 {
+                required_features |= specific;
+            }
+            settings.antialiasing = match samples {
+                2 => Some(graphics::Antialiasing::MSAAx2),
+                4 => Some(graphics::Antialiasing::MSAAx4),
+                8 => Some(graphics::Antialiasing::MSAAx8),
+                16 => Some(graphics::Antialiasing::MSAAx16),
+                _ => None,
+            };
+            log::info!("Antialiasing: {samples} samples a pixel, of {wanted} asked for");
+        }
+
         #[cfg(target_arch = "wasm32")]
         let limits = [wgpu::Limits::downlevel_webgl2_defaults()
             .using_resolution(adapter.limits())];
@@ -171,7 +214,7 @@ impl Compositor {
                     label: Some(
                         "iced_wgpu::window::compositor device descriptor",
                     ),
-                    required_features: wgpu::Features::empty(),
+                    required_features,
                     required_limits: required_limits.clone(),
                     memory_hints: wgpu::MemoryHints::MemoryUsage,
                     trace: wgpu::Trace::Off,

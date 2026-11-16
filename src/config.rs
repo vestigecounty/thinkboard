@@ -208,6 +208,11 @@ pub struct Config {
     /// another link crossing it, a frame, the desktop behind the overlay —
     /// shows through. Only in this file (`settings::FILE_ONLY`).
     pub link_opacity: f32,
+    /// How the board's shapes are smoothed — links, card corners, everything
+    /// but text, which is smoothed apart — by an [`Antialiasing`] name:
+    /// `auto`, `off`, or `2x`, `4x`, `8x`, `16x`. Read at launch. Only in this
+    /// file (`settings::FILE_ONLY`).
+    pub antialiasing: String,
     /// When true, dragging/resizing a node snaps it to a world-space grid.
     /// Toggled from the canvas context menu; persisted here.
     pub snap_to_grid: bool,
@@ -313,6 +318,7 @@ impl Default for Config {
 
             link_style: LinkStyle::default().as_str().to_owned(),
             arrow_tip: ArrowTip::default().as_str().to_owned(),
+            antialiasing: "auto".to_owned(),
             link_opacity: 0.75,
             snap_to_grid: false,
             snap_grid_size: 20.0,
@@ -438,6 +444,55 @@ impl ArrowTip {
     /// The tip named in a config, ready to draw with.
     pub fn of(config: &Config) -> ArrowTip {
         ArrowTip::parse(&config.arrow_tip)
+    }
+}
+
+/// How the board's shapes are smoothed: multisampling, the GPU drawing each
+/// pixel's edge from several samples. Text is smoothed on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Antialiasing {
+    /// 4× — but none on OpenGL. VMware's SVGA3D driver, in a Linux VM, drew
+    /// it wrong: the board's cards over the settings panel, and only the last
+    /// of several canvases on a page. OpenGL is what's left where there's no
+    /// Vulkan — a VM, or a GPU old enough that the samples are better spared
+    /// anyway — so its edges are rougher rather than wrong.
+    #[default]
+    Auto,
+    Off,
+    /// As many samples a pixel — 2, 4, 8 or 16 — or the most below it the
+    /// GPU can do.
+    Samples(u32),
+}
+
+impl Antialiasing {
+    /// Reads a config value: `auto`, `off`, or a count, `8x` or `8`; anything
+    /// else is the default.
+    pub fn parse(value: &str) -> Antialiasing {
+        let value = value.trim().to_ascii_lowercase();
+        match value.as_str() {
+            "off" | "none" | "0" | "1" | "1x" => Antialiasing::Off,
+            count => count
+                .trim_end_matches('x')
+                .parse()
+                .ok()
+                .filter(|n| [2, 4, 8, 16].contains(n))
+                .map_or(Antialiasing::Auto, Antialiasing::Samples),
+        }
+    }
+
+    /// The setting in a config.
+    pub fn of(config: &Config) -> Antialiasing {
+        Antialiasing::parse(&config.antialiasing)
+    }
+
+    /// The samples a pixel to ask the GPU for, on OpenGL or not; 1 is none.
+    pub fn samples(self, opengl: bool) -> u32 {
+        match self {
+            Antialiasing::Auto if opengl => 1,
+            Antialiasing::Auto => 4,
+            Antialiasing::Off => 1,
+            Antialiasing::Samples(n) => n,
+        }
     }
 }
 
@@ -1205,6 +1260,26 @@ mod tests {
         // Case and stray spaces are forgiven, though.
         assert_eq!(LinkStyle::parse("  Square "), LinkStyle::Square);
         assert_eq!(LinkStyle::parse("MERMAID"), LinkStyle::Mermaid);
+    }
+
+    #[test]
+    fn antialiasing_reads_auto_off_or_a_count() {
+        for (value, read) in [
+            ("auto", Antialiasing::Auto),
+            ("", Antialiasing::Auto),
+            ("wat", Antialiasing::Auto),
+            ("3x", Antialiasing::Auto),
+            ("Off", Antialiasing::Off),
+            ("1x", Antialiasing::Off),
+            ("8x", Antialiasing::Samples(8)),
+            (" 2 ", Antialiasing::Samples(2)),
+        ] {
+            assert_eq!(Antialiasing::parse(value), read, "{value:?}");
+        }
+        // Auto is 4× but on OpenGL, where it's none; a count is asked for as it is.
+        assert_eq!((Antialiasing::Auto.samples(false), Antialiasing::Auto.samples(true)), (4, 1));
+        assert_eq!(Antialiasing::Samples(8).samples(true), 8);
+        assert_eq!(Antialiasing::of(&Config::default()), Antialiasing::Auto);
     }
 
     #[test]

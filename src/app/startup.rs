@@ -159,6 +159,11 @@ pub(crate) fn run() -> iced::Result {
     // and identically to App::new's own resolution, so both agree on the file.
     config.adopt_vault_theme();
 
+    // How much to antialias, asked once the GPU is known: none on OpenGL by
+    // default (see `config::Antialiasing`).
+    let antialiasing = crate::config::Antialiasing::of(&config);
+    iced_wgpu::window::compositor::set_msaa_choice(move |opengl| antialiasing.samples(opengl));
+
     // What to open: CLI arg > configured file > the embedded scratch board.
     // First-run (no configured canvas) lands on the scratch board, whose
     // in-canvas buttons create or open a real, autosaving board.
@@ -208,6 +213,8 @@ pub(crate) fn run() -> iced::Result {
             }
         })
         .style(style)
+        // The yes to antialiasing; how much, and whether at all on this GPU,
+        // is `config.antialiasing`'s, asked once the GPU is known.
         .antialiasing(true)
         .title(daemon_title)
         .run()

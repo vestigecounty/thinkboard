@@ -115,7 +115,7 @@ impl Tab {
 /// and none is something anyone changes twice: their defaults are tuned, and
 /// any sane value works. Counted at the foot of Advanced, so the form says
 /// they exist rather than leaving them to be found.
-pub(crate) const FILE_ONLY: [&str; 16] = [
+pub(crate) const FILE_ONLY: [&str; 17] = [
     "min_zoom",
     "max_zoom",
     "zoom_smoothing",
@@ -132,6 +132,7 @@ pub(crate) const FILE_ONLY: [&str; 16] = [
     "ai_trigger_color",
     "link_opacity",
     "overlay_blur",
+    "antialiasing",
 ];
 
 /// A settings-form edit. `Slide`/`Edit` change the value live; `Commit` (slider
