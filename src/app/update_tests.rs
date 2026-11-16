@@ -3444,12 +3444,68 @@ fn copy_as_mermaid_is_a_flowchart_and_nothing_else() {
     let text = clipboard::read_text().expect("a flowchart");
     assert!(text.starts_with("```mermaid\nflowchart LR\n    n1[\"Login fails"), "{text}");
     assert!(text.contains("    n1 -->|\"ruled out\"| n2\n    n2 --> n3\n"), "{text}");
-    // No HTML beside it, which an app that pastes HTML would take instead,
-    // and no cards: pasted here, it's the text.
+    // No HTML beside it, which an app that pastes HTML would take instead.
     assert_eq!(clipboard::system::html(), None);
-    send(&mut app, Message::Paste { world: Point::new(0.0, 600.0) });
-    assert_eq!(app.nodes.len(), 4);
-    assert_eq!(app.nodes[3].text.as_deref(), Some(text.as_str()));
+}
+
+#[test]
+fn a_pasted_flowchart_is_the_cards_it_draws() {
+    let _clipboard = clipboard::system::exclusive();
+    let mut app = app_with(Vec::new(), Vec::new());
+    // As an AI tool writes one, its cards in a subgraph.
+    let chart = "```mermaid\n\
+                 flowchart LR\n    \
+                 issue[Login fails] -->|ruled out| skew[Clock skew]\n    \
+                 subgraph next [To try]\n        \
+                 cache[Shared token cache] --> tabs[One tab at a time]\n    \
+                 end\n    \
+                 skew --> cache\n\
+                 ```";
+    *clipboard::system::held() = Some(clipboard::Clip::Text(chart.to_owned()));
+    send(&mut app, Message::Paste { world: Point::ORIGIN });
+
+    assert_eq!(app.nodes.len(), 5, "four cards and their group");
+    assert_eq!(app.edges.len(), 3);
+    assert_eq!(app.selected.len(), 5, "selected, as pasted cards are");
+    let group = app.nodes.iter().position(|n| n.is_group()).expect("the subgraph");
+    assert_eq!(app.nodes[group].label(), Some("To try"));
+    let inside = model::enclosed_by(&app.nodes, group);
+    let texts: Vec<&str> = inside.iter().filter_map(|&i| app.nodes[i].text.as_deref()).collect();
+    assert_eq!(texts.len(), 2, "{texts:?}");
+    assert!(texts.contains(&"Shared token cache") && texts.contains(&"One tab at a time"));
+    assert!(app.edges.iter().any(|e| e.label() == Some("ruled out")));
+
+    send(&mut app, Message::Undo);
+    assert!(app.nodes.is_empty() && app.edges.is_empty(), "one undo step");
+
+    // Its source, when that's what's wanted.
+    send(&mut app, Message::PasteAsText { world: Point::ORIGIN });
+    assert_eq!(app.nodes.len(), 1);
+    assert_eq!(app.nodes[0].text.as_deref(), Some(chart));
+
+    // And one it can't read all of is text, rather than cards with a line lost.
+    let broken = "flowchart LR\n    A --> B\n    A -- B";
+    *clipboard::system::held() = Some(clipboard::Clip::Text(broken.to_owned()));
+    send(&mut app, Message::Paste { world: Point::ORIGIN });
+    assert_eq!(app.nodes.len(), 2);
+    assert_eq!(app.nodes[1].text.as_deref(), Some(broken));
+    *clipboard::system::held() = None;
+}
+
+#[test]
+fn a_chain_copied_as_mermaid_pastes_back_as_its_cards() {
+    let _clipboard = clipboard::system::exclusive();
+    let (nodes, edges) = a_chain_of_three();
+    let mut app = app_with(nodes, edges);
+    send(&mut app, Message::SelectNode(Some(2)));
+    send(&mut app, Message::Copy { chain: true, mermaid: true });
+    send(&mut app, Message::Paste { world: Point::new(0.0, 800.0) });
+
+    assert_eq!(app.nodes.len(), 6);
+    assert_eq!(app.edges.len(), 4);
+    let pasted: Vec<&str> = app.nodes[3..].iter().filter_map(|n| n.text.as_deref()).collect();
+    assert_eq!(pasted, ["Login fails after the token refresh", "Clock skew", "The token cache is shared between tabs"]);
+    assert!(app.edges[2..].iter().any(|e| e.label() == Some("ruled out")));
 }
 
 // --- The board by keyboard ---

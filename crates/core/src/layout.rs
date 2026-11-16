@@ -61,7 +61,7 @@ pub fn layered_layout(
 
 /// [`layered_layout`] once its links are known: `edge_list` is between local
 /// indices into `selected`, which is not empty.
-fn place(
+pub(crate) fn place(
     nodes: &[CanvasNode],
     selected: &[usize],
     edge_list: &[(usize, usize)],

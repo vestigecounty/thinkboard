@@ -20,7 +20,7 @@ use iced::widget::image;
 use iced::{Point, Rectangle, Task};
 use serde::{Deserialize, Serialize};
 
-use thinkboard_core::chain;
+use thinkboard_core::{chain, mermaid};
 
 use super::{App, Message, arrange};
 use crate::canvas::board;
@@ -150,14 +150,23 @@ impl App {
     }
 
     /// Pastes the clipboard at `world`: previously copied nodes if it holds
-    /// them, else its text or image as a single new node. Undoable; a no-op
-    /// when the clipboard holds nothing pasteable.
-    pub(super) fn paste_at(&mut self, world: Point) -> Task<Message> {
+    /// them, a Mermaid flowchart as the cards it draws, else its text or image
+    /// as a single new node — or, `as_text`, its text as a card whatever else
+    /// it is. Undoable; a no-op when the clipboard holds nothing pasteable.
+    pub(super) fn paste_at(&mut self, world: Point, as_text: bool) -> Task<Message> {
         // Copied nodes take priority over their JSON's textual form.
-        if let Some(clip) = read_nodes() {
+        if !as_text && let Some(clip) = read_nodes() {
             return self.paste_nodes(clip, world);
         }
-        let node = match read() {
+        let clip = if as_text { read_text().filter(|text| !text.trim().is_empty()).map(Clip::Text) } else { read() };
+        if !as_text
+            && let Some(Clip::Text(text)) = &clip
+            && let Some(mut chart) = mermaid::parse(text)
+        {
+            self.lay_out_flowchart(&mut chart);
+            return self.paste_nodes(NodeClip { nodes: chart.nodes, edges: chart.edges }, world);
+        }
+        let node = match clip {
             Some(Clip::Image { width, height, rgba }) => {
                 match self.keep_pasted_image(width, height, rgba) {
                     Ok((file, handle, id)) => {

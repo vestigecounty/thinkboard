@@ -280,6 +280,9 @@ pub(crate) enum Message {
     SelectChain(Option<usize>),
     /// Paste clipboard contents (copied nodes, else text or image) at `world`.
     Paste { world: Point },
+    /// Paste the clipboard's text as one card, whatever else it could be:
+    /// the source of a Mermaid flowchart, or the text of copied cards.
+    PasteAsText { world: Point },
     /// Sets the selected nodes' color (a canvas value like "1" or "#4a90e2");
     /// `None` clears it back to default.
     SetNodeColor(Option<String>),
@@ -1116,7 +1119,12 @@ impl App {
             Message::Paste { world } => {
                 self.interacted = true;
                 self.context_menu = None;
-                return self.paste_at(world);
+                return self.paste_at(world, false);
+            }
+            Message::PasteAsText { world } => {
+                self.interacted = true;
+                self.context_menu = None;
+                return self.paste_at(world, true);
             }
             Message::SetNodeColor(color) => self.set_node_color(color),
             Message::UseAsOverlayBackground => self.use_as_overlay_background(),
@@ -2280,6 +2288,7 @@ impl App {
             CommandId::CopyChainMermaid => Message::Copy { chain: true, mermaid: true },
             CommandId::SelectChain => Message::SelectChain(None),
             CommandId::Paste => Message::Paste { world: center },
+            CommandId::PasteAsText => Message::PasteAsText { world: center },
             CommandId::DeleteSelected => Message::DeleteSelected,
             CommandId::AddNode => Message::CreateNode { world: center },
             CommandId::AskAi => Message::AskAi,

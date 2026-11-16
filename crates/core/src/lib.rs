@@ -18,6 +18,7 @@ pub mod history;
 pub mod layout;
 pub mod markdown;
 pub mod merge;
+pub mod mermaid;
 pub mod model;
 pub mod navigate;
 pub mod obsidian;

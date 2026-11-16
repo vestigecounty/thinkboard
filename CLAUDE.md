@@ -782,6 +782,17 @@ and would lose the flowchart. A card's label is its Markdown read as the board
 draws it — Mermaid shows the markers as written — escaped in Mermaid's entity
 codes, and a group is a subgraph.
 
+**A Mermaid flowchart pasted is the cards it draws** (`thinkboard_core::mermaid`)
+— an AI tool writes one readily, and a card holding its source was all a paste
+gave. It's read in full or not at all: a line it can't read leaves the paste
+as text, rather than cards with that line quietly gone. It's laid out in the
+chart's own direction, each subgraph's inside first and its frame drawn round
+it, since a group on a board is only where its cards are; a node is in the
+subgraph whose body names it, as Mermaid has it. "Paste as text" (palette
+only) pastes the source regardless, or the text of copied cards. The copy's
+flowchart reads back as the same cards, less what Mermaid doesn't carry:
+Markdown formatting, and a note or image card, which comes back as its path.
+
 The clipboard stand-in tests copy and paste through is shared by the whole
 binary, and tests run side by side, so one that copies or pastes holds
 `clipboard::system::exclusive()`.

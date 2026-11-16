@@ -1752,6 +1752,31 @@ fn copying_a_chain() {
     tour.save(strip, 4);
 }
 
+/// A Mermaid flowchart, as an AI tool writes one, pasted onto a board: the
+/// cards and links it draws, its subgraph a group around its cards.
+fn pasting_a_flowchart() {
+    let board = |_: &ColorTheme| CanvasDocument { nodes: Vec::new(), edges: Vec::new(), extra: serde_json::Map::new() };
+    let mut tour = Tour::new("pasting_a_flowchart", first_launch(board));
+    let chart = "```mermaid\n\
+                 flowchart LR\n    \
+                 bug[\"Login fails after the **token refresh**\"] -->|ruled out| skew{Clock skew?}\n    \
+                 skew -- no --> cache\n    \
+                 subgraph next [To try next]\n        \
+                 cache[Shared token cache] --> tabs[\"One tab at a time<br>then two\"]\n        \
+                 cache --> logs([Read the refresh logs])\n    \
+                 end\n    \
+                 tabs & logs ==> fix((Fix))\n    \
+                 style fix fill:#44cf6e\n\
+                 ```";
+    *super::clipboard::system::held() = Some(super::clipboard::Clip::Text(chart.to_owned()));
+    tour.move_to(Point::new(720.0, 450.0));
+    tour.chord(Modifiers::COMMAND, "v");
+    assert_eq!(tour.app.nodes.len(), 7, "six cards and their group");
+    tour.chord(Modifiers::COMMAND, "0");
+    tour.shot("pasted");
+    *super::clipboard::system::held() = None;
+}
+
 /// The vault browser over a vault made for it: boards in folders, one hidden.
 fn vault() {
     let root = std::env::temp_dir().join(format!("thinkboard-tour-vault-{}", std::process::id()));
@@ -3925,6 +3950,7 @@ const SCENES: &[(&str, fn())] = &[
     ("links", links),
     ("groups", groups),
     ("copying_a_chain", copying_a_chain),
+    ("pasting_a_flowchart", pasting_a_flowchart),
     ("vault", vault),
     ("switcher", switcher),
     ("big_board", big_board),

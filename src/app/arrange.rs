@@ -6,6 +6,7 @@ use std::collections::{HashMap, HashSet};
 use std::time::Instant;
 
 use iced::{Point, Rectangle, Size, Task};
+use thinkboard_core::mermaid;
 
 use super::{App, FONT_SIZE, Message};
 use crate::canvas::text_raster;
@@ -689,6 +690,28 @@ impl App {
         }
         let f = &mut self.nodes[frame];
         (f.x, f.y, f.width, f.height) = (left, top, right - left, bottom - top);
+    }
+
+    /// Sizes a pasted flowchart's cards as typed ones would be, and lays it
+    /// out in its own direction, each group around its cards with the room a
+    /// new group leaves.
+    pub(super) fn lay_out_flowchart(&self, chart: &mut mermaid::Flowchart) {
+        for node in &mut chart.nodes {
+            let text = match node.node_kind() {
+                model::NodeKind::Link => node.url().unwrap_or_default().to_owned(),
+                _ => node.text.clone().unwrap_or_default(),
+            };
+            if !node.is_group() {
+                (node.width, node.height) = self.text_card_size(&text);
+            }
+        }
+        mermaid::arrange(
+            chart,
+            self.config.layout_rank_gap,
+            self.config.layout_card_gap,
+            GROUP_PAD,
+            GROUP_HEAD_PAD,
+        );
     }
 
     /// The `auto_layout_direction` config as a layout direction.

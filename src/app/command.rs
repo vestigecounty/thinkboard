@@ -64,6 +64,7 @@ pub(crate) enum CommandId {
     CopyChainMermaid,
     SelectChain,
     Paste,
+    PasteAsText,
     DeleteSelected,
     AddNode,
     AskAi,
@@ -167,8 +168,8 @@ pub(crate) enum Section {
     App,
     /// Found by typing only. The seven colours: listed, they were half the
     /// selection's section, for something the card's own menu does in a click.
-    /// And the two Mermaid copies, which "copy" or "mermaid" brings up beside
-    /// the others.
+    /// And the two Mermaid copies and "Paste as text", which "copy", "paste"
+    /// or "mermaid" brings up beside the others.
     Unlisted,
 }
 
@@ -312,6 +313,7 @@ static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
         cmd(Colour(None), "Color: none", "colour color tint card clear default", None, Unlisted),
         cmd(CopyMermaid, "Copy as Mermaid", "clipboard diagram flowchart", None, Unlisted),
         cmd(CopyChainMermaid, "Copy chain as Mermaid", "clipboard diagram flowchart upstream", None, Unlisted),
+        cmd(PasteAsText, "Paste as text", "clipboard plain source mermaid raw", None, Unlisted),
     ]
 });
 
