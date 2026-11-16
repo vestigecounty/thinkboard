@@ -146,14 +146,10 @@ pub(crate) fn run() -> iced::Result {
     let mut config = crate::config::Config::load(config_path_arg().as_deref());
 
     // One copy at a time on a config file: one running takes this launch over,
-    // and this one is done, or makes way for it (`summon::hand_over`). Windows
-    // has no socket for that yet, so there the copy running is replaced.
-    #[cfg(unix)]
+    // and this one is done, or makes way for it (`summon::hand_over`).
     if super::summon::hand_over(is_windowed(&config), positional_canvas().as_deref().map(FsPath::new)) {
         return Ok(());
     }
-    #[cfg(not(unix))]
-    crate::platform::kill_previous_instances();
 
     // Resolve the vault's theme *before* the builder below registers its fonts,
     // and identically to App::new's own resolution, so both agree on the file.

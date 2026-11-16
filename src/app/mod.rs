@@ -392,8 +392,7 @@ pub(crate) enum Message {
     /// What the desktop says about the summon shortcut it keeps (Wayland).
     #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
     SummonPortal(summon::Portal),
-    /// A later launch handed itself over to this copy (macOS, Linux).
-    #[cfg(unix)]
+    /// A later launch handed itself over to this copy.
     Launched(summon::Launch),
     WindowShown,
     SpaceChanged,
@@ -1519,7 +1518,6 @@ impl App {
             Message::SignIn => return self.sign_in(),
             Message::CancelSignIn => self.cancel_sign_in(),
             Message::SignedIn(key) => return self.signed_in(key),
-            #[cfg(unix)]
             Message::Launched(launch) => return self.launched(launch),
             Message::WindowShown => {
                 // Re-raise and re-frame the overlay window (also re-adapts
@@ -2740,7 +2738,6 @@ impl App {
             subscriptions.push(Subscription::run(tray::events));
         }
         // A later launch, in either mode (`summon::hand_over`).
-        #[cfg(unix)]
         subscriptions.push(Subscription::run_with(!self.overlay, summon::launches));
         // Auto-dismiss when the active workspace/Space changes, unless
         // configured to persist. Only where the platform reports it

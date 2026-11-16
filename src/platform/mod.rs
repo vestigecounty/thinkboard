@@ -231,11 +231,23 @@ pub fn top_safe_inset() -> f32 {
     backend::top_safe_inset()
 }
 
+/// Ends the process `pid`: a copy that said it would make way for a launch
+/// and hasn't (`summon::hand_over`).
+pub fn kill_process(pid: u32) {
+    #[cfg(unix)]
+    let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+    #[cfg(windows)]
+    let _ = std::process::Command::new("taskkill")
+        .args(["/F", "/PID", &pid.to_string()])
+        .creation_flags(CREATE_NO_WINDOW)
+        .status();
+}
+
 /// Terminates any other running instance so a freshly built binary can take
 /// over — the app is resident (hotkey-summoned), so iterating would otherwise
 /// pile up copies fighting over the global hotkey. Unsaved edits go with it, so
-/// on macOS and Linux it's the last resort, for a copy that didn't answer a
-/// launch (`summon::hand_over`); Windows has no socket yet and does it always.
+/// it's the last resort, for a copy that didn't answer a launch
+/// (`summon::hand_over`): an older build, or a hung one.
 pub fn kill_previous_instances() {
     let this_pid = std::process::id().to_string();
 

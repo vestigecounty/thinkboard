@@ -83,6 +83,10 @@ ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
 ron = "0.12"
 
 [target.'cfg(windows)'.dependencies]
+# The Unix sockets Windows 10 (1803) and later take, with std's API, so a
+# second launch hands over to the copy running as it does elsewhere
+# (`app::summon`). Already in the graph, through zbus.
+uds_windows = "1.2"
 windows = { version = "0.58", features = [
     "Win32_Foundation",
     "Win32_System_Threading",

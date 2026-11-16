@@ -1234,10 +1234,11 @@ shot that lied:
 
 ## Platform notes
 
-**A second launch hands over to the copy running** (macOS, Linux:
-`summon::hand_over`), over a socket in the runtime directory: it does what the
-summon key does there, or shows the board and opens the one it was given, and
-exits. It used to kill every other copy, which lost an edit made inside the
+**A second launch hands over to the copy running** (`summon::hand_over`),
+over a Unix socket in the runtime directory — on Windows, in the user's temp
+directory, through `uds_windows`, which gives Windows 10's own Unix sockets
+std's API, so it's one protocol on every platform: it does what the summon key
+does there, or shows the board and opens the one it was given, and exits. It used to kill every other copy, which lost an edit made inside the
 autosave's debounce, restarted the app from its own launcher, and let a
 throwaway `--config` run kill the everyday copy. So:
 
@@ -1251,7 +1252,7 @@ throwaway `--config` run kill the everyday copy. So:
   changing "Run as a normal window" applies it. The same build launched again
   only toggles — `cargo run` without a change in between hides the board.
 - **Nothing answering, on the default config**, is an older build or a hung
-  one, and is killed as before. Windows has no socket yet and always kills.
+  one, and is killed as before.
 
 - **macOS** — the overlay is an `NSPanel` via a class-morph on winit's window;
   that leaves winit's KVO teardown inconsistent, so `save_and_exit` flushes the

@@ -23,29 +23,28 @@
 //! the other mode, asks the copy running to quit — it saves first — and starts
 //! in its place: what a freshly built binary, an upgrade, or a change to "Run
 //! as a normal window" wants. Every launch used to kill every other copy, which
-//! lost an edit made inside the autosave's debounce. Windows still does
-//! (`platform::kill_previous_instances`).
+//! lost an edit made inside the autosave's debounce.
 
 #[cfg(any(target_os = "linux", test))]
 #[cfg_attr(not(target_os = "linux"), allow(dead_code))]
 mod cosmic;
 
-#[cfg(unix)]
 use std::io::{BufRead, BufReader, Read, Write};
 #[cfg(unix)]
 use std::os::unix::net::{UnixListener, UnixStream};
-#[cfg(unix)]
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
 use std::time::{Duration, Instant};
+
+// Windows 10 (1803) and later take the same sockets, which this crate gives
+// std's own API: the hand-over below is one protocol on every platform.
+#[cfg(windows)]
+use uds_windows::{UnixListener, UnixStream};
 
 #[cfg(any(target_os = "linux", test))]
 use global_hotkey::hotkey::{Code, HotKey, Modifiers};
 
-#[cfg(unix)]
 use iced::Task;
 
-#[cfg(unix)]
 use super::{App, Message, Phase};
 
 /// What the desktop says about the summon shortcut, where it keeps it.
@@ -276,7 +275,6 @@ fn key_name(code: Code) -> Option<String> {
 }
 
 /// What a later launch asks of the copy already running (`hand_over`).
-#[cfg(unix)]
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Launch {
     /// What the summon key does: shows or hides the overlay, or brings the
@@ -291,15 +289,12 @@ pub(crate) enum Launch {
 
 /// How long a launch waits for the copy running to answer before taking it
 /// for one that's hung, or an older build that doesn't.
-#[cfg(unix)]
 const ANSWER_WITHIN: Duration = Duration::from_secs(2);
 
 /// How long a copy making way has to save and go before it's killed.
-#[cfg(unix)]
 const QUIT_WITHIN: Duration = Duration::from_secs(5);
 
 /// The longest request: a build and a path.
-#[cfg(unix)]
 const REQUEST_LIMIT: u64 = 8192;
 
 /// What a launch does about a copy already running on the same config file.
@@ -310,7 +305,6 @@ const REQUEST_LIMIT: u64 = 8192;
 /// Nothing answering, on the default config, is an older build without the
 /// socket, or one that's hung, and is killed as every launch used to kill.
 /// A copy on a config file of its own kills nothing: it's a copy of its own.
-#[cfg(unix)]
 pub(super) fn hand_over(windowed: bool, canvas: Option<&Path>) -> bool {
     let path = socket_path();
     // The copy running has a working directory of its own.
@@ -335,7 +329,6 @@ pub(super) fn hand_over(windowed: bool, canvas: Option<&Path>) -> bool {
 /// the executable's path and modification time, since a rebuilt binary is
 /// another build at the same version. Read once, at launch — a rebuild replaces
 /// the file under the copy that's running.
-#[cfg(unix)]
 fn build() -> &'static str {
     static BUILD: std::sync::OnceLock<String> = std::sync::OnceLock::new();
     BUILD.get_or_init(|| {
@@ -349,7 +342,6 @@ fn build() -> &'static str {
     })
 }
 
-#[cfg(unix)]
 fn mode(windowed: bool) -> &'static str {
     if windowed { "window" } else { "overlay" }
 }
@@ -357,7 +349,6 @@ fn mode(windowed: bool) -> &'static str {
 /// A launch's request: `launch`, its mode, its build, and the board it was
 /// given (empty for none), a tab apart — the path last, so a tab in it can't
 /// move the others.
-#[cfg(unix)]
 fn request(windowed: bool, build: &str, canvas: Option<&Path>) -> String {
     let canvas = canvas.map(|canvas| canvas.to_string_lossy()).unwrap_or_default();
     format!("launch\t{}\t{build}\t{canvas}", mode(windowed))
@@ -365,7 +356,6 @@ fn request(windowed: bool, build: &str, canvas: Option<&Path>) -> String {
 
 /// What the copy running — `windowed` or an overlay, of `build` — makes of a
 /// request. `None` for anything that isn't a launch, which is left alone.
-#[cfg(unix)]
 fn answer(request: &str, windowed: bool, build: &str) -> Option<Launch> {
     let mut fields = request.splitn(4, '\t');
     let (Some("launch"), Some(theirs), Some(their_build), Some(canvas)) =
@@ -384,7 +374,6 @@ fn answer(request: &str, windowed: bool, build: &str) -> Option<Launch> {
 
 /// Sends `request` to the copy listening at `path`, and returns its one-line
 /// reply: `None` when nothing listens there, or what does doesn't answer.
-#[cfg(unix)]
 fn ask(path: &Path, request: &str) -> Option<String> {
     let mut stream = UnixStream::connect(path).ok()?;
     stream.set_read_timeout(Some(ANSWER_WITHIN)).ok()?;
@@ -398,13 +387,12 @@ fn ask(path: &Path, request: &str) -> Option<String> {
 /// Waits for the copy that said it's quitting to stop listening — saving
 /// takes a moment — and kills it, by the `pid` it gave, if it hasn't by
 /// [`QUIT_WITHIN`].
-#[cfg(unix)]
 fn make_way(path: &Path, pid: &str) {
     let deadline = Instant::now() + QUIT_WITHIN;
     while UnixStream::connect(path).is_ok() {
         if Instant::now() > deadline {
             if let Ok(pid) = pid.parse::<u32>() {
-                let _ = std::process::Command::new("kill").arg(pid.to_string()).status();
+                crate::platform::kill_process(pid);
             }
             return;
         }
@@ -414,10 +402,12 @@ fn make_way(path: &Path, pid: &str) {
 
 /// Where the running copy listens: the user's runtime directory, private to
 /// them, or failing that the temp directory under the user's name, since there
-/// it's shared.
-#[cfg(unix)]
+/// it's shared. On Windows the temp directory is the user's own.
 fn socket_path() -> PathBuf {
     let name = socket_name(super::startup::config_path_arg().as_deref().map(Path::new));
+    if cfg!(windows) {
+        return std::env::temp_dir().join(format!("{name}.sock"));
+    }
     match std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
         Some(dir) => PathBuf::from(dir).join(format!("{name}.sock")),
         None => {
@@ -432,7 +422,6 @@ fn socket_path() -> PathBuf {
 /// neither takes the everyday copy's launches nor makes way for them. The path
 /// is hashed with FNV-1a, which every build agrees on, where std's hasher
 /// promises nothing across releases.
-#[cfg(unix)]
 fn socket_name(config: Option<&Path>) -> String {
     let Some(config) = config else {
         return "thinkboard".to_owned();
@@ -449,7 +438,6 @@ fn socket_name(config: Option<&Path>) -> String {
 /// Listens for later launches (`hand_over`), answering each as this copy —
 /// `windowed` or an overlay, and of this build — and passing it on as
 /// `Launched`.
-#[cfg(unix)]
 pub(super) fn launches(windowed: &bool) -> impl iced::futures::Stream<Item = Message> + use<> {
     let windowed = *windowed;
     iced::stream::channel(4, move |mut output: iced::futures::channel::mpsc::Sender<Message>| async move {
@@ -472,14 +460,17 @@ pub(super) fn launches(windowed: &bool) -> impl iced::futures::Stream<Item = Mes
 
 /// Takes `path` to listen on. A socket already there is the last copy's,
 /// which quit without removing it, or was killed.
-#[cfg(unix)]
 fn listen(path: &Path) -> Option<UnixListener> {
-    use std::os::unix::fs::PermissionsExt;
-
     let _ = std::fs::remove_file(path);
     match UnixListener::bind(path) {
         Ok(listener) => {
-            let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            // Windows keeps others out of a user's temp directory by its own
+            // permissions.
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let _ = std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600));
+            }
             Some(listener)
         }
         Err(error) => {
@@ -493,7 +484,6 @@ fn listen(path: &Path) -> Option<UnixListener> {
 /// reply first, since a launch this copy is making way for must hear so before
 /// it goes. A sender that never finishes its line is given up on rather than
 /// left holding up the rest.
-#[cfg(unix)]
 fn serve(listener: UnixListener, mut answer: impl FnMut(&str) -> Option<Launch>, mut act: impl FnMut(Launch)) {
     for mut stream in listener.incoming().flatten() {
         let _ = stream.set_read_timeout(Some(Duration::from_secs(1)));
@@ -513,7 +503,6 @@ fn serve(listener: UnixListener, mut answer: impl FnMut(&str) -> Option<Launch>,
     }
 }
 
-#[cfg(unix)]
 impl App {
     /// A later launch handed itself over to this copy (`hand_over`).
     pub(super) fn launched(&mut self, launch: Launch) -> Task<Message> {
@@ -557,8 +546,7 @@ mod tests {
         assert_eq!(trigger("Ctrl+[").as_deref(), Some("CTRL+bracketleft"));
     }
 
-    #[cfg(unix)]
-    #[test]
+        #[test]
     fn a_launch_of_the_same_build_and_mode_is_taken_over_and_any_other_replaces_the_copy_running() {
         use super::{Launch, answer, request};
         use std::path::Path;
@@ -575,8 +563,7 @@ mod tests {
         assert_eq!(answer("", false, ours), None);
     }
 
-    #[cfg(unix)]
-    #[test]
+        #[test]
     fn a_copy_on_a_config_file_of_its_own_listens_apart_under_a_name_every_build_agrees_on() {
         use super::socket_name;
         use std::path::Path;
@@ -586,8 +573,7 @@ mod tests {
         assert_ne!(socket_name(Some(Path::new("/tmp/y.json"))), socket_name(Some(Path::new("/tmp/x.json"))));
     }
 
-    #[cfg(unix)]
-    #[test]
+        #[test]
     fn the_copy_listening_answers_a_launch_before_acting_on_it_and_ignores_anything_else() {
         use super::{Launch, answer, ask, listen, request, serve};
 
