@@ -28,6 +28,31 @@ pub(super) enum Chord {
 /// How far ⌘= and ⌘− zoom, per press.
 pub(super) const ZOOM_KEY_STEP: f32 = 1.25;
 
+/// Whether a scroll of a fraction of a line is a trackpad's. Windows reports
+/// every scroll in lines, a precision touchpad's included, and X11 its smooth
+/// scrolling in fractions of one; a mouse wheel's notch is a whole line. So
+/// there a two-finger swipe zoomed, and a trackpad could pan only by dragging.
+/// On macOS a mouse wheel's lines come fractional, accelerated, and a
+/// trackpad says pixels, so there lines are always a wheel's. A high-resolution
+/// wheel, free-spinning, sends fractions too, and pans here — which is what
+/// `config.pan_on_fractional_scroll` turns off.
+const FRACTIONAL_LINES_ARE_TRACKPAD: bool = cfg!(not(target_os = "macos"));
+
+/// The pixels a trackpad's line pans by, where it reports lines: about what a
+/// wheel's notch scrolls a page.
+const PIXELS_PER_LINE: f32 = 60.0;
+
+/// `delta` as the board reads it: a trackpad's fractional lines as the pixels
+/// they'd be (see [`FRACTIONAL_LINES_ARE_TRACKPAD`]), anything else as it is.
+fn trackpad_lines(delta: ScrollDelta, fractional_lines_are_trackpad: bool) -> ScrollDelta {
+    match delta {
+        ScrollDelta::Lines { x, y } if fractional_lines_are_trackpad && (x.fract() != 0.0 || y.fract() != 0.0) => {
+            ScrollDelta::Pixels { x: x * PIXELS_PER_LINE, y: y * PIXELS_PER_LINE }
+        }
+        delta => delta,
+    }
+}
+
 /// How long ⌘ is held by itself before the board switcher's strip shows
 /// (`app::switcher`). Counted from ⌘ going down, so a tap of ⌘[, or ⌘[[ to go
 /// back two, is over before it and switches without anything flashing on
@@ -952,7 +977,7 @@ impl Board<'_> {
         position: Option<Point>,
     ) -> Option<canvas::Action<Message>> {
         let position = position?;
-        match delta {
+        match trackpad_lines(delta, FRACTIONAL_LINES_ARE_TRACKPAD && self.config.pan_on_fractional_scroll) {
             // Mouse wheel (line-based): zoom toward the cursor.
             ScrollDelta::Lines { y, .. } => {
                 Some(canvas::Action::publish(Message::ZoomBy {
@@ -1300,6 +1325,30 @@ mod snap_tests {
         assert_eq!(rect_distance(rect, Point::new(13.0, 5.0)), 3.0); // 3 past the right edge
         // Diagonally off a corner: (3,4) past the top-left -> 5.
         assert_eq!(rect_distance(rect, Point::new(-3.0, -4.0)), 5.0);
+    }
+}
+
+#[cfg(test)]
+mod scroll_tests {
+    use super::{PIXELS_PER_LINE, trackpad_lines};
+    use iced::mouse::ScrollDelta;
+
+    #[test]
+    fn a_trackpads_fractional_lines_pan_and_a_wheels_whole_ones_zoom() {
+        // Where lines can be a trackpad's: Windows and X11.
+        let lines = |x, y| ScrollDelta::Lines { x, y };
+        assert_eq!(trackpad_lines(lines(0.0, 1.0), true), lines(0.0, 1.0), "a notch");
+        assert_eq!(trackpad_lines(lines(0.0, -2.0), true), lines(0.0, -2.0), "two at once");
+        assert_eq!(
+            trackpad_lines(lines(0.25, -0.125), true),
+            ScrollDelta::Pixels { x: 0.25 * PIXELS_PER_LINE, y: -0.125 * PIXELS_PER_LINE },
+            "a two-finger swipe, either way"
+        );
+        // On macOS a wheel's own lines are accelerated into fractions.
+        assert_eq!(trackpad_lines(lines(0.0, 0.3), false), lines(0.0, 0.3));
+        // Pixels are a trackpad's already, everywhere.
+        let pixels = ScrollDelta::Pixels { x: 3.0, y: 4.5 };
+        assert_eq!(trackpad_lines(pixels, true), pixels);
     }
 }
 

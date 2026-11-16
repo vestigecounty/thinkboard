@@ -208,6 +208,13 @@ pub struct Config {
     /// another link crossing it, a frame, the desktop behind the overlay —
     /// shows through. Only in this file (`settings::FILE_ONLY`).
     pub link_opacity: f32,
+    /// Whether a scroll of a fraction of a line pans the board, as a
+    /// trackpad's — where trackpads report lines: Windows, and X11's smooth
+    /// scrolling. A mouse wheel's notch is a whole line and zooms. Off, every
+    /// line scroll zooms, for a free-spinning wheel that scrolls in fractions
+    /// too. No effect on macOS, whose trackpads report pixels. Only in this
+    /// file (`settings::FILE_ONLY`).
+    pub pan_on_fractional_scroll: bool,
     /// How the board's shapes are smoothed — links, card corners, everything
     /// but text, which is smoothed apart — by an [`Antialiasing`] name:
     /// `auto`, `off`, or `2x`, `4x`, `8x`, `16x`. Read at launch. Only in this
@@ -320,6 +327,7 @@ impl Default for Config {
             arrow_tip: ArrowTip::default().as_str().to_owned(),
             antialiasing: "auto".to_owned(),
             link_opacity: 0.75,
+            pan_on_fractional_scroll: true,
             snap_to_grid: false,
             snap_grid_size: 20.0,
 

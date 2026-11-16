@@ -1328,7 +1328,15 @@ throwaway `--config` run kill the everyday copy. So:
   the file `SPI_GETDESKWALLPAPER` names, or — where that's gone or isn't a
   JPEG or PNG — the copy Windows keeps of the one it shows,
   `TranscodedWallpaper`, a JPEG with no extension, which is why the shared
-  decoder reads a file's format from its content.
+  decoder reads a file's format from its content. **Every scroll arrives in
+  lines** there, a precision touchpad's included — and X11's smooth
+  scrolling in fractions of one — where the board pans on pixels and zooms
+  on lines, so a two-finger swipe zoomed. A wheel's notch is a whole line,
+  so off macOS a fraction of one is read as a trackpad and pans
+  (`input::trackpad_lines`). A free-spinning wheel scrolls in fractions too,
+  hence `config.pan_on_fractional_scroll` (file-only) to turn it off. Not on
+  macOS, whose wheel lines are accelerated fractions and whose trackpads say
+  pixels.
 
 ## Releasing
 
