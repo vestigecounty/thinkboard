@@ -960,6 +960,9 @@ struct Script {
     answers: &'static [(&'static str, &'static str)],
     /// Refuse every request as an unrecognised key.
     reject_key: bool,
+    /// Its models read text only: a question with images in it is refused
+    /// as OpenRouter refuses one, with a 404 in words.
+    text_only: bool,
 }
 
 /// A local model's pause before its first word, long enough to see the board
@@ -1021,7 +1024,13 @@ fn serve(mut stream: TcpStream, script: &Script) {
         let error = format!("The model `{model}` does not exist or you do not have access to it.");
         return respond(&mut stream, "404 Not Found", &serde_json::json!({ "error": { "message": error, "code": "model_not_found" } }));
     }
-    let prompt = request.pointer("/messages/1/content").and_then(|c| c.as_str()).unwrap_or_default();
+    let content = request.pointer("/messages/1/content");
+    let with_images = content.and_then(|c| c.as_array()).is_some_and(|parts| parts.iter().any(|part| part["type"] == "image_url"));
+    if script.text_only && with_images {
+        let error = "No endpoints found that support image input";
+        return respond(&mut stream, "404 Not Found", &serde_json::json!({ "error": { "message": error, "code": 404 } }));
+    }
+    let prompt = content.and_then(|c| c.as_str()).unwrap_or_default();
     // Server-sent events, a word to an event; no length, so the body ends
     // where the connection does.
     let head = "HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nConnection: close\r\n\r\n";
@@ -2224,6 +2233,7 @@ static TRIP: Script = Script {
         ("Sintra", "Take the train from **Rossio**: about 40 minutes, every 20 or so. Go early — by eleven the queue for *Pena Palace* is long, and the 434 bus up the hill fills fast.\n\nA full day covers Pena, the Moorish Castle and *Quinta da Regaleira*. Book Pena's tickets online the day before."),
     ],
     reject_key: false,
+    text_only: false,
 };
 
 /// A provider with free models among the rest, as OpenRouter has.
@@ -2241,10 +2251,19 @@ static WITH_FREE: Script = Script {
     ],
     answers: &[],
     reject_key: false,
+    text_only: false,
+};
+
+/// A provider whose models read text only.
+static TEXT_ONLY: Script = Script {
+    models: MODELS,
+    answers: &[("picture", "Going by the cards alone: a long weekend in Lisbon in October.")],
+    reject_key: false,
+    text_only: true,
 };
 
 /// A provider that refuses the key it's given.
-static REJECTING: Script = Script { models: MODELS, answers: &[], reject_key: true };
+static REJECTING: Script = Script { models: MODELS, answers: &[], reject_key: true, text_only: false };
 
 /// A trip being planned: the trip, and two questions about it.
 fn trip_board(_: &ColorTheme) -> CanvasDocument {
@@ -3457,6 +3476,7 @@ fn canvas() {
                     models: &[("qwen/qwen3-30b-a3b", None, None)],
                     answers: Box::leak(vec![("", &*Box::leak(answer.into_boxed_str()))].into_boxed_slice()),
                     reject_key: false,
+                    text_only: false,
                 }));
                 configure(&mut tour, &Provider::start(script).url);
             }
@@ -4099,6 +4119,36 @@ const SCENES: &[(&str, fn())] = &[
     ("small_windows", small_windows),
     ("canvas", canvas),
 ];
+
+/// Not a scene — nothing drawn, so no GPU: the real client, asking a model
+/// that reads text only about cards with an image among them.
+#[test]
+fn a_model_that_reads_text_only_is_asked_again_without_the_images() {
+    use thinkboard_core::ai::Event;
+    let provider = Provider::start(&TEXT_ONLY);
+    let _runtime = RUNTIME.enter();
+    let image = vec!["data:image/png;base64,iVBORw0KGgo=".to_owned()];
+    let (url, model) = (provider.url.clone(), MODELS[0].0.to_owned());
+    let mut events = Box::pin(thinkboard_core::ai::stream(url, model, String::new(), "What's in the picture?".to_owned(), image, 4, false));
+    let mut context = Context::from_waker(Waker::noop());
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let mut seen = Vec::new();
+    loop {
+        match events.poll_next_unpin(&mut context) {
+            Poll::Ready(Some(event)) => seen.push(event),
+            Poll::Ready(None) => break,
+            Poll::Pending => {
+                assert!(Instant::now() < deadline, "no end to it: {seen:?}");
+                std::thread::sleep(Duration::from_millis(5));
+            }
+        }
+    }
+    // Said before the answer, which then comes as it would have.
+    assert_eq!(seen.first(), Some(&Event::ImagesLeftOut), "{seen:?}");
+    let answer: String = seen.iter().filter_map(|event| if let Event::Delta(text) = event { Some(text.as_str()) } else { None }).collect();
+    assert_eq!(answer, "Going by the cards alone: a long weekend in Lisbon in October.");
+    assert_eq!(seen.last(), Some(&Event::Done));
+}
 
 #[test]
 #[ignore = "renders to PNGs for a person to look at; needs a GPU adapter"]

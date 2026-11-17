@@ -664,7 +664,20 @@ refusal means: a 404 from `/models` is a local runtime without the route (the
 ordinary answer, not a fault), while a question refused with a message about a
 model is that model not being served. A 401 sent with no key asks for one rather
 than calling it rejected, and nothing listening on localhost asks whether the
-runtime is running, by its preset's name where it has one.
+runtime is running, by its preset's name where it has one. A 404 to a
+question means nothing's there only when it comes without words of the
+server's own (`error_message`): OpenRouter refuses a request no provider of
+the model can serve with a 404 and a message, which read as "Nothing
+answers at" the very URL that had just answered.
+
+**A model that reads text only is asked again without the images**
+(`ai::run`, on `refuses_images`): the image cards in a chain are mostly its
+context, and an answer without them beats a refusal. The answer's first card
+says so ahead of its first words (`Event::ImagesLeftOut`) — in the card, not
+in a label that fades, since an answer about a picture it never saw reads as
+nonsense for as long as it's on the board. Read from the refusal, not from
+`/models`' input modalities, so it works where the list hasn't been fetched,
+or doesn't say; the refusal costs nothing.
 
 A failed answer stays on the board as a card, which is deliberate: it's where
 the question was asked, and deleting it is the editor's ordinary delete. A

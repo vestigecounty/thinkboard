@@ -44,7 +44,15 @@ pub(super) struct AiStream {
     pub(super) nodes: Vec<String>,
     /// What the answer used, once the endpoint has said.
     usage: Option<ai::Usage>,
+    /// The question went without its images, the model reading text only:
+    /// said ahead of the answer's first words.
+    images_left_out: bool,
 }
+
+/// What an answer asked without its images begins with. In the card, not
+/// a label that fades: an answer about a picture it never saw reads as
+/// nonsense for as long as it's on the board.
+const IMAGES_LEFT_OUT: &str = "*The images weren't sent: this model reads text only.*";
 
 /// Everything about in-flight AI generations.
 #[derive(Default)]
@@ -259,6 +267,7 @@ impl App {
                 handle,
                 nodes: vec![node_id],
                 usage: None,
+                images_left_out: false,
             },
         );
         task
@@ -335,6 +344,14 @@ impl App {
                 }
                 Task::none()
             }
+            // Held for the first words: said now, it would take the place of
+            // the dots that show the answer is still coming.
+            ai::Event::ImagesLeftOut => {
+                if let Some(stream) = self.ai.streams.get_mut(&stream_id) {
+                    stream.images_left_out = true;
+                }
+                Task::none()
+            }
             ai::Event::Done => self.ai_done(&stream_id),
             ai::Event::Error(error) => self.ai_error(&stream_id, error),
         }
@@ -350,7 +367,8 @@ impl App {
         };
         // The first chunk replaces the animated dots; append after.
         if self.end_ai_pending(&target) {
-            self.nodes[index].text = Some(text);
+            let left_out = self.ai.streams.get_mut(stream_id).is_some_and(|s| std::mem::take(&mut s.images_left_out));
+            self.nodes[index].text = Some(if left_out { format!("{IMAGES_LEFT_OUT}\n\n{text}") } else { text });
         } else {
             let current = self.nodes[index].text.take().unwrap_or_default();
             self.nodes[index].text = Some(current + &text);

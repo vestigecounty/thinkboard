@@ -3109,6 +3109,29 @@ fn a_failure_partway_keeps_what_was_written() {
 }
 
 #[test]
+fn an_answer_asked_without_its_images_begins_by_saying_so() {
+    use thinkboard_core::ai::Event;
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
+    send(&mut app, Message::SelectNode(Some(0)));
+    send(&mut app, Message::AskAi);
+    let id = app.ai.streams.keys().next().expect("asked").clone();
+    let text = |app: &App| app.nodes.iter().find(|n| n.id == id).and_then(|n| n.text.clone());
+
+    // Not said at once: the dots stay, the answer still coming.
+    send(&mut app, Message::Ai(id.clone(), Event::ImagesLeftOut));
+    assert!(app.ai.pending.contains(&id), "still waiting on the first words");
+    for event in [Event::Delta("Going by the cards ".to_owned()), Event::Delta("alone.".to_owned()), Event::Split, Event::Delta("And another.".to_owned())] {
+        send(&mut app, Message::Ai(id.clone(), event));
+    }
+    assert_eq!(
+        text(&app).as_deref(),
+        Some("*The images weren't sent: this model reads text only.*\n\nGoing by the cards alone."),
+        "once, ahead of the first card's words"
+    );
+}
+
+#[test]
 fn what_an_answer_cost_is_said_under_its_last_card_and_nothing_from_a_runtime_here() {
     use thinkboard_core::ai::{Event, Usage};
     let ask = |app: &mut App, card: usize, usage: Usage| {

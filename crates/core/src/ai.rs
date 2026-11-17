@@ -24,6 +24,9 @@ pub enum Event {
     /// What the answer used, where the endpoint says: OpenRouter sends it in
     /// the stream's last chunk, unasked, with what it cost.
     Usage(Usage),
+    /// The model reads text only, so the question was asked again without
+    /// its images: said before the answer, which is to say so.
+    ImagesLeftOut,
     /// The answer finished.
     Done,
     /// The request failed (human-readable reason).
@@ -310,7 +313,11 @@ fn describe_failure(status: reqwest::StatusCode, body: &str, base_url: &str, api
         404 if matches!(asked, Asked::Models) => {
             "This endpoint doesn't list its models — type the model's name in Settings → AI.".to_owned()
         }
-        404 => format!("Nothing answers at {} — check the API URL in Settings → AI.", base_url.trim()),
+        // Only a 404 with no words of the server's own is nothing there: one
+        // with a message is a refusal, which says what it is below.
+        404 if error_message(body).is_none() => {
+            format!("Nothing answers at {} — check the API URL in Settings → AI.", base_url.trim())
+        }
         // Credits, or a balance below nothing — which stops even the free
         // models.
         402 => format!("{provider} wants credits for this — add some on its site, then ask again. ({detail})"),
@@ -727,7 +734,10 @@ pub async fn suggest(
     });
     apply_thinking(&mut body, &base_url, thinking);
 
-    let response = post_with_reasoning_retry(&base_url, &api_key, &mut body).await?;
+    let response = match post_with_reasoning_retry(&base_url, &api_key, &mut body).await {
+        Ok(response) => response,
+        Err(failure) => return Err(failure.said(&base_url, &api_key, &body)),
+    };
     let value: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
     let content = value
         .get("choices")
@@ -819,6 +829,25 @@ fn is_reasoning_mandatory(body: &str) -> bool {
             || msg.contains("must be enabled"))
 }
 
+/// A question that got no answer: none at all, said already, or a refusal,
+/// kept as it came until it's decided what it means — one refusing the
+/// images is asked again without them.
+enum Failure {
+    Said(String),
+    Refused(reqwest::StatusCode, String),
+}
+
+impl Failure {
+    /// The failure in a sentence: a refusal as [`describe_failure`] words it
+    /// for the question `body` asked.
+    fn said(self, base_url: &str, api_key: &str, body: &serde_json::Value) -> String {
+        match self {
+            Failure::Said(why) => why,
+            Failure::Refused(status, text) => describe_failure(status, &text, base_url, api_key, asked(body)),
+        }
+    }
+}
+
 /// POSTs `body` and returns the successful response. If a disabled-reasoning
 /// request is rejected because the model mandates reasoning, learns that for the
 /// session, drops to the lowest thinking effort, and retries once.
@@ -826,13 +855,13 @@ async fn post_with_reasoning_retry(
     base_url: &str,
     api_key: &str,
     body: &mut serde_json::Value,
-) -> Result<reqwest::Response, String> {
+) -> Result<reqwest::Response, Failure> {
     let url = format!("{}/chat/completions", base_url.trim_end_matches('/'));
     let response = authed_post(&url, api_key)
         .json(&*body)
         .send()
         .await
-        .map_err(|e| describe_unreachable(&e, base_url))?;
+        .map_err(|e| Failure::Said(describe_unreachable(&e, base_url)))?;
     if response.status().is_success() {
         return Ok(response);
     }
@@ -849,15 +878,23 @@ async fn post_with_reasoning_retry(
             .json(&*body)
             .send()
             .await
-            .map_err(|e| describe_unreachable(&e, base_url))?;
+            .map_err(|e| Failure::Said(describe_unreachable(&e, base_url)))?;
         if retry.status().is_success() {
             return Ok(retry);
         }
         let status = retry.status();
-        let text = retry.text().await.unwrap_or_default();
-        return Err(describe_failure(status, &text, base_url, api_key, asked(body)));
+        return Err(Failure::Refused(status, retry.text().await.unwrap_or_default()));
     }
-    Err(describe_failure(status, &text, base_url, api_key, asked(body)))
+    Err(Failure::Refused(status, text))
+}
+
+/// Whether a refusal is of the images: the model reads text only. Worded
+/// variously — OpenRouter's "No endpoints found that support image input"
+/// (a 404), OpenAI's "image_url is only supported by certain models", a
+/// local runtime's "does not support images".
+fn refuses_images(detail: &str) -> bool {
+    let detail = detail.to_lowercase();
+    detail.contains("image") && ["support", "vision", "multimodal", "modalit"].iter().any(|word| detail.contains(word))
 }
 
 /// A chat request's [`Asked`], naming the model it asked for.
@@ -869,14 +906,8 @@ fn asked(body: &serde_json::Value) -> Asked<'_> {
 /// `error.message` (what OpenRouter returns), else the raw body trimmed to a
 /// sane length, else a placeholder.
 fn error_detail(body: &str) -> String {
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(body) {
-        let err = value.get("error");
-        if let Some(msg) = err
-            .and_then(|e| e.get("message").and_then(|m| m.as_str()).or_else(|| e.as_str()))
-            .or_else(|| value.get("message").and_then(|m| m.as_str()))
-        {
-            return msg.to_owned();
-        }
+    if let Some(message) = error_message(body) {
+        return message;
     }
     let trimmed = body.trim();
     if trimmed.is_empty() {
@@ -884,6 +915,16 @@ fn error_detail(body: &str) -> String {
     } else {
         trimmed.chars().take(300).collect()
     }
+}
+
+/// The OpenAI-style `error.message` of a failed response, where its body is
+/// JSON that has one: a server's own words, as against a page of HTML.
+fn error_message(body: &str) -> Option<String> {
+    let value = serde_json::from_str::<serde_json::Value>(body).ok()?;
+    let err = value.get("error");
+    err.and_then(|e| e.get("message").and_then(|m| m.as_str()).or_else(|| e.as_str()))
+        .or_else(|| value.get("message").and_then(|m| m.as_str()))
+        .map(str::to_owned)
 }
 
 /// The user message `content`: a plain string when there are no images (the
@@ -964,7 +1005,23 @@ async fn run(
     });
     apply_thinking(&mut body, base_url, thinking);
 
-    let response = post_with_reasoning_retry(base_url, api_key, &mut body).await?;
+    let response = match post_with_reasoning_retry(base_url, api_key, &mut body).await {
+        Ok(response) => response,
+        // A model that reads text only is asked again without the images —
+        // they're the cards' context, mostly, and an answer without them
+        // beats a refusal — and the answer says so.
+        Err(Failure::Refused(_, text)) if !images.is_empty() && refuses_images(&error_detail(&text)) => {
+            body["messages"][1]["content"] = user_content(prompt, &[]);
+            match post_with_reasoning_retry(base_url, api_key, &mut body).await {
+                Ok(response) => {
+                    let _ = output.send(Event::ImagesLeftOut).await;
+                    response
+                }
+                Err(failure) => return Err(failure.said(base_url, api_key, &body)),
+            }
+        }
+        Err(failure) => return Err(failure.said(base_url, api_key, &body)),
+    };
 
     // Server-sent events: `data: {json}` lines, terminated by `data: [DONE]`.
     // Buffer bytes and only decode whole lines so multi-byte characters split
@@ -1622,6 +1679,26 @@ mod tests {
     }
 
     #[test]
+    fn a_refusal_of_the_images_is_told_from_any_other() {
+        for refusal in [
+            "No endpoints found that support image input",
+            "Invalid content type. image_url is only supported by certain models.",
+            "Model does not support images. Please use a model that does.",
+            "This model has no vision capability: images are not accepted.",
+        ] {
+            assert!(refuses_images(refusal), "{refusal}");
+        }
+        for other in [
+            "No endpoints found that support tool use.",
+            "The model `x` does not exist or you do not have access to it.",
+            "Rate limit exceeded: free-models-per-day.",
+            "Invalid image data: could not decode base64.",
+        ] {
+            assert!(!refuses_images(other), "{other}");
+        }
+    }
+
+    #[test]
     fn a_model_list_in_pages_is_followed_to_its_end() {
         let page = |more: bool, last: &str| serde_json::json!({"data": [], "has_more": more, "last_id": last});
         assert_eq!(next_page(&page(true, "claude-3-haiku-20240307")), Some("claude-3-haiku-20240307"));
@@ -1766,6 +1843,12 @@ mod tests {
         // A 404 that isn't about a model is the URL.
         let elsewhere = describe_failure(StatusCode::NOT_FOUND, "Not Found", "http://example.com/api", "", chat);
         assert!(elsewhere.contains("Nothing answers at http://example.com/api"), "{elsewhere}");
+        // A 404 in the server's own words is a refusal, not nothing there:
+        // OpenRouter's for a request no provider of the model can serve.
+        let openrouter = "https://openrouter.ai/api/v1";
+        let body = r#"{"error": {"message": "No endpoints found that support tool use.", "code": 404}}"#;
+        let refused = describe_failure(StatusCode::NOT_FOUND, body, openrouter, "sk-or", chat);
+        assert_eq!(refused, "OpenRouter refused the request (404 Not Found): No endpoints found that support tool use.");
     }
 
     #[test]
