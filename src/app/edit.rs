@@ -133,15 +133,15 @@ fn toggle_marker(content: &mut text_editor::Content, marker: &str) -> bool {
         return true;
     };
 
-    let a = offset_of(&full, anchor);
-    let b = offset_of(&full, cursor.position);
-    let (start, end) = (a.min(b), a.max(b));
+    let (start, end) = selection_range(content, &full, anchor, cursor.position);
 
     let Some((new_full, sel_start, sel_end)) = toggle_wrap(&full, start, end, marker) else {
         return false; // nothing, or only whitespace, selected
     };
 
-    // Re-select the affected core so a repeated shortcut toggles it back.
+    // The words stay selected, inside their markers: typing over them keeps
+    // the style, as in Obsidian, and the shortcut again finds the markers
+    // just outside and takes them off.
     *content = text_editor::Content::with_text(&new_full);
     content.move_to(text_editor::Cursor {
         position: position_at(&new_full, sel_end),
@@ -307,9 +307,37 @@ fn outdent(indent: &str) -> &str {
     &indent[..indent.len().saturating_sub(cut)]
 }
 
+/// The selection's byte range in `full`, from its two ends — except for a
+/// word or a line selected by a double or triple click, where the editor
+/// keeps both ends at the click and works the selection out only when asked:
+/// there it's found from the selected text, at its place around the click.
+/// Read from the ends alone, a double-clicked word was no selection, and
+/// ⌘B left it as it was.
+fn selection_range(
+    content: &text_editor::Content,
+    full: &str,
+    anchor: text_editor::Position,
+    position: text_editor::Position,
+) -> (usize, usize) {
+    let (a, b) = (offset_of(full, anchor), offset_of(full, position));
+    if a != b {
+        return (a.min(b), a.max(b));
+    }
+    content
+        .selection()
+        .filter(|selected| !selected.is_empty())
+        .and_then(|selected| {
+            full.match_indices(selected.as_str())
+                .map(|(at, _)| (at, at + selected.len()))
+                .find(|&(start, end)| start <= a && a <= end)
+        })
+        .unwrap_or((a, a))
+}
+
 /// Pure core of [`toggle_marker`]: given the full text and a selection byte
-/// range `[start, end)`, returns the new text and the byte range to re-select,
-/// or `None` when the selection has no non-whitespace core to wrap.
+/// range `[start, end)`, returns the new text and the byte range to re-select
+/// — the words, without the markers around them — or `None` when the
+/// selection has no non-whitespace core to wrap.
 fn toggle_wrap(full: &str, start: usize, end: usize, marker: &str) -> Option<(String, usize, usize)> {
     // Shrink the selection to its non-whitespace core, leaving surrounding
     // spaces outside the markers.
@@ -338,12 +366,15 @@ fn toggle_wrap(full: &str, start: usize, end: usize, marker: &str) -> Option<(St
     } else {
         (core_start, core_end, format!("{marker}{core}{marker}"))
     };
+    // What's wrapped stays selected inside its new markers; what's unwrapped
+    // is all that's left.
+    let inner = if replacement.len() > core.len() { marker.len() } else { 0 };
 
     let mut new_full = String::with_capacity(full.len() + 2 * marker.len());
     new_full.push_str(&full[..cut_start]);
     new_full.push_str(&replacement);
     new_full.push_str(&full[cut_end..]);
-    Some((new_full, cut_start, cut_start + replacement.len()))
+    Some((new_full, cut_start + inner, cut_start + replacement.len() - inner))
 }
 
 /// Byte offset in `text` of a `(line, column)` position (`\n`-separated lines,
@@ -1077,14 +1108,15 @@ mod tests {
 
     #[test]
     fn bold_wraps_the_selection() {
-        assert_eq!(toggle("<word>", "**"), "<**word**>");
+        // The words stay selected, inside their markers.
+        assert_eq!(toggle("<word>", "**"), "**<word>**");
     }
 
     #[test]
     fn bold_excludes_leading_and_trailing_whitespace() {
         // Selecting `word1< word2>` bolds `word2`, not ` word2`.
-        assert_eq!(toggle("word1< word2>", "**"), "word1 <**word2**>");
-        assert_eq!(toggle("<word1 >word2", "**"), "<**word1**> word2");
+        assert_eq!(toggle("word1< word2>", "**"), "word1 **<word2>**");
+        assert_eq!(toggle("<word1 >word2", "**"), "**<word1>** word2");
     }
 
     #[test]
@@ -1099,9 +1131,49 @@ mod tests {
     }
 
     #[test]
+    fn a_word_or_line_selected_by_clicking_is_wrapped_too() {
+        // As a double click selects a word, and a triple click a line: the
+        // editor keeps both ends of the cursor where it was clicked.
+        let clicked = |text: &str, column: usize, select: text_editor::Action, marker: &str| {
+            let mut content = text_editor::Content::with_text(text);
+            content.move_to(text_editor::Cursor { position: text_editor::Position { line: 1, column }, selection: None });
+            content.perform(select);
+            toggle_marker(&mut content, marker);
+            content.text()
+        };
+        let text = "Trip\nPlan the long weekend\nin May";
+        assert_eq!(clicked(text, 11, text_editor::Action::SelectWord, "**"), "Trip\nPlan the **long** weekend\nin May");
+        assert_eq!(clicked(text, 16, text_editor::Action::SelectWord, "*"), "Trip\nPlan the long *weekend*\nin May");
+        assert_eq!(clicked(text, 3, text_editor::Action::SelectLine, "**"), "Trip\n**Plan the long weekend**\nin May");
+        // A word met earlier in the text is wrapped where it was clicked.
+        assert_eq!(clicked("the\nthe end", 1, text_editor::Action::SelectWord, "**"), "the\n**the** end");
+    }
+
+    #[test]
+    fn what_a_shortcut_wraps_stays_selected_inside_the_markers() {
+        let mut content = text_editor::Content::with_text("Plan the long weekend");
+        content.move_to(text_editor::Cursor {
+            position: text_editor::Position { line: 0, column: 21 },
+            selection: Some(text_editor::Position { line: 0, column: 14 }),
+        });
+        toggle_marker(&mut content, "**");
+        assert_eq!(content.selection().as_deref(), Some("weekend"));
+        // Typed over, the words go and the style stays.
+        content.perform(text_editor::Action::Edit(text_editor::Edit::Paste(std::sync::Arc::new("trip".to_owned()))));
+        assert_eq!(content.text(), "Plan the long **trip**");
+        // And the shortcut again takes the markers off.
+        content.move_to(text_editor::Cursor {
+            position: text_editor::Position { line: 0, column: 20 },
+            selection: Some(text_editor::Position { line: 0, column: 16 }),
+        });
+        toggle_marker(&mut content, "**");
+        assert_eq!((content.text().as_str(), content.selection().as_deref()), ("Plan the long trip", Some("trip")));
+    }
+
+    #[test]
     fn italic_does_not_strip_bold_markers() {
         // `*` must not match one star of a `**` pair.
-        assert_eq!(toggle("<**word**>", "*"), "<***word***>");
+        assert_eq!(toggle("<**word**>", "*"), "*<**word**>*");
     }
 
     #[test]
