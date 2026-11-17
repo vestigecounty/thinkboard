@@ -238,6 +238,7 @@ impl App {
                 notice: None,
                 empty: "No matching theme".into(),
                 headers: Vec::new(),
+                anchor: None,
             },
             rows,
         )

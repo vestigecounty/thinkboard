@@ -76,6 +76,10 @@ pub(super) struct Ai {
     /// What answers just finished cost, each said under its last card for a
     /// moment.
     pub(super) spent: Vec<board::Spent>,
+    /// The runtimes on this machine that answered when last asked, by their
+    /// presets' names: kept, so the provider picker opens on them at once
+    /// while it asks again. None until asked.
+    pub(super) running_here: Option<Vec<&'static str>>,
 }
 
 /// A configured tint (an Obsidian preset "1"–"6") as a node color value, or

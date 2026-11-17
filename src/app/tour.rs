@@ -2298,6 +2298,47 @@ fn ask(tour: &mut Tour, index: usize) {
 /// first. Nothing is signed into, and no browser opened: the states are set
 /// as the sign-in sets them, as the portal's are in `wayland_summon`, and the
 /// models come from a stand-in provider.
+/// What Ask AI says beside it, provider by provider: the model a question
+/// goes to. Set straight into the config, as nothing here asks
+/// anything: the menu and the palette don't fetch.
+fn ask_ai_label() {
+    use thinkboard_core::ai::Model;
+    let mut tour = Tour::new("ask_ai_label", first_launch(trip_board));
+    let openrouter = thinkboard_core::sign_in::ENDPOINT;
+    let listed = |id: &str, name: &str| Model { id: id.to_owned(), name: Some(name.to_owned()), free: id.ends_with(":free"), price: None };
+    let cases: &[(&str, &str, &str, Option<Model>)] = &[
+        ("OpenRouter, before its list", openrouter, "anthropic/claude-sonnet-4.5", None),
+        ("OpenRouter, listed", openrouter, "anthropic/claude-sonnet-4.5", Some(listed("anthropic/claude-sonnet-4.5", "Anthropic: Claude Sonnet 4.5"))),
+        ("OpenRouter, free", openrouter, "meta-llama/llama-3.3-70b-instruct:free", Some(listed("meta-llama/llama-3.3-70b-instruct:free", "Meta: Llama 3.3 70B Instruct (free)"))),
+        ("OpenRouter, long name", openrouter, "google/nano-banana-2-lite", Some(listed("google/nano-banana-2-lite", "Google: Nano Banana 2 Lite (Gemini 3.1 Flash Lite Image)"))),
+        ("OpenRouter, the free router", openrouter, thinkboard_core::ai::FREE_ROUTER, None),
+        ("Ollama", "http://localhost:11434/v1", "llama3.2:latest", None),
+        ("LM Studio, nothing named", "http://localhost:1234/v1", "", None),
+        ("Google Gemini", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash", None),
+        ("Anthropic", "https://api.anthropic.com/v1", "claude-sonnet-4-5", Some(listed("claude-sonnet-4-5", "Claude Sonnet 4.5"))),
+        ("OpenAI", "https://api.openai.com/v1", "gpt-4o", None),
+        ("Custom, this machine", "http://localhost:8080/v1", "qwen3-8b", None),
+        ("Custom, far away", "https://inference.example.com:8443/v1", "acme-reasoner-large-2026-10", None),
+    ];
+    let eat = tour.find("Where should");
+    let at = tour.node_center(eat);
+    let mut menus = tour.strip("menus", Rectangle::new(Point::new(at.x - 10.0, at.y - 10.0), Size::new(300.0, 140.0)));
+    for (label, url, model, kept) in cases {
+        tour.app.config.ai_url = (*url).to_owned();
+        tour.app.config.ai_model = (*model).to_owned();
+        tour.app.ai.models = kept.clone().map(|kept| ((*url).to_owned(), vec![kept]));
+        tour.right_click(at);
+        tour.redraw();
+        tour.frame(&mut menus, label);
+        tour.named(key::Named::Escape);
+    }
+    tour.save(menus, 3);
+    tour.hand_click(at);
+    tour.chord(Modifiers::COMMAND | Modifiers::SHIFT, "p");
+    tour.type_text("ask");
+    tour.shot("palette");
+}
+
 fn sign_in() {
     let mut tour = Tour::new("sign_in", first_launch(trip_board));
     tour.palette("settings");
@@ -2376,12 +2417,25 @@ fn ai_setup() {
     tour.type_text("ask");
     tour.shot("no-provider-palette");
     tour.named(key::Named::Escape);
+    // The palette's own way to a provider: the picker over the board.
+    tour.palette("change ai provider");
+    tour.send(Message::RunningHere(vec!["LM Studio"]));
+    tour.shot("provider-picker-from-palette");
+    tour.named(key::Named::Escape);
 
-    // Settings, AI, "Custom", and the URL typed in. The pick list is set by
-    // its message, as in `settings`: its menu is an overlay of its own.
+    // Settings, AI, the providers in their picker, "Custom" chosen there,
+    // and the URL typed in.
     tour.palette("settings");
     tour.click_label("AI");
-    tour.send(Message::Settings(settings::Msg::PickPreset("Custom".to_owned())));
+    tour.click_label("Change…");
+    // What answered here is the tour's to say: asking would show whatever
+    // the developer has running.
+    tour.send(Message::RunningHere(vec!["LM Studio", "Ollama"]));
+    tour.shot("provider-picker");
+    tour.send(Message::RunningHere(Vec::new()));
+    tour.shot("provider-picker-none-running");
+    tour.type_text("custom");
+    tour.named(key::Named::Enter);
     tour.send(Message::Settings(settings::Msg::Edit(settings::Field::AiUrl, provider.url.clone())));
     tour.send(Message::Settings(settings::Msg::Commit));
     tour.shot("provider-chosen");
@@ -4017,6 +4071,7 @@ const SCENES: &[(&str, fn())] = &[
     ("settings", settings),
     ("wayland_summon", wayland_summon),
     ("sign_in", sign_in),
+    ("ask_ai_label", ask_ai_label),
     ("pickers", pickers),
     ("palette_settings", palette_settings),
     ("find", find),

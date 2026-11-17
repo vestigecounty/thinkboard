@@ -57,6 +57,10 @@ const PANEL_WIDTH: f32 = 480.0;
 /// The head, where the input is, and the foot, which names the keys.
 const HEAD_HEIGHT: f32 = 44.0;
 const FOOT_HEIGHT: f32 = 32.0;
+/// A notice's band: a line of 13 px text and its padding.
+const NOTICE_HEIGHT: f32 = 33.0;
+/// What a panel keeps off the window's edges.
+const MARGIN: f32 = 16.0;
 
 /// Rows a Page Up / Page Down moves by — one screenful, less a row of overlap
 /// so there's something in common between the before and after.
@@ -83,6 +87,7 @@ pub(crate) enum Panel {
     Theme,
     Font,
     Model,
+    Provider,
 }
 
 impl Panel {
@@ -94,6 +99,17 @@ impl Panel {
     /// The scrollable list's id, for [`navigate`]'s scrolling.
     pub(crate) fn list_id(self) -> &'static Id {
         self.ids().1
+    }
+
+    /// The id of the control in the settings form that opens the panel in
+    /// place — the Provider row's, the Model row's — for [`find_anchor`].
+    pub(crate) fn anchor_id(self) -> &'static Id {
+        static PROVIDER: LazyLock<Id> = LazyLock::new(|| Id::new("provider-anchor"));
+        static MODEL: LazyLock<Id> = LazyLock::new(|| Id::new("model-anchor"));
+        match self {
+            Panel::Provider => &PROVIDER,
+            _ => &MODEL,
+        }
     }
 
     fn ids(self) -> (&'static Id, &'static Id) {
@@ -110,6 +126,7 @@ impl Panel {
             Panel::Theme => ids!("theme"),
             Panel::Font => ids!("font"),
             Panel::Model => ids!("model"),
+            Panel::Provider => ids!("provider"),
         }
     }
 }
@@ -307,6 +324,104 @@ pub(super) struct Shell<'a> {
     /// Section headers. The palette's and the model picker's, and only with
     /// nothing typed: a query ranks across them.
     pub headers: Vec<Header<'a>>,
+    /// Under the control that opened it, rather than high over everything.
+    pub anchor: Option<Anchor>,
+}
+
+/// Where a panel opened from the settings form is put: under the control
+/// that opened it, in the window the form is in. The form stays up beneath
+/// it; drawn high over the form, the panel was a second thing open, away
+/// from where it was asked for.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct Anchor {
+    /// The control, in the window's coordinates.
+    pub at: iced::Rectangle,
+    /// The window, which the panel is kept inside.
+    pub window: iced::Size,
+}
+
+/// Where a panel is, of the places it can be.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) enum Place {
+    /// High over whatever's under it: the board, or a form whose control
+    /// couldn't be found.
+    Top,
+    /// Under a control whose place is being asked for: not drawn until the
+    /// answer comes, or it would show up somewhere else first.
+    Finding,
+    Under(Anchor),
+}
+
+/// The id of the container a settings form is drawn in, filling its window:
+/// the board's modal, and the settings window. What an [`Anchor`] keeps a
+/// panel inside.
+pub(crate) static FORM_HOST: LazyLock<Id> = LazyLock::new(|| Id::new("settings-form-host"));
+
+/// Where `panel`'s control is, and the window around it. Always answers:
+/// None where it isn't on screen, so a panel waiting on it can go to the top.
+pub(crate) fn find_anchor(panel: Panel) -> Task<Option<Anchor>> {
+    iced::advanced::widget::operate(FindAnchor {
+        target: panel.anchor_id(),
+        pending: iced::Vector::ZERO,
+        scrolled: iced::Vector::ZERO,
+        entering_host: None,
+        host: None,
+        found: None,
+    })
+}
+
+/// Walks the widget tree for a control and the form host around it. A
+/// widget reports where it was laid out, not where it's drawn: inside a
+/// scrollable, that's off by how far it's scrolled — the form is one — so
+/// each scrollable's offset is taken off what's inside it.
+struct FindAnchor {
+    target: &'static Id,
+    /// A scrollable's offset, for the walk into its content that follows.
+    pending: iced::Vector,
+    /// Every offset of the scrollables the walk is in.
+    scrolled: iced::Vector,
+    /// The host just met, for the walk into its content that follows.
+    entering_host: Option<iced::Rectangle>,
+    /// The host the walk is in.
+    host: Option<iced::Rectangle>,
+    found: Option<Anchor>,
+}
+
+impl iced::advanced::widget::Operation<Option<Anchor>> for FindAnchor {
+    fn traverse(&mut self, operate: &mut dyn FnMut(&mut dyn iced::advanced::widget::Operation<Option<Anchor>>)) {
+        let (scrolled, host) = (self.scrolled, self.host);
+        self.scrolled += std::mem::take(&mut self.pending);
+        self.host = self.entering_host.take().or(self.host);
+        operate(self);
+        (self.scrolled, self.host) = (scrolled, host);
+    }
+
+    fn scrollable(
+        &mut self,
+        _id: Option<&Id>,
+        _bounds: iced::Rectangle,
+        _content_bounds: iced::Rectangle,
+        translation: iced::Vector,
+        _state: &mut dyn iced::advanced::widget::operation::Scrollable,
+    ) {
+        self.pending = translation;
+    }
+
+    fn container(&mut self, id: Option<&Id>, bounds: iced::Rectangle) {
+        self.pending = iced::Vector::ZERO;
+        if id == Some(&*FORM_HOST) {
+            self.entering_host = Some(bounds);
+        } else if id == Some(self.target) {
+            let at = iced::Rectangle::new(bounds.position() - self.scrolled, bounds.size());
+            if let Some(host) = self.host {
+                self.found = Some(Anchor { at, window: host.size() });
+            }
+        }
+    }
+
+    fn finish(&self) -> iced::advanced::widget::operation::Outcome<Option<Anchor>> {
+        iced::advanced::widget::operation::Outcome::Some(self.found)
+    }
 }
 
 /// How this platform spells the keys a hint names: Return is ↵ on a Mac and
@@ -352,6 +467,13 @@ pub(super) fn view<'a>(
             selection: Color { a: 0.30, ..accent },
         });
     let waiting = shell.loading.filter(|_| rows.is_empty());
+    // How tall the list is, as laid out below: what keeps a panel put under
+    // a control inside its window.
+    let list_height = match rows.len() {
+        _ if waiting.is_some() => LIST_HEIGHT,
+        0 => ROW_HEIGHT,
+        n => ((n + shell.headers.len()) as f32 * ROW_HEIGHT).min(LIST_HEIGHT),
+    } + 2.0 * LIST_PAD;
     // How many a query left, as the find bar counts; nothing with none typed,
     // where the whole list is the answer. Waiting, what on.
     let count = match rows.len() {
@@ -438,7 +560,9 @@ pub(super) fn view<'a>(
 
     let rule = || container(Space::new().width(Length::Fill).height(1)).style(move |_theme| chrome::hairline(&ct));
     let mut parts = column![head, rule()];
+    let mut height = HEAD_HEIGHT + 1.0 + list_height + 1.0 + FOOT_HEIGHT;
     if let Some((words, color)) = shell.notice {
+        height += NOTICE_HEIGHT;
         // Under the field, where the eye is when the panel comes up: a band
         // of its colour, faint, and the words in it.
         parts = parts.push(
@@ -451,23 +575,33 @@ pub(super) fn view<'a>(
                 }),
         );
     }
+    // Under its control, right-aligned to it — the form's controls are at
+    // its right — and kept inside the window: moved left as far as it
+    // must, and up, over the control, where there's no room below.
+    let under = shell.anchor.map(|Anchor { at, window }| {
+        let width = PANEL_WIDTH.min(window.width - 2.0 * MARGIN).max(0.0);
+        let left = (at.x + at.width - width).min(window.width - MARGIN - width).max(MARGIN);
+        let top = (at.y + at.height + 6.0).min(window.height - MARGIN - height).max(MARGIN);
+        (width, iced::Padding { top, left, ..iced::Padding::ZERO })
+    });
     let panel = container(parts.push(body).push(rule()).push(foot))
         // As wide as the design asks, or the window less a margin each side.
-        .width(Length::Fill)
+        .width(under.map_or(Length::Fill, |(width, _)| Length::Fixed(width)))
         .max_width(PANEL_WIDTH)
         .style(move |_theme| chrome::accent_panel(&ct));
 
     // A click on the panel is swallowed; a click anywhere else dismisses.
     let panel = mouse_area(panel).on_press(Message::Noop);
 
-    let backdrop = container(panel)
-        .width(Length::Fill)
-        .height(Length::Fill)
-        .align_x(iced::alignment::Horizontal::Center)
-        .align_y(iced::alignment::Vertical::Top)
-        // Clear the macOS notch, like the find bar, and keep off the window's
-        // sides when it's narrower than the panel.
-        .padding(iced::Padding { top: 64.0 + app.top_safe_inset, right: 16.0, bottom: 0.0, left: 16.0 });
+    let backdrop = container(panel).width(Length::Fill).height(Length::Fill).align_y(iced::alignment::Vertical::Top);
+    let backdrop = match under {
+        Some((_, at)) => backdrop.align_x(iced::alignment::Horizontal::Left).padding(at),
+        None => backdrop
+            .align_x(iced::alignment::Horizontal::Center)
+            // Clear the macOS notch, like the find bar, and keep off the
+            // window's sides when it's narrower than the panel.
+            .padding(iced::Padding { top: 64.0 + app.top_safe_inset, right: MARGIN, bottom: 0.0, left: MARGIN }),
+    };
 
     mouse_area(backdrop).on_press(Message::ClosePanel(which)).into()
 }
@@ -695,6 +829,49 @@ fn title_spans<'a>(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_control_is_found_where_its_scrolled_form_shows_it() {
+        use iced::advanced::widget::Operation;
+        use iced::advanced::widget::operation::{Outcome, Scrollable};
+        use iced::{Point, Rectangle, Size, Vector};
+        struct Still;
+        impl Scrollable for Still {
+            fn snap_to(&mut self, _offset: iced::advanced::widget::operation::scrollable::RelativeOffset<Option<f32>>) {}
+            fn scroll_to(&mut self, _offset: AbsoluteOffset<Option<f32>>) {}
+            fn scroll_by(&mut self, _offset: AbsoluteOffset, _bounds: Rectangle, _content_bounds: Rectangle) {}
+        }
+        let window = Rectangle::new(Point::ORIGIN, Size::new(900.0, 700.0));
+        let control = Rectangle::new(Point::new(600.0, 400.0), Size::new(196.0, 32.0));
+        let find = |scrolled: f32, host: bool| {
+            let mut operation = FindAnchor {
+                target: Panel::Provider.anchor_id(),
+                pending: Vector::ZERO,
+                scrolled: Vector::ZERO,
+                entering_host: None,
+                host: None,
+                found: None,
+            };
+            // A host, a scrollable form in it, the control inside that, and
+            // after the form, another scrollable that isn't scrolled into.
+            operation.container(host.then_some(&*FORM_HOST), window);
+            operation.traverse(&mut |operation| {
+                operation.scrollable(None, window, window, Vector::new(0.0, scrolled), &mut Still);
+                operation.traverse(&mut |operation| {
+                    operation.container(Some(Panel::Provider.anchor_id()), control);
+                });
+                operation.scrollable(None, window, window, Vector::new(0.0, 999.0), &mut Still);
+            });
+            match operation.finish() {
+                Outcome::Some(found) => found,
+                _ => panic!("always answers"),
+            }
+        };
+        let at = |y: f32| Some(Anchor { at: Rectangle::new(Point::new(600.0, y), control.size()), window: window.size() });
+        assert_eq!(find(0.0, true), at(400.0));
+        assert_eq!(find(150.0, true), at(250.0), "less how far the form is scrolled");
+        assert_eq!(find(0.0, false), None, "not in a form's host: nowhere to keep it");
+    }
 
     fn state_at(selected: usize, offset: f32) -> State {
         State { query: String::new(), selected, offset }

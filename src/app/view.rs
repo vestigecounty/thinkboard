@@ -184,7 +184,8 @@ impl App {
                 || self.vault_browser.is_some()
                 || self.theme_picker.is_some()
                 || self.font_picker.is_some()
-                || self.model_picker.is_some(),
+                || self.model_picker.is_some()
+                || self.provider_picker.is_some(),
             switching: self.visits.strip.is_some(),
             context_menu: self.context_menu.is_some(),
             show_fps: self.show_fps,
@@ -296,6 +297,9 @@ impl App {
         }
         if let Some(picker) = self.theme_picker.as_ref().filter(|picker| !picker.over_settings) {
             layers = layers.push(self.theme_picker_view(picker));
+        }
+        if let Some(picker) = self.provider_picker.as_ref().filter(|picker| !picker.over_settings) {
+            layers = layers.push(self.provider_picker_view(picker));
         }
         if let Some(strip) = self.strip_view() {
             layers = layers.push(strip);
@@ -703,14 +707,20 @@ impl App {
         let mut items: Vec<Element<Message>> =
             vec![container(self.color_row()).padding([6, 12]).width(Fill).into()];
         // "Ask AI" only when an AI endpoint is configured (not "Off"), saying
-        // where the question goes: off this machine, and to a free model,
-        // whose provider may train on it, is worth knowing as it's asked.
+        // what the question goes to: a free model, whose provider may train
+        // on it, is worth knowing as it's asked.
         if self.config.ai_enabled() {
             items.push(sep().into());
-            let destination = text(self.ask_ai_destination()).size(12).color(self.theme.text_muted);
+            let label = self.ask_ai_label();
+            // What the row leaves the words — its padding, "Ask AI" and the
+            // gaps either side of the space between taken off — so a long
+            // model name is cut, and not whether it's free.
+            let room = menu_width - 24.0 - chrome::ui_width("Ask AI", 14.0) - 2.0 * 8.0;
+            let words = chrome::fit_line(&label.what, label.after(), 12.0, room);
+            let target = text(words).size(12).color(self.theme.text_muted).wrapping(iced::widget::text::Wrapping::None);
             items.push(
                 button(
-                    row![text("Ask AI").size(14), Space::new().width(Fill), destination]
+                    row![text("Ask AI").size(14), Space::new().width(Fill), target]
                         .spacing(8)
                         .align_y(iced::alignment::Vertical::Center),
                 )
@@ -817,6 +827,8 @@ impl App {
         let top = ((viewport.height - height) / 2.0).max(16.0);
         let backdrop = mouse_area(
             container(panel)
+                // What a picker opened from the form is kept inside.
+                .id(super::picker::FORM_HOST.clone())
                 .width(Fill)
                 .height(Fill)
                 .center_x(Fill)

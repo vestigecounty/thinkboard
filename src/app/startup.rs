@@ -250,7 +250,12 @@ fn daemon_view(state: &App, window: window::Id) -> iced::Element<'_, Message> {
 
 /// What the settings window shows: the form, and a picker it opened over it.
 pub(super) fn settings_window_view(state: &App) -> iced::Element<'_, Message> {
-    let form = super::settings::window(state);
+    // What a picker opened from the form is kept inside.
+    let form = iced::widget::container(super::settings::window(state))
+        .id(super::picker::FORM_HOST.clone())
+        .width(iced::Fill)
+        .height(iced::Fill)
+        .into();
     match state.settings_picker() {
         Some(picker) => iced::widget::stack![form, picker].into(),
         None => form,

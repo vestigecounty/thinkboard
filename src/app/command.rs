@@ -50,6 +50,7 @@ pub(crate) enum CommandId {
     ChooseTheme,
     ChooseFont,
     ChooseModel,
+    ChooseProvider,
     SwitchCanvas,
     FindOnBoard,
     Settings,
@@ -301,6 +302,7 @@ static COMMANDS: LazyLock<Vec<Command>> = LazyLock::new(|| {
         cmd(ChooseTheme, "Change theme…", "colours colors appearance scheme palette dark", None, Appearance),
         cmd(ChooseFont, "Change font…", "typeface family typography text serif mono", None, Appearance),
         cmd(ChooseModel, "Change AI model…", "llm gpt claude openrouter fireworks provider", None, Ai),
+        cmd(ChooseProvider, "Change AI provider…", "switch llm openrouter ollama lm studio local hosted endpoint", None, Ai),
         cmd(Settings, "Settings…", "preferences config options", Keys::command(","), App),
         cmd(Dismiss, "Dismiss board", "hide close overlay", None, App),
         cmd(Quit, "Quit ThinkBoard", "exit", None, App),
@@ -619,8 +621,8 @@ pub(super) fn rows<'a>(app: &'a App, state: &picker::State) -> (Vec<Row<'a>>, Ve
                 Action::Run(id) => (None, Message::RunCommand(id)),
                 Action::Open(path) => (Some(Glyph::Board), Message::OpenListedBoard(path)),
             };
-            // Where a question goes, as the context menu says beside it.
-            let detail = if asks && app.config.ai_enabled() { app.ask_ai_destination().into() } else { entry.detail };
+            // What a question goes to, as the context menu says beside it.
+            let detail = if asks && app.config.ai_enabled() { app.ask_ai_label().words().into() } else { entry.detail };
             Row {
                 matched: thinkboard_core::fuzzy::matched(&state.query, &entry.title),
                 title: entry.title,
@@ -665,6 +667,7 @@ pub(super) fn view<'a>(app: &'a App, state: &'a picker::State) -> Element<'a, Me
             notice: None,
             empty: "No matching command".into(),
             headers,
+            anchor: None,
         },
         rows,
     )

@@ -16,6 +16,29 @@ use super::picker::{self, Header, Panel, Row, Shell};
 use super::{App, Message};
 use thinkboard_core::ai::Model;
 
+/// What Ask AI says beside it ([`App::ask_ai_label`]).
+#[derive(Debug, PartialEq)]
+pub(super) struct AskAiLabel {
+    /// The model a question goes to, or where it goes where none's named.
+    pub what: String,
+    /// Whether it's a free model, whose provider may train on what it's sent.
+    pub free: bool,
+}
+
+impl AskAiLabel {
+    /// What follows the model: whether it's a free one, where its name
+    /// doesn't say so already (OpenRouter's router to them) — kept whole
+    /// when the row is too short for the lot.
+    pub(super) fn after(&self) -> &'static str {
+        if self.free && !self.what.to_lowercase().contains("free") { " · free" } else { "" }
+    }
+
+    /// The words, in full.
+    pub(super) fn words(&self) -> String {
+        format!("{}{}", self.what, self.after())
+    }
+}
+
 /// The open picker: the query and highlight, and what the endpoint said.
 pub(crate) struct ModelPicker {
     pub state: picker::State,
@@ -26,9 +49,11 @@ pub(crate) struct ModelPicker {
     /// flight — which is different from an empty list, and reads differently.
     pub error: Option<String>,
     pub loading: bool,
-    /// Opened from the settings window, and drawn over the form there rather
-    /// than over the board — see [`App::open_model_picker_from_settings`].
+    /// Opened from the settings form, and drawn over it, where its Model
+    /// row is — see [`App::open_model_picker_from_settings`].
     pub over_settings: bool,
+    /// Where it's drawn: under the Model row, from the form.
+    pub place: picker::Place,
     /// The model in use when the panel opened, for marking its row.
     before: String,
     /// When it opened, which is when the skeleton's light starts across.
@@ -160,6 +185,7 @@ impl App {
             error: None,
             loading: !cached,
             over_settings: false,
+            place: picker::Place::Top,
             before: self.config.ai_model.trim().to_owned(),
             opened: std::time::Instant::now(),
             notice: None,
@@ -224,20 +250,23 @@ impl App {
     ///
     /// A new config names a local runtime's model, which no hosted provider
     /// serves, so picking one and asking used to fail on the first question.
-    /// In the board, the form closes and the picker takes its place: drawn
-    /// over the form, it was a panel over a panel, two things open at once
-    /// and neither clearly the one to answer. The settings window has no
-    /// board to show it over, so there it's drawn over the form.
+    /// It opens in place, under the Model row, with the form still there
+    /// beneath it — in the board, as in the settings window. High over the
+    /// form, it was a panel over a panel, two things open at once and away
+    /// from where it was asked for, so the form used to close for it; and
+    /// then a model chosen left you on the board, not back at the form. With
+    /// no form open — a sign-in that closed it, a provider from the palette
+    /// — it's where it always is, over the board.
     pub(super) fn open_model_picker_from_settings(&mut self) -> Task<Message> {
-        if self.settings_overlay {
-            let closed = self.close_settings_overlay();
-            return Task::batch([closed, self.open_model_picker()]);
-        }
         let opened = self.open_model_picker();
-        if let Some(picker) = &mut self.model_picker {
-            picker.over_settings = self.settings_window.is_some();
+        if !(self.settings_overlay || self.settings_window.is_some()) {
+            return opened;
         }
-        opened
+        if let Some(picker) = &mut self.model_picker {
+            picker.over_settings = true;
+            picker.place = picker::Place::Finding;
+        }
+        Task::batch([opened, picker::find_anchor(Panel::Model).map(|at| Message::Placed(Panel::Model, at))])
     }
 
     /// A finished fetch. Kept against the endpoint it was for, so switching
@@ -331,11 +360,19 @@ impl App {
         ))
     }
 
-    /// Where Ask AI sends a question, as the menu and the palette say beside
-    /// it: the provider, and whether the model is a free one.
-    pub(super) fn ask_ai_destination(&self) -> String {
-        let place = thinkboard_core::ai::destination(&self.config.ai_url);
-        if self.asks_a_free_model() { format!("{place} · free") } else { place }
+    /// What Ask AI says beside it, in the menu and the palette: the model a
+    /// question goes to, by the name the list kept for the endpoint gives
+    /// it, less its vendor, or its id's last part before one's fetched — and
+    /// whether that's a free one, whose provider may train on what it's
+    /// sent. The provider beside it made a busy line, and no brand's mark is
+    /// drawn, as nearly every brand asks permission for one. With no model
+    /// named, the runtime answers with what it has loaded, and it's named.
+    pub(super) fn ask_ai_label(&self) -> AskAiLabel {
+        use thinkboard_core::ai;
+        let model = self.config.ai_model.trim();
+        let name = self.model_in_use().and_then(|listed| listed.name.as_deref());
+        let what = if model.is_empty() { ai::destination(&self.config.ai_url) } else { ai::short_name(model, name) };
+        AskAiLabel { what, free: self.asks_a_free_model() }
     }
 
     /// The models matching what's been typed, best first.
@@ -489,6 +526,10 @@ impl App {
                 // Asked, and nothing kept from before: rows still to come, at
                 // the list's full height, rather than a one-row panel that grows.
                 loading: self.model_picker_waiting(),
+                anchor: match picker.place {
+                    picker::Place::Under(anchor) => Some(anchor),
+                    _ => None,
+                },
                 // The three reasons a list can be empty read differently, and
                 // only one of them is the user's to fix.
                 empty: match (&picker.error, picker.loading) {

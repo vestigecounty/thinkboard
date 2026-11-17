@@ -32,6 +32,7 @@ use iced::{Alignment, Border, Color, Element, Fill, Font, Padding, Point, Rectan
 use super::{FILE_ONLY, Field, Msg, PROVIDER_OFF, Tab, current_preset, hand_picked_css, is_local};
 use crate::app::chrome::mix;
 use crate::app::sign_in::{Signing, signs_in as offers_sign_in};
+use crate::app::picker::Panel;
 use crate::app::summon::Portal;
 use crate::app::{App, Message};
 use crate::config::{ArrowTip, Config, LinkStyle, OverlayBackdrop};
@@ -494,7 +495,11 @@ fn ai(app: &App, look: Look) -> Vec<Element<'_, Message>> {
 
     let mut ask = vec![
         setting(Field::AiProvider)
-            .control(providers(look, preset.clone()))
+            // Named, so the picker it opens can be put under it.
+            .control(
+                container(chooser(look, None, preset.clone(), Message::Settings(Msg::ChooseProvider)))
+                    .id(Panel::Provider.anchor_id().clone()),
+            )
             .note(quiet(look, provider_words(&preset, &c.ai_url)))
             .build(app, look),
     ];
@@ -513,6 +518,8 @@ fn ai(app: &App, look: Look) -> Vec<Element<'_, Message>> {
         ]
         .spacing(8)
         .align_y(Alignment::Center);
+        // Named, so the picker it opens can be put under it.
+        let model = container(model).id(Panel::Model.anchor_id().clone());
         let mut model = setting(Field::AiModel)
             .control(model)
             .desc("Lists what the endpoint serves, so you needn't type a name exactly.");
@@ -1503,20 +1510,6 @@ fn sample_picture(frame: &mut Frame, size: Size) {
     };
     ridge(frame, 0.7, (0.3, 0.35), rgb(0x6b6f8f));
     ridge(frame, 0.85, (0.75, 0.55), rgb(0x3b3f57));
-}
-
-fn providers<'a>(look: Look, chosen: String) -> Element<'a, Message> {
-    let options: Vec<String> = std::iter::once(PROVIDER_OFF.to_owned())
-        .chain(crate::ai::PRESETS.iter().map(|p| p.name.to_owned()))
-        .chain(std::iter::once("Custom".to_owned()))
-        .collect();
-    pick_list(options, Some(chosen), |name| Message::Settings(Msg::PickPreset(name)))
-        .text_size(13)
-        .text_line_height(Type::Control.line())
-        .width(160)
-        .padding([6, 10])
-        .style(list(look))
-        .into()
 }
 
 /// What a provider is, under its name: whether it wants a key, and where it is.

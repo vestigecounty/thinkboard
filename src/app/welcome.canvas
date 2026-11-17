@@ -127,7 +127,7 @@
 		{
 			"id": "tip_ai_provider",
 			"type": "text",
-			"text": "It needs a provider first \u2014 **Settings \u2192 AI**, pick one and paste a key. Until then the menu item stays hidden.",
+			"text": "It needs a provider first \u2014 **Settings \u2192 AI**: one running on this machine, or a hosted one and its key. Until then the menu item stays hidden.",
 			"x": 592,
 			"y": 54,
 			"width": 351,

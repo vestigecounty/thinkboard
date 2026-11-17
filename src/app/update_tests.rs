@@ -1647,8 +1647,11 @@ fn the_empty_palette_is_a_menu_of_what_can_run_now() {
     use command::CommandId;
     let mut app = app_with(two_nodes(), Vec::new());
     let (ids, sections) = browsed(&app);
-    // AI waits on a provider, and nothing is selected: neither is listed.
-    assert_eq!(sections, ["Board", "Edit", "Appearance", "App"]);
+    // AI waits on a provider, and nothing is selected: neither is listed —
+    // but for the way to a provider.
+    assert_eq!(sections, ["Board", "Edit", "Appearance", "AI", "App"]);
+    let ai = |ids: &[CommandId]| ids.iter().filter(|id| matches!(id, CommandId::ChooseProvider | CommandId::ChooseModel | CommandId::AskAi)).copied().collect::<Vec<_>>();
+    assert_eq!(ai(&ids), [CommandId::ChooseProvider]);
     assert!(!ids.contains(&CommandId::EditNode));
     assert!(ids.iter().all(|id| id.is_enabled(&app)), "a menu lists nothing it would grey");
     assert!(!ids.iter().any(|id| matches!(id, CommandId::Colour(_))), "the colours are for typing");
@@ -2268,6 +2271,7 @@ fn opening_any_panel_closes_every_other() {
                 2 => Message::OpenThemePicker,
                 3 => Message::OpenFontPicker,
                 4 => Message::OpenModelPicker,
+                5 => Message::Settings(settings::Msg::ChooseProvider),
                 _ => Message::OpenSearch,
             },
         );
@@ -2278,11 +2282,12 @@ fn opening_any_panel_closes_every_other() {
             + usize::from(app.theme_picker.is_some())
             + usize::from(app.font_picker.is_some())
             + usize::from(app.model_picker.is_some())
+            + usize::from(app.provider_picker.is_some())
             + usize::from(app.search.is_some())
     };
 
-    for first in 0..6 {
-        for second in 0..6 {
+    for first in 0..7 {
+        for second in 0..7 {
             if first == second {
                 continue;
             }
@@ -2531,30 +2536,106 @@ fn the_form_asks_openrouter_for_its_prices_once_and_not_again_after_a_failure() 
 }
 
 #[test]
-fn ask_ai_says_where_a_question_goes_and_whether_to_a_free_model() {
-    // Before any list is fetched, the name says it: OpenRouter's `:free`
-    // variants and its router.
+fn providers_are_chosen_by_sort_from_a_picker_over_the_form() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    send(&mut app, Message::OpenSettings);
+    send(&mut app, Message::Settings(settings::Msg::ChooseProvider));
+    let selected = app.provider_picker.as_ref().map(|picker| picker.state.selected);
+    assert_eq!(selected, Some(0), "open over the form, on Off, the provider in use");
+    send(&mut app, Message::RunningHere(vec!["LM Studio", "Ollama"]));
+
+    // A section to each sort, Off first under none, Custom last; of the
+    // runtimes here, the ones that answered.
+    let (names, headers) = app.provider_listing("");
+    assert_eq!(names.first(), Some(&"Off"));
+    assert_eq!(names.last(), Some(&"Custom"));
+    let headed = |label: &str| headers.iter().find(|(_, said)| *said == label).map(|&(heads, _)| names[heads]);
+    assert_eq!(headed("On this machine"), Some("LM Studio"));
+    assert_eq!(headed("Many models, one key"), Some("OpenRouter"));
+    assert_eq!(headed("Model makers"), Some("OpenAI"));
+    assert_eq!(headed("Any other endpoint"), Some("Custom"));
+    assert_eq!(headers.len(), 4);
+    assert!(!names.contains(&"llama.cpp") && !names.contains(&"Jan"), "not running: {names:?}");
+
+    // Typed into, one ranked list: by name, and by sort after those.
+    let (found, headers) = app.provider_listing("olla");
+    assert_eq!((found, headers.len()), (vec!["Ollama"], 0));
+    let (found, _) = app.provider_listing("this machine");
+    assert_eq!(found, ["LM Studio", "Ollama"]);
+
+    // Enter on one is the form's own choice: the URL filled in, the picker
+    // put away — and with a runtime here, the models next.
+    send(&mut app, Message::PanelInput(picker::Panel::Provider, "olla".to_owned()));
+    send(&mut app, Message::CommitProvider);
+    assert_eq!(app.config.ai_url, "http://localhost:11434/v1");
+    assert!(app.provider_picker.is_none());
+    assert!(app.model_picker.is_some(), "the model picker, as picking a preset opens it");
+
+    // Reopened, it's on the one in use — and stays on it as the answers
+    // change the rows above it.
+    send(&mut app, Message::OpenSettings);
+    send(&mut app, Message::Settings(settings::Msg::ChooseProvider));
+    let highlighted = |app: &App| {
+        let at = app.provider_picker.as_ref().map(|picker| picker.state.selected)?;
+        app.provider_listing("").0.get(at).copied()
+    };
+    assert_eq!(highlighted(&app), Some("Ollama"));
+    send(&mut app, Message::RunningHere(vec!["Jan", "llama.cpp", "LM Studio", "Ollama"]));
+    assert_eq!(highlighted(&app), Some("Ollama"));
+
+    // Not running, the one in use is still listed, and says so; and with
+    // nothing else running, the section says that rather than go.
+    send(&mut app, Message::RunningHere(Vec::new()));
+    let (names, _) = app.provider_listing("");
+    assert_eq!(names[1..3], ["Ollama", "OpenRouter"], "the one in use, alone in its section");
+    app.config.ai_url = String::new();
+    let (names, headers) = app.provider_listing("");
+    assert_eq!((names[1], headers[0]), ("None running", (1, "On this machine")));
+    send(&mut app, Message::PanelNav(picker::Panel::Provider, picker::Nav::First));
+    send(&mut app, Message::PanelNav(picker::Panel::Provider, picker::Nav::Step(1)));
+    send(&mut app, Message::CommitProvider);
+    assert!(app.provider_picker.is_some(), "the stand-in can't be chosen");
+}
+
+#[test]
+fn ask_ai_says_what_a_question_goes_to_and_whether_its_free() {
+    let words = |app: &App| app.ask_ai_label().words();
+    // Before any list is fetched, the id says it: its last part, and
+    // whether it's free by OpenRouter's `:free` variants and its router.
     let mut app = app_with(two_nodes(), Vec::new());
     app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
     app.config.ai_model = "openrouter/free".to_owned();
-    assert_eq!(app.ask_ai_destination(), "OpenRouter · free");
-    app.config.ai_model = "openai/gpt-4o".to_owned();
-    assert_eq!(app.ask_ai_destination(), "OpenRouter");
+    assert_eq!(words(&app), "Free Models Router", "free by its name, said once");
+    app.config.ai_model = "anthropic/claude-sonnet-4.5".to_owned();
+    assert_eq!(words(&app), "claude-sonnet-4.5");
 
-    // Once one is, its price does, whatever the name: free offers come and go.
+    // Once one is, by the name it lists, less its vendor; and free by its
+    // price, whatever the name: free offers come and go.
     send(&mut app, Message::OpenModelPicker);
     let url = app.config.ai_url.clone();
-    let models = vec![Model { free: true, ..model("openrouter/sonoma-alpha") }, model("acme/fast:free")];
+    let models = vec![
+        Model { free: true, name: Some("Sonoma Alpha".to_owned()), ..model("openrouter/sonoma-alpha") },
+        model("acme/fast:free"),
+        Model { name: Some("Anthropic: Claude Sonnet 4.5".to_owned()), ..model("anthropic/claude-sonnet-4.5") },
+    ];
     send(&mut app, Message::ModelsFetched(url, Ok(models)));
+    assert_eq!(words(&app), "Claude Sonnet 4.5");
     app.config.ai_model = "openrouter/sonoma-alpha".to_owned();
-    assert!(app.asks_a_free_model());
+    assert_eq!(words(&app), "Sonoma Alpha · free");
+    // A long name is what's cut, not that it's free.
+    assert_eq!(app.ask_ai_label().after(), " · free");
     app.config.ai_model = "acme/fast:free".to_owned();
     assert!(!app.asks_a_free_model(), "listed with a price");
 
-    // A runtime on this machine, by its name.
+    // A runtime on this machine, its tag dropped where it says nothing.
     app.config.ai_url = "http://localhost:11434/v1".to_owned();
-    app.config.ai_model = "llama3".to_owned();
-    assert_eq!(app.ask_ai_destination(), "Ollama");
+    app.config.ai_model = "llama3:latest".to_owned();
+    assert_eq!(words(&app), "llama3");
+    // With no model named, the runtime answers with what it has loaded.
+    app.config.ai_model = String::new();
+    assert_eq!(words(&app), "Ollama");
+    app.config.ai_url = "http://localhost:8080/v1".to_owned();
+    assert_eq!(words(&app), "localhost:8080");
 }
 
 #[test]
@@ -2667,11 +2748,11 @@ fn picking_a_provider_that_can_answer_asks_for_the_model_next() {
     app.config.ai_url.clear();
     send(&mut app, Message::OpenSettingsOverlay);
 
-    // A local runtime needs no key, so its list comes up at once — in place
-    // of the form it was chosen in, not over it: one panel at a time.
+    // A local runtime needs no key, so its list comes up at once — in place,
+    // under the Model row, with the form still there beneath it.
     send(&mut app, Message::Settings(settings::Msg::PickPreset("LM Studio".to_owned())));
-    assert!(app.model_picker.as_ref().is_some_and(|picker| !picker.over_settings));
-    assert!(!app.settings_overlay);
+    assert!(app.model_picker.as_ref().is_some_and(|picker| picker.over_settings));
+    assert!(app.settings_overlay);
 
     // A hosted one with no key would only list a refusal: the form stays put.
     send(&mut app, Message::ClosePanel(picker::Panel::Model));
@@ -2689,7 +2770,68 @@ fn picking_a_provider_that_can_answer_asks_for_the_model_next() {
     send(&mut app, Message::OpenSettingsOverlay);
     send(&mut app, Message::Settings(settings::Msg::ChooseModel));
     assert!(app.model_picker.is_some());
-    assert!(!app.settings_overlay, "the form gives way to it");
+    assert!(app.settings_overlay, "the form stays, under it");
+    // A model chosen leaves the form where it was.
+    send(&mut app, Message::PickModel("gpt-4o".to_owned()));
+    assert!(app.model_picker.is_none() && app.settings_overlay);
+}
+
+#[test]
+fn a_picker_from_the_form_waits_for_its_place_under_the_control() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "http://localhost:1234/v1".to_owned();
+    send(&mut app, Message::OpenSettingsOverlay);
+    send(&mut app, Message::Settings(settings::Msg::ChooseProvider));
+    let place = |app: &App| app.provider_picker.as_ref().map(|picker| picker.place);
+    assert_eq!(place(&app), Some(picker::Place::Finding));
+    assert!(app.settings_picker().is_none(), "not drawn till it's placed");
+
+    let anchor = picker::Anchor {
+        at: Rectangle::new(Point::new(500.0, 120.0), Size::new(196.0, 32.0)),
+        window: Size::new(1000.0, 700.0),
+    };
+    send(&mut app, Message::Placed(picker::Panel::Provider, Some(anchor)));
+    assert_eq!(place(&app), Some(picker::Place::Under(anchor)));
+    assert!(app.settings_picker().is_some());
+    // An answer for a panel not waiting changes nothing.
+    send(&mut app, Message::Placed(picker::Panel::Provider, None));
+    assert_eq!(place(&app), Some(picker::Place::Under(anchor)));
+
+    // A control that couldn't be found puts it at the top, not nowhere.
+    send(&mut app, Message::Settings(settings::Msg::ChooseModel));
+    assert_eq!(app.model_picker.as_ref().map(|picker| picker.place), Some(picker::Place::Finding));
+    send(&mut app, Message::Placed(picker::Panel::Model, None));
+    assert_eq!(app.model_picker.as_ref().map(|picker| picker.place), Some(picker::Place::Top));
+    assert!(app.settings_picker().is_some());
+}
+
+#[test]
+fn a_provider_from_the_palette_is_chosen_over_the_board_and_the_form_asks_what_it_still_needs() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url.clear();
+    // What the command sends: running it hands that back as a task.
+    let open = app.command_message(command::CommandId::ChooseProvider).expect("runs with no provider: it's the way to one");
+    send(&mut app, open.clone());
+    let picker = app.provider_picker.as_ref().map(|picker| (picker.over_settings, picker.place));
+    assert_eq!(picker, Some((false, picker::Place::Top)), "over the board, where the palette was");
+
+    // A runtime here: its models next, over the board too.
+    send(&mut app, Message::Settings(settings::Msg::PickPreset("LM Studio".to_owned())));
+    assert!(app.model_picker.as_ref().is_some_and(|picker| !picker.over_settings));
+    assert!(!app.settings_overlay);
+
+    // A hosted one without a key: the form, at the key.
+    send(&mut app, Message::ClosePanel(picker::Panel::Model));
+    send(&mut app, open.clone());
+    send(&mut app, Message::Settings(settings::Msg::PickPreset("Anthropic".to_owned())));
+    assert!(app.settings_overlay);
+    assert_eq!(app.settings_focus, Some(settings::Field::AiApiKey));
+
+    // Custom: the form, at the URL.
+    send(&mut app, Message::CloseSettingsOverlay);
+    send(&mut app, open.clone());
+    send(&mut app, Message::Settings(settings::Msg::PickPreset("Custom".to_owned())));
+    assert_eq!(app.settings_focus, Some(settings::Field::AiUrl));
 }
 
 #[test]

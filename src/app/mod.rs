@@ -64,6 +64,7 @@ mod switcher;
 mod sync;
 mod font_picker;
 mod model_picker;
+mod provider_picker;
 mod navigate;
 mod theme_picker;
 mod theme_store;
@@ -464,6 +465,17 @@ pub(crate) enum Message {
     CommitFont,
     PickFont(String),
 
+    /// Provider picker (from the palette, or the settings form's Provider
+    /// row). Enter keeps the highlighted one; a click is the form's own
+    /// `PickPreset`.
+    OpenProviderPicker,
+    CommitProvider,
+    /// Where a panel opened from the settings form goes: under the control
+    /// that opened it, or — where that couldn't be found — at the top.
+    Placed(picker::Panel, Option<picker::Anchor>),
+    /// The runtimes on this machine that answered, asked as the picker opens.
+    RunningHere(Vec<&'static str>),
+
     /// Typing, arrowing, scrolling and dismissing — the same four interactions
     /// in every panel, so one message each rather than four apiece. What a
     /// panel *is* stays in its own messages below.
@@ -669,6 +681,9 @@ struct App {
     theme_picker: Option<theme_picker::ThemePicker>,
     /// The font picker, when open. Shares the shell and previews the same way.
     font_picker: Option<font_picker::FontPicker>,
+    /// The provider picker, when open: in place in the settings form, from
+    /// its Provider row, or over the board, from the palette.
+    provider_picker: Option<provider_picker::ProviderPicker>,
     /// The model picker, when open. Shares the shell; unlike the others it has
     /// to fetch its rows, so it can be open with none.
     model_picker: Option<model_picker::ModelPicker>,
@@ -973,6 +988,7 @@ impl App {
             vault_browser: None,
             theme_picker: None,
             font_picker: None,
+            provider_picker: None,
             model_picker: None,
             vault_canvases: Vec::new(),
             vault_scanning: false,
@@ -1436,6 +1452,10 @@ impl App {
             Message::OpenFontPicker => return self.open_font_picker(),
             Message::CommitFont => return self.commit_font(),
             Message::PickFont(name) => return self.pick_font(&name),
+            Message::OpenProviderPicker => return self.open_provider_picker(),
+            Message::CommitProvider => return self.commit_provider(),
+            Message::Placed(panel, anchor) => return self.placed(panel, anchor),
+            Message::RunningHere(running) => return self.running_here(running),
 
             Message::OpenModelPicker => return self.open_model_picker(),
             Message::ModelsFetched(url, models) => return self.models_fetched(url, models),
@@ -1703,6 +1723,7 @@ impl App {
             Panel::Theme => self.theme_picker.as_mut().map(|p| &mut p.state),
             Panel::Font => self.font_picker.as_mut().map(|p| &mut p.state),
             Panel::Model => self.model_picker.as_mut().map(|p| &mut p.state),
+            Panel::Provider => self.provider_picker.as_mut().map(|p| &mut p.state),
         }
     }
 
@@ -1722,6 +1743,9 @@ impl App {
             Panel::Model => {
                 self.model_matches(&query(self.model_picker.as_ref().map(|p| &p.state))).len()
             }
+            Panel::Provider => {
+                self.provider_listing(&query(self.provider_picker.as_ref().map(|p| &p.state))).0.len()
+            }
         }
     }
 
@@ -1735,6 +1759,9 @@ impl App {
             (picker::Panel::Model, _, Some(picker)) => {
                 self.model_listing(&picker.state.query).1.into_iter().map(|(heads, ..)| heads).collect()
             }
+            (picker::Panel::Provider, ..) => self.provider_picker.as_ref().map_or_else(Vec::new, |picker| {
+                self.provider_listing(&picker.state.query).1.into_iter().map(|(heads, _)| heads).collect()
+            }),
             _ => Vec::new(),
         }
     }
@@ -1749,7 +1776,7 @@ impl App {
         match panel {
             Panel::Theme => self.preview_highlighted(),
             Panel::Font => self.preview_highlighted_font(),
-            Panel::Command | Panel::Vault | Panel::Model => Task::none(),
+            Panel::Command | Panel::Vault | Panel::Model | Panel::Provider => Task::none(),
         }
     }
 
@@ -1760,12 +1787,32 @@ impl App {
             Panel::Command => self.command_palette = None,
             Panel::Vault => self.vault_browser = None,
             Panel::Model => self.model_picker = None,
+            Panel::Provider => self.provider_picker = None,
             // These two preview as you scroll them, so dismissing has to undo
             // that rather than just drop the panel.
             Panel::Theme => return self.cancel_theme_picker(),
             Panel::Font => return self.cancel_font_picker(),
         }
         Task::none()
+    }
+
+    /// A panel opened from the settings form, placed: under its control, or
+    /// at the top where that wasn't found. It wasn't drawn while it waited,
+    /// so the focus asked for as it opened found no input; it's asked again.
+    fn placed(&mut self, panel: picker::Panel, anchor: Option<picker::Anchor>) -> Task<Message> {
+        let place = anchor.map_or(picker::Place::Top, picker::Place::Under);
+        match panel {
+            picker::Panel::Model => match &mut self.model_picker {
+                Some(picker) if picker.place == picker::Place::Finding => picker.place = place,
+                _ => return Task::none(),
+            },
+            picker::Panel::Provider => match &mut self.provider_picker {
+                Some(picker) if picker.place == picker::Place::Finding => picker.place = place,
+                _ => return Task::none(),
+            },
+            _ => return Task::none(),
+        }
+        iced::advanced::widget::operate(iced::advanced::widget::operation::focusable::focus(panel.input_id()))
     }
 
     /// Clears the way for a panel to open, and focuses its input.
@@ -1802,6 +1849,7 @@ impl App {
         self.command_palette = None;
         self.vault_browser = None;
         self.model_picker = None;
+        self.provider_picker = None;
         Task::batch([self.cancel_theme_picker(), self.cancel_font_picker()])
     }
 
@@ -2317,6 +2365,7 @@ impl App {
             CommandId::ChooseTheme => Message::OpenThemePicker,
             CommandId::ChooseFont => Message::OpenFontPicker,
             CommandId::ChooseModel => Message::OpenModelPicker,
+            CommandId::ChooseProvider => Message::OpenProviderPicker,
             CommandId::SwitchCanvas => Message::SwitchCanvas,
             CommandId::FindOnBoard => Message::OpenSearch,
             // From the palette, settings open in-board (the tray still uses the
@@ -2687,6 +2736,9 @@ impl App {
         }
         if self.theme_picker.is_some() {
             listeners.push(theme_picker::key_event);
+        }
+        if self.provider_picker.is_some() {
+            listeners.push(provider_picker::key_event);
         }
         // While the board switcher's strip is up, ⌘ put to another use puts
         // it away; the rest of it — ⌘[ ⌘], Esc, ⌘'s release — is the board's.

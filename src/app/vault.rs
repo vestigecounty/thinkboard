@@ -337,6 +337,7 @@ impl App {
                 notice: None,
                 empty: empty.into(),
                 headers: Vec::new(),
+                anchor: None,
             },
             rows,
         )

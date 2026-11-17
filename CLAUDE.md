@@ -112,7 +112,7 @@ rasterizer) stays desktop-side.
 | `ai` / `ghosts` | streamed answers; Copilot-style suggestion cards (shelved — nothing offers them; `ghosts::OFFERED`) |
 | `canvas_file` | opening, autosaving, merging outside changes into the `.canvas` file; vault roots |
 | `picker` | the panel shell shared by the palette, vault browser and the pickers |
-| `theme_picker` / `font_picker` / `model_picker` | what fills that shell besides the palette |
+| `theme_picker` / `font_picker` / `model_picker` / `provider_picker` | what fills that shell besides the palette |
 | `vault` | finding the vault's boards and switching between them |
 | `switcher` | back and forward through the boards visited (⌘[ ⌘]), and where each was left |
 | `summon` | the summon key under Wayland (the desktop's portal, or COSMIC's own shortcuts), and a second launch handing over to the copy running |
@@ -331,7 +331,7 @@ a runtime swap must use the other entry point — which also clears the layout
 and measurement caches, since their keys carry text and size but not the face
 those were shaped with.
 
-`picker` is the shell all five panels draw: input, rows, keyboard nav. Rows are
+`picker` is the shell all six panels draw: input, rows, keyboard nav. Rows are
 a **fixed height applied to the row**, not assumed of it — iced reports a scroll
 position but won't say where a given child landed, so keeping the highlight on
 screen is arithmetic over that constant, and the two must not drift. A section
@@ -578,21 +578,68 @@ OpenRouter), but neither needed its own code path. Fields past `id` are
 extensions: OpenRouter gives a display name and a price, a plain endpoint
 gives neither, and both are read only when present. Not the context window,
 which it gives too: a question from the board is a few hundred tokens, far
-inside any of them, and the number took the price's room in a row.
+inside any of them, and the number took the price's room in a row. Three
+shapes are read as they come rather than per provider: a title under
+`display_name` (Anthropic's, Together's), a list in pages that says there's
+more (`has_more` and `last_id`: Anthropic's, twenty to a page), and an id
+named as a resource (`models/…`: Gemini's, asked for bare).
+
+**The presets** (`ai::PRESETS`) are listed by what sort of provider each is
+(`ai::ProviderKind`): on this machine, many models behind one key (a
+router like OpenRouter and a host like Groq are the same service to whoever
+asks), and the model makers' own — and within a sort, the ones someone's
+likeliest to have a key for first. They're chosen in a picker of their own
+(`provider_picker`), a section to each sort: as a dropdown, sixteen were a
+long list in no order anyone could see, and iced's has no headers to give
+it one. From the Provider row it opens in place, under the row; from the
+palette ("Change AI provider…", listed even with no provider, since it's
+the way to one) it opens over the board, and what the choice still wants
+— a key, Custom's URL — opens the form at that row. Choosing is the form's
+own `PickPreset`, so the model picker follows as it did. **Of the runtimes
+on this machine, it lists the ones running**: each has a port of its own,
+so the picker asks each as it opens (`ai::answers`: a model list, or a
+refusal for want of a key — not just anything on the port) and lists those
+that answer, plus the one in use, marked "not running" if it isn't. On
+localhost a closed port refuses at once, so the asking takes milliseconds;
+the last answer is kept to open on meanwhile, and the highlight stays on
+its row as rows come and go above it. With none running the section says
+so, naming them, rather than go. Under test nothing is asked: what the
+developer has running would decide the shot, so tests say (`RunningHere`).
+Each is an OpenAI-compatible base URL, checked against the provider's own
+docs in November 2026: Anthropic's is its compatibility layer, which it
+doesn't call long-term; DeepSeek's documented one has no `/v1`; llama.cpp's server moved
+from 8080 to 9931 in October 2026, and the sentence for one that can't be
+reached says what to do about an older one. Left to Custom: providers whose
+URL is per account (Azure, Bedrock, DashScope), Perplexity (its chat
+completions ended in September 2026), and runtimes that share 8080 (LocalAI,
+llamafile) or don't stream (GPT4All).
 
 **The model is chosen where the provider is.** A new config names a local
 runtime's model, which no hosted provider serves, so picking a provider and
 asking failed on the very first question. The settings form's model row has a
 "Choose…" button, and picking a provider that can answer opens the picker by
 itself — one on this machine, or a hosted one whose key is already stored; for
-a hosted one without, pasting the key does. Opened from the form in the
-board, **the form closes and the picker takes its place**
-(`open_model_picker_from_settings`): drawn over the form, it was a panel over a
-panel, two things open and neither clearly the one to answer. "Sign in…"
-closes it too — the browser has it from there, and the models come up over
-the board after. The settings window has no board to show it over, so there
-it's drawn over the form (`over_settings`, as the theme and font pickers are
-from their rows), closes with the window, and has Esc to itself while open.
+a hosted one without, pasting the key does. Opened from the form, **it opens
+in place, under the Model row, with the form still there beneath it**
+(`open_model_picker_from_settings`) — in the board's modal as in the
+settings window. High over the form it was a panel over a panel, away from
+where it was asked for, so the form used to close for it, and a model
+chosen left you on the board rather than back at the form. It closes with
+the form, and has Esc to itself while open. "Sign in…" closes the form —
+the browser has it from there — and the models come up over the board
+after, as they do when the provider was picked from the palette.
+
+**A panel opened from a form control is put under it** (`picker::Anchor`):
+right-aligned to the control, moved left and up as far as keeps it in the
+window, over the control where there's no room below. iced doesn't say
+where a widget landed, so the control is a named container and
+`picker::find_anchor` asks for its bounds — less the form's scroll, which
+a widget's reported bounds leave out — with those of the form's host
+(`FORM_HOST`, the modal's backdrop or the settings window), which is the
+window to keep inside. The panel isn't drawn till the answer comes
+(`Place::Finding`), or it would show up somewhere else first, so its input
+is focused again then; a control that can't be found puts it at the top.
+The Theme and Font rows' pickers still open at the top, over the form.
 
 It's the one panel that **fetches**, so it has two states the others don't —
 in flight and failed — and the panel is up on the keystroke that asked for it
@@ -652,20 +699,27 @@ the eye is when choosing from it. Two things were tried and dropped: a muted
 line over the list read as a hint the list didn't need, and a warning band
 there stood over the list whatever was chosen. The settings' Model row says
 it in full while a free model is in use, and Ask AI, in the node menu and
-the palette, names where a question goes beside it (`ai::destination`: the
-preset, or the host), "· free" after it for a free model. Whether the model
-in use is free is read from the list kept for the endpoint, or from its name
-before one's been fetched (`ai::free_by_name`). OpenRouter's privacy
-settings can rule out every provider of a model, which it answers with a 404
-naming its "data policy" — worded as that, not as nothing answering.
+the palette, says beside it what a question goes to (`App::ask_ai_label`):
+the model by the name the list gives it, less its vendor, or its id's last
+part before one's fetched (`ai::short_name`), "· free" after a free model —
+or with no model named, the preset or host (`ai::destination`), whose
+runtime answers with what it has loaded. A long name is what's cut
+(`chrome::fit_line`), never "free". The provider beside the model made a
+busy line, and **no provider's logo is drawn**: nearly every brand's
+guidelines want permission for one and forbid recolouring it, and Groq's
+forbid one in an app's interface.
+Whether the model in use is free is read from the list kept for the
+endpoint, or from its name before one's been fetched (`ai::free_by_name`).
+OpenRouter's privacy settings can rule out every provider of a model, which
+it answers with a 404 naming its "data policy" — worded as that, not as
+nothing answering.
 
 **The picker opens on the model in use**, as the theme picker does, scrolled
 to it: under the free sections it was out of sight. A refetch landing keeps
 the highlight on its model rather than sending it back to the top.
 
-**What a model costs is said where it's read.** Picked from the form in the
-board, the form gives way to the picker and doesn't come back, so a priced
-row says its price ("$3 / $15", from `/models`' per-token `pricing`) — the
+**What a model costs is said where it's read.** The picker covers the
+Model row's note, so a priced row says its price ("$3 / $15", from `/models`' per-token `pricing`) — the
 current one too, as the one to compare against. Its unit, in and out per
 million tokens, is named once, in the Paid header: the sections are there
 wherever prices are, through a search too. Beside it, `$$$$`, always all

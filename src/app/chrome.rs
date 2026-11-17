@@ -102,6 +102,35 @@ pub(super) fn mix(a: Color, b: Color, t: f32) -> Color {
     }
 }
 
+/// How wide `words` are at `size` in the UI font, as iced will lay them out.
+pub(super) fn ui_width(words: &str, size: f32) -> f32 {
+    crate::text_raster::measure(words, 100_000.0, size, 1.0, None, &[]).0
+}
+
+/// `words` then `after`, on one line `width` wide at `size` in the UI font,
+/// `words` cut short with an ellipsis where they don't fit — iced's text has
+/// none, and a line cut at its edge, mid-letter, reads as a fault. `after`
+/// is kept whole, as what a cut would lose that matters, unless it's too
+/// long to fit beside anything: then the line is cut at its end.
+pub(super) fn fit_line(words: &str, after: &str, size: f32, width: f32) -> String {
+    let whole = format!("{words}{after}");
+    if words.is_empty() || ui_width(&whole, size) <= width {
+        return whole;
+    }
+    if !after.is_empty() && ui_width(&format!("…{after}"), size) > width {
+        return fit_line(&whole, "", size, width);
+    }
+    let ends: Vec<usize> = words.char_indices().map(|(at, _)| at).collect();
+    let cut = |chars: usize| format!("{}…{after}", words[..ends[chars]].trim_end());
+    // The most characters that fit, found by halves: a measurement shapes the line.
+    let (mut fits, mut over) = (0, ends.len());
+    while over - fits > 1 {
+        let mid = (fits + over) / 2;
+        if ui_width(&cut(mid), size) <= width { fits = mid } else { over = mid }
+    }
+    cut(fits)
+}
+
 /// The small line drawings that open a floating bar: the find bar's
 /// magnifier, and the prompt (`>_`) the command palette opens with — the
 /// board (two linked cards) that marks one among the palette's commands, and

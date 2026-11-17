@@ -212,6 +212,7 @@ impl App {
                 notice: None,
                 empty: "No matching font".into(),
                 headers: Vec::new(),
+                anchor: None,
             },
             rows,
         )

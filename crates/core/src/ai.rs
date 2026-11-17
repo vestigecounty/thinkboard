@@ -47,21 +47,43 @@ const SEPARATOR: &str = "\n---\n";
 pub struct Preset {
     pub name: &'static str,
     pub url: &'static str,
+    pub kind: ProviderKind,
+}
+
+/// What sort of provider a preset is, which is how they're listed to choose
+/// from: by where a question goes, and what's there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProviderKind {
+    /// A runtime on this machine: nothing leaves it, and no key.
+    Local,
+    /// Many makers' models behind one key: routed to whoever serves them
+    /// (OpenRouter), or open ones on the host's own hardware (Groq).
+    Host,
+    /// A model maker's own API, for its own models.
+    Maker,
 }
 
 /// The providers offered as one-click presets. `Custom` (any other URL) is not
 /// listed here — the settings picker adds it.
 pub const PRESETS: &[Preset] = &[
-    // Local runtimes first (no key needed), then the major hosted providers.
-    Preset { name: "LM Studio", url: "http://localhost:1234/v1" },
-    Preset { name: "Ollama", url: "http://localhost:11434/v1" },
-    Preset { name: "OpenAI", url: "https://api.openai.com/v1" },
-    Preset { name: "OpenRouter", url: crate::sign_in::ENDPOINT },
-    Preset { name: "Groq", url: "https://api.groq.com/openai/v1" },
-    Preset { name: "Together AI", url: "https://api.together.xyz/v1" },
-    Preset { name: "Fireworks AI", url: "https://api.fireworks.ai/inference/v1" },
-    Preset { name: "Mistral", url: "https://api.mistral.ai/v1" },
-    Preset { name: "DeepSeek", url: "https://api.deepseek.com/v1" },
+    // By kind, as they're listed (local runtimes, no key needed, first) — and
+    // within one, the ones someone is likeliest to have a key for first.
+    Preset { name: "LM Studio", url: "http://localhost:1234/v1", kind: ProviderKind::Local },
+    Preset { name: "Ollama", url: "http://localhost:11434/v1", kind: ProviderKind::Local },
+    Preset { name: "llama.cpp", url: "http://localhost:9931/v1", kind: ProviderKind::Local },
+    Preset { name: "Jan", url: "http://127.0.0.1:1337/v1", kind: ProviderKind::Local },
+    Preset { name: "OpenRouter", url: crate::sign_in::ENDPOINT, kind: ProviderKind::Host },
+    Preset { name: "Groq", url: "https://api.groq.com/openai/v1", kind: ProviderKind::Host },
+    Preset { name: "Hugging Face", url: "https://router.huggingface.co/v1", kind: ProviderKind::Host },
+    Preset { name: "Together AI", url: "https://api.together.ai/v1", kind: ProviderKind::Host },
+    Preset { name: "Fireworks AI", url: "https://api.fireworks.ai/inference/v1", kind: ProviderKind::Host },
+    Preset { name: "Cerebras", url: "https://api.cerebras.ai/v1", kind: ProviderKind::Host },
+    Preset { name: "OpenAI", url: "https://api.openai.com/v1", kind: ProviderKind::Maker },
+    Preset { name: "Anthropic", url: "https://api.anthropic.com/v1", kind: ProviderKind::Maker },
+    Preset { name: "Google Gemini", url: "https://generativelanguage.googleapis.com/v1beta/openai", kind: ProviderKind::Maker },
+    Preset { name: "xAI", url: "https://api.x.ai/v1", kind: ProviderKind::Maker },
+    Preset { name: "DeepSeek", url: "https://api.deepseek.com", kind: ProviderKind::Maker },
+    Preset { name: "Mistral", url: "https://api.mistral.ai/v1", kind: ProviderKind::Maker },
 ];
 
 /// A POST to the endpoint with the auth header set when a key is given, plus an
@@ -121,14 +143,54 @@ pub struct Price {
 /// are extensions, read when present and skipped when not.
 pub async fn models(base_url: &str, api_key: &str) -> Result<Vec<Model>, String> {
     let url = format!("{}/models", base_url.trim_end_matches('/'));
-    let response = authed_get(&url, api_key).send().await.map_err(|e| describe_unreachable(&e, base_url))?;
-    if !response.status().is_success() {
-        let status = response.status();
-        let body = response.text().await.unwrap_or_default();
-        return Err(describe_failure(status, &body, base_url, api_key, Asked::Models));
+    let mut models = Vec::new();
+    let mut page = url.clone();
+    for _ in 0..MODEL_PAGES {
+        let response = authed_get(&page, api_key).send().await.map_err(|e| describe_unreachable(&e, base_url))?;
+        if !response.status().is_success() {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            return Err(describe_failure(status, &body, base_url, api_key, Asked::Models));
+        }
+        let body: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
+        models.extend(parse_models(&body));
+        match next_page(&body) {
+            Some(after) => page = format!("{url}?limit=1000&after_id={after}"),
+            None => break,
+        }
     }
-    let body: serde_json::Value = response.json().await.map_err(|e| e.to_string())?;
-    Ok(parse_models(&body))
+    models.sort_by_key(|model| model.id.to_lowercase());
+    models.dedup_by(|a, b| a.id == b.id);
+    Ok(models)
+}
+
+/// Whether an OpenAI-compatible server answers at `base_url`: its model
+/// list comes, or is refused for want of a key. Something else on the port
+/// answers too, but not like that — and nothing there refuses the
+/// connection at once, so on this machine the answer is quick.
+pub async fn answers(base_url: &str) -> bool {
+    let url = format!("{}/models", base_url.trim_end_matches('/'));
+    let Ok(client) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(1)).build() else {
+        return false;
+    };
+    client.get(&url).send().await.is_ok_and(|response| {
+        response.status().is_success() || matches!(response.status().as_u16(), 401 | 403)
+    })
+}
+
+/// How many pages of a model list are followed: Anthropic's, the one that
+/// comes in pages, is a few dozen models, a thousand to a page after the
+/// first. A bound, so a list that never ends can't hold the picker forever.
+const MODEL_PAGES: usize = 10;
+
+/// Where the next page of a model list begins, where it says there's one:
+/// Anthropic's twenty to a page, unless asked for more, with `has_more` and
+/// the last id. Only an id that can go in a query as it is.
+fn next_page(body: &serde_json::Value) -> Option<&str> {
+    let more = body.get("has_more").and_then(serde_json::Value::as_bool)?;
+    let last = body.get("last_id").and_then(serde_json::Value::as_str)?;
+    let plain = !last.is_empty() && last.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_.:".contains(&b));
+    (more && plain).then_some(last)
 }
 
 /// Reads the model list out of a `/models` response.
@@ -145,11 +207,15 @@ fn parse_models(body: &serde_json::Value) -> Vec<Model> {
         .flatten()
         .filter_map(|item| {
             let id = item.get("id").and_then(|v| v.as_str())?.trim();
+            // Gemini's list names its models as resources ("models/gemini-…"),
+            // where a question names them bare, as its own examples do.
+            let id = id.strip_prefix("models/").unwrap_or(id);
             (!id.is_empty()).then(|| Model {
                 id: id.to_owned(),
-                name: item
-                    .get("name")
-                    .and_then(|v| v.as_str())
+                // OpenRouter's `name`; Anthropic's and Together's `display_name`.
+                name: ["name", "display_name"]
+                    .iter()
+                    .find_map(|field| item.get(field).and_then(|v| v.as_str()).filter(|name| !name.trim().is_empty()))
                     .map(str::trim)
                     .filter(|name| !name.is_empty() && *name != id)
                     .map(str::to_owned),
@@ -230,11 +296,17 @@ fn describe_failure(status: reqwest::StatusCode, body: &str, base_url: &str, api
              another model in Settings → AI. ({detail})"
         );
     }
+    // Gemini refuses a key it doesn't know with a 400 that says so, not a 401.
+    let about_the_key = status.as_u16() == 400 && detail.to_lowercase().contains("api key");
     match status.as_u16() {
         // Sent with no key at all, a refusal is a request for one, not a
         // verdict on it.
         401 | 403 if api_key.trim().is_empty() => format!("{provider} wants an API key — paste one in Settings → AI."),
+        400 if about_the_key && api_key.trim().is_empty() => {
+            format!("{provider} wants an API key — paste one in Settings → AI.")
+        }
         401 | 403 => "The API key was rejected — check it in Settings → AI.".to_owned(),
+        400 if about_the_key => "The API key was rejected — check it in Settings → AI.".to_owned(),
         404 if matches!(asked, Asked::Models) => {
             "This endpoint doesn't list its models — type the model's name in Settings → AI.".to_owned()
         }
@@ -263,6 +335,22 @@ pub const FREE_ROUTER: &str = "openrouter/free";
 /// price — nor does a config, until the endpoint's list has been fetched.
 pub fn free_by_name(model: &str) -> bool {
     model.ends_with(":free") || model == FREE_ROUTER
+}
+
+/// A model as it's named in a line of its own: the endpoint's title for it
+/// less the vendor before it ("Anthropic: Claude Sonnet 4.5" is "Claude
+/// Sonnet 4.5"), or else its id's last part. Less whether it's free as well,
+/// which whoever says it says their own way, and Ollama's `:latest`, which
+/// is what no tag means anyway.
+pub fn short_name(id: &str, name: Option<&str>) -> String {
+    // The router's id says nothing but "free"; this is what it lists it as.
+    let name = name.or((id.trim() == FREE_ROUTER).then_some("Free Models Router"));
+    if let Some(name) = name.map(str::trim).filter(|name| !name.is_empty()) {
+        let name = name.split_once(": ").map_or(name, |(_, rest)| rest);
+        return name.trim_end_matches(" (free)").to_owned();
+    }
+    let tail = id.trim().rsplit('/').next().unwrap_or_default();
+    tail.trim_end_matches(":free").trim_end_matches(":latest").to_owned()
 }
 
 /// Whether a refusal is about the model named — wording varies by runtime:
@@ -301,6 +389,11 @@ fn unreachable(base_url: &str) -> String {
     };
     if matches!(host, "localhost" | "127.0.0.1" | "[::1]" | "0.0.0.0") {
         match provider_name(base_url) {
+            // Its server listened on 8080 until October 2026, and still does
+            // wherever it's told to: older builds, the Docker examples.
+            Some(name @ "llama.cpp") => {
+                format!("Couldn't reach {name} at {at} — is its server running? If it's on 8080, choose Custom in Settings → AI.")
+            }
             Some(name) => format!("Couldn't reach {name} at {at} — is it running?"),
             None => format!("Nothing is answering at {at} — is the server running?"),
         }
@@ -1519,6 +1612,22 @@ mod tests {
         // A bare array, which a couple of endpoints return instead of `data`.
         let bare = serde_json::json!([{"id": "local-model"}]);
         assert_eq!(parse_models(&bare)[0].id, "local-model");
+
+        // Anthropic's and Together's title, under another field.
+        let anthropic = serde_json::json!({"data": [{"id": "claude-sonnet-4-5", "display_name": "Claude Sonnet 4.5"}]});
+        assert_eq!(parse_models(&anthropic)[0].name.as_deref(), Some("Claude Sonnet 4.5"));
+        // Gemini's resource names, as a question names them.
+        let gemini = serde_json::json!({"data": [{"id": "models/gemini-2.5-flash", "object": "model"}]});
+        assert_eq!(parse_models(&gemini)[0].id, "gemini-2.5-flash");
+    }
+
+    #[test]
+    fn a_model_list_in_pages_is_followed_to_its_end() {
+        let page = |more: bool, last: &str| serde_json::json!({"data": [], "has_more": more, "last_id": last});
+        assert_eq!(next_page(&page(true, "claude-3-haiku-20240307")), Some("claude-3-haiku-20240307"));
+        assert_eq!(next_page(&page(false, "claude-3-haiku-20240307")), None, "the last page");
+        assert_eq!(next_page(&serde_json::json!({"data": []})), None, "a list that doesn't page");
+        assert_eq!(next_page(&page(true, "a&b=c")), None, "nothing that would need escaping in a query");
     }
 
     #[test]
@@ -1591,6 +1700,35 @@ mod tests {
         assert_eq!(destination("http://localhost:1234/v1"), "LM Studio");
         assert_eq!(destination("http://localhost:8080/v1"), "localhost:8080");
         assert_eq!(destination("https://api.example.com/v1"), "api.example.com");
+        // llama.cpp's server moved off 8080, where an older one still is.
+        assert!(unreachable("http://localhost:9931/v1").contains("If it's on 8080, choose Custom"));
+    }
+
+    #[test]
+    fn the_presets_are_listed_a_kind_at_a_time() {
+        // Each kind in one run, so a section header over its first stands
+        // over all of them.
+        let mut seen = Vec::new();
+        for preset in PRESETS {
+            if seen.last() != Some(&preset.kind) {
+                assert!(!seen.contains(&preset.kind), "{} out of its kind's run", preset.name);
+                seen.push(preset.kind);
+            }
+        }
+        assert_eq!(seen.first(), Some(&ProviderKind::Local), "this machine first");
+    }
+
+    #[test]
+    fn a_model_is_named_without_its_vendor_or_whether_its_free() {
+        assert_eq!(short_name("anthropic/claude-sonnet-4.5", Some("Anthropic: Claude Sonnet 4.5")), "Claude Sonnet 4.5");
+        assert_eq!(short_name("google/gemma-3-27b-it:free", Some("Google: Gemma 3 27B (free)")), "Gemma 3 27B");
+        assert_eq!(short_name("openrouter/free", Some("Free Models Router")), "Free Models Router");
+        assert_eq!(short_name("openrouter/free", None), "Free Models Router", "before it's listed");
+        // Before the list is fetched, or where the endpoint gives no title.
+        assert_eq!(short_name("meta-llama/llama-3.3-70b-instruct:free", None), "llama-3.3-70b-instruct");
+        assert_eq!(short_name("llama3.2:latest", None), "llama3.2");
+        assert_eq!(short_name("qwen2.5:7b", Some("")), "qwen2.5:7b");
+        assert_eq!(short_name("accounts/fireworks/models/llama-v3p1-70b-instruct", None), "llama-v3p1-70b-instruct");
     }
 
     #[test]
@@ -1606,6 +1744,11 @@ mod tests {
         let rejected = |asked| describe_failure(StatusCode::UNAUTHORIZED, "{}", lm_studio, "sk-1", asked);
         assert_eq!(rejected(Asked::Models), rejected(chat));
         assert!(rejected(chat).contains("check it in Settings → AI"));
+        // Gemini says it with a 400.
+        let gemini = "https://generativelanguage.googleapis.com/v1beta/openai";
+        let invalid = r#"[{"error": {"code": 400, "message": "API key not valid. Please pass a valid API key.", "status": "INVALID_ARGUMENT"}}]"#;
+        assert_eq!(describe_failure(StatusCode::BAD_REQUEST, invalid, gemini, "AIza-1", Asked::Models), rejected(Asked::Models));
+        assert_eq!(describe_failure(StatusCode::BAD_REQUEST, invalid, gemini, "", chat), "Google Gemini wants an API key — paste one in Settings → AI.");
 
         // A local runtime without the route: ordinary, and nothing to do with a key.
         let missing = describe_failure(StatusCode::NOT_FOUND, "<html>404</html>", lm_studio, "", Asked::Models);

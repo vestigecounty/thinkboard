@@ -152,9 +152,11 @@ pub(crate) enum Msg {
     PickPreset(String),
     /// Choose the model from the endpoint's own list (the model row's button).
     ChooseModel,
-    /// Choose the theme or the font in its own picker, over the form.
+    /// Choose the theme, the font or the provider in its own picker, over
+    /// the form.
     ChooseTheme,
     ChooseFont,
+    ChooseProvider,
     /// One of the overlay background's tiles.
     Backdrop(OverlayBackdrop),
     /// Show another tab.
@@ -183,7 +185,7 @@ impl Msg {
             | Msg::Paste(field)
             | Msg::Focus(field)
             | Msg::Reset(field) => Some(*field),
-            Msg::PickPreset(_) => Some(Field::AiProvider),
+            Msg::PickPreset(_) | Msg::ChooseProvider => Some(Field::AiProvider),
             Msg::ChooseModel => Some(Field::AiModel),
             Msg::ChooseTheme => Some(Field::Theme),
             Msg::ChooseFont => Some(Field::Font),
@@ -643,7 +645,7 @@ pub(crate) fn is_custom(config: &Config) -> bool {
 
 /// The preset name for `url`: "Off" when empty, else the matching provider
 /// (ignoring a trailing slash), else "Custom".
-fn current_preset(url: &str) -> String {
+pub(super) fn current_preset(url: &str) -> String {
     let url = url.trim().trim_end_matches('/');
     if url.is_empty() {
         return PROVIDER_OFF.to_owned();
@@ -745,6 +747,9 @@ impl App {
                 Task::none()
             }
             Msg::PickPreset(name) => {
+                // Chosen from its picker, which a choice puts away — and if
+                // that was the palette's, what follows is the palette's too.
+                let from_palette = self.provider_picker.take().is_some_and(|picker| !picker.over_settings);
                 // "Off" clears the endpoint (AI disabled); a known provider fills
                 // it; "Custom" keeps whatever the user typed — and, with nothing
                 // typed yet, has to be remembered here, or the form would read
@@ -754,6 +759,10 @@ impl App {
                     self.config.ai_url = String::new();
                 } else if let Some(preset) = crate::ai::PRESETS.iter().find(|p| p.name == name) {
                     self.config.ai_url = preset.url.to_owned();
+                } else if from_palette {
+                    // Its URL is typed in the form, which the palette hasn't
+                    // got: it opens there, at that row.
+                    return self.open_settings_at(Field::AiUrl);
                 } else {
                     return Task::none();
                 }
@@ -770,13 +779,19 @@ impl App {
                 // unlikely to serve. Not for a hosted one with no key yet: its
                 // list would only be a refusal, so the key's paste opens it.
                 if self.config.ai_enabled() && ready_to_list(&self.config) {
-                    return self.open_model_picker_from_settings();
+                    return if from_palette { self.open_model_picker() } else { self.open_model_picker_from_settings() };
+                }
+                // From the palette, a key still wanted has nowhere to go but
+                // the form, so it opens there, at that row.
+                if from_palette && self.config.ai_enabled() {
+                    return self.open_settings_at(Field::AiApiKey);
                 }
                 Task::none()
             }
             Msg::ChooseModel => self.open_model_picker_from_settings(),
             Msg::ChooseTheme => self.open_theme_picker_over_settings(),
             Msg::ChooseFont => self.open_font_picker_over_settings(),
+            Msg::ChooseProvider => self.open_provider_picker_over_settings(),
             Msg::Backdrop(backdrop) => {
                 // The image tile is also where the picture is chosen: the first
                 // time it's picked, or when it's picked again to change it. And
@@ -1164,6 +1179,9 @@ impl App {
         if self.model_picker.as_ref().is_some_and(|picker| picker.over_settings) {
             self.model_picker = None;
         }
+        if self.provider_picker.as_ref().is_some_and(|picker| picker.over_settings) {
+            self.provider_picker = None;
+        }
         let mut tasks = Vec::new();
         if self.theme_picker.as_ref().is_some_and(|picker| picker.over_settings) {
             tasks.push(self.cancel_theme_picker());
@@ -1177,7 +1195,11 @@ impl App {
     /// Whichever picker the form opened, drawn over it — in the board's modal
     /// or in the settings window, wherever the form is.
     pub(super) fn settings_picker(&self) -> Option<iced::Element<'_, Message>> {
-        if let Some(picker) = self.model_picker.as_ref().filter(|picker| picker.over_settings) {
+        // Not while it waits to be placed: it would show up somewhere else first.
+        let placed = |over_settings: bool, place: super::picker::Place| {
+            over_settings && place != super::picker::Place::Finding
+        };
+        if let Some(picker) = self.model_picker.as_ref().filter(|picker| placed(picker.over_settings, picker.place)) {
             return Some(self.model_picker_view(picker));
         }
         if let Some(picker) = self.theme_picker.as_ref().filter(|picker| picker.over_settings) {
@@ -1186,12 +1208,18 @@ impl App {
         if let Some(picker) = self.font_picker.as_ref().filter(|picker| picker.over_settings) {
             return Some(self.font_picker_view(picker));
         }
+        if let Some(picker) = self.provider_picker.as_ref().filter(|picker| placed(picker.over_settings, picker.place)) {
+            return Some(self.provider_picker_view(picker));
+        }
         None
     }
 
     /// Whether a picker is open: its Esc and Tab are its own, not the form's.
     pub(super) fn picker_open(&self) -> bool {
-        self.model_picker.is_some() || self.theme_picker.is_some() || self.font_picker.is_some()
+        self.model_picker.is_some()
+            || self.theme_picker.is_some()
+            || self.font_picker.is_some()
+            || self.provider_picker.is_some()
     }
 }
 
