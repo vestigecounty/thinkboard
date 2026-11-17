@@ -31,7 +31,8 @@ fn resolve_config_home(flatpak: bool, xdg: Option<PathBuf>, home: Option<PathBuf
     xdg.or_else(|| home.map(|home| home.join(".config")))
 }
 
-#[cfg(test)]
+// Flatpak is Linux's, its paths Unix ones; Unix, so a Mac runs it too.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
