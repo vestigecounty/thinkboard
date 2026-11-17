@@ -1464,7 +1464,16 @@ throwaway `--config` run kill the everyday copy. So:
   is found per desktop (`platform::wallpaper`: GNOME's settings, KDE's
   appletsrc, Xfce's xfconf, COSMIC's own config) and offered only where it
   is, and is a JPEG or PNG — a slideshow or a JPEG XL isn't offered rather
-  than shown black.
+  than shown black. **Inside a Flatpak** (`core::sandbox`), `$XDG_CONFIG_HOME`
+  is the app's own folder, so what's read of the host's — Obsidian's vault
+  list, COSMIC's shortcuts, a desktop's wallpaper settings — is read from
+  `~/.config` (`host_config_home`), which the sandbox's home access reaches;
+  each launch gets a runtime directory of its own, so the hand-over socket
+  goes in the `app/<id>` one they share; COSMIC's shortcut runs `flatpak run`
+  with the app id, the sandbox's binary being nowhere the host can run it;
+  and the tray item skips owning a D-Bus name, which the sandbox won't let it.
+  A default wallpaper under the host's `/usr/share` isn't in the sandbox, and
+  isn't offered.
 - **Windows** — release builds use the GUI subsystem (no console); the
   `no-console` feature forces that in any profile. A picture behind the
   overlay is drawn in the board's own window, as on Linux
@@ -1486,9 +1495,29 @@ throwaway `--config` run kill the everyday copy. So:
 ## Releasing
 
 `git tag vX.Y.Z && git push origin vX.Y.Z` runs `.github/workflows/release.yml`,
-which builds a universal macOS `.app`, a Windows zip and a Linux tarball. Push
-the one tag, not `--tags`: older tags exist only locally. Tag releases for
-shipped user-facing features — not for internal refactors.
+which builds a universal macOS `.app`, a Windows zip, and for Linux, x86_64 and
+aarch64 each, a tarball, a `.deb`, an `.rpm` and a Flatpak bundle. Push the one
+tag, not `--tags`: older tags exist only locally. Tag releases for shipped
+user-facing features — not for internal refactors. Add the release to
+`<releases>` in `packaging/linux/…metainfo.xml` as it's tagged: software
+centres show it.
+
+**Linux packages.** The Linux builds run on Ubuntu 22.04 runners, Arm's on
+GitHub's own, so the binary asks for glibc 2.35 and runs on the distros since.
+The `.deb` and `.rpm` (cargo-deb, cargo-generate-rpm) carry the tarball's
+files where a system install puts them, from `[package.metadata.deb]` and
+`[package.metadata.generate-rpm]` in Cargo.toml: no repository, so they don't
+update themselves. **The AUR's `thinkboard-bin`** is `packaging/aur` with the
+version and the tarballs' checksums filled in, pushed with the key of the AUR
+account that maintains it (the `AUR_SSH_KEY` secret); without it the job says
+so and leaves the AUR be. **The Flatpak** (`packaging/flatpak`) builds from
+source offline, as Flathub does, on the freedesktop runtime; its crate list
+(`cargo-sources.json`) is generated from Cargo.lock as it runs, by
+flatpak-builder-tools' generator pinned to a commit, and never committed, so
+it can't go stale beside the lock. Flathub's copy of the manifest names a tag
+instead of the checkout, and keeps a crate list beside it. A Flatpak that
+fails to build doesn't hold the release back. The launcher and the metainfo
+are validated on every push (`linux-packaging` in ci.yml).
 
 After publishing, it points the **Homebrew tap** (`vestigecounty/homebrew-tap`,
 checked out at `homebrew-tap/`, excluded like `demo/`) at the new Mac zip:

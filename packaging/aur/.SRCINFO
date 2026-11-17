@@ -1,0 +1,20 @@
+pkgbase = thinkboard-bin
+	pkgdesc = Obsidian boards over your desktop, a hotkey away
+	pkgver = @VERSION@
+	pkgrel = 1
+	url = https://vestigecounty.github.io/thinkboard/
+	arch = x86_64
+	arch = aarch64
+	license = MIT
+	depends = glibc
+	depends = gcc-libs
+	optdepends = vulkan-icd-loader: drawing through Vulkan, where the GPU has a driver for it
+	optdepends = xdg-desktop-portal: file dialogs, and the summon key under Wayland
+	provides = thinkboard
+	conflicts = thinkboard
+	source_x86_64 = https://github.com/vestigecounty/thinkboard/releases/download/v@VERSION@/thinkboard-@VERSION@-linux-x86_64.tar.gz
+	sha256sums_x86_64 = @SHA256_X86_64@
+	source_aarch64 = https://github.com/vestigecounty/thinkboard/releases/download/v@VERSION@/thinkboard-@VERSION@-linux-aarch64.tar.gz
+	sha256sums_aarch64 = @SHA256_AARCH64@
+
+pkgname = thinkboard-bin

@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- What software centres show of ThinkBoard (GNOME Software, KDE Discover,
+     Flathub), installed by every Linux package: the .deb and .rpm, the AUR's,
+     the Flatpak. A release is added to <releases> as it's tagged. -->
+<component type="desktop-application">
+  <id>com.vestigecounty.ThinkBoard</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>ThinkBoard</name>
+  <summary>Obsidian boards, a hotkey away</summary>
+  <developer id="com.vestigecounty">
+    <name>Vestige County</name>
+  </developer>
+  <description>
+    <p>
+      Summon a board directly above your desktop with a hotkey, and put it away
+      again. Open your Obsidian vault's boards, or run standalone: cards, links,
+      Markdown and pictures, saved straight back to the .canvas file, so a board
+      stays one Obsidian can open.
+    </p>
+    <ul>
+      <li>Zoom out and groups of cards collapse into named clusters; zoom in and they come back</li>
+      <li>Ask AI on a card, and the chain of cards leading to it is the prompt — a model on your machine, or a hosted provider</li>
+      <li>Auto-layout tidies a board left to right or top down</li>
+      <li>Themes, your Obsidian theme among them, and fonts</li>
+    </ul>
+  </description>
+  <launchable type="desktop-id">com.vestigecounty.ThinkBoard.desktop</launchable>
+  <url type="homepage">https://vestigecounty.github.io/thinkboard/</url>
+  <url type="bugtracker">https://github.com/vestigecounty/thinkboard/issues</url>
+  <url type="vcs-browser">https://github.com/vestigecounty/thinkboard</url>
+  <screenshots>
+    <screenshot type="default">
+      <caption>A board about a trip, summoned over the desktop</caption>
+      <image>https://raw.githubusercontent.com/vestigecounty/thinkboard/main/docs/screenshots/board.jpg</image>
+    </screenshot>
+    <screenshot>
+      <caption>Ask AI on a card: the chain leading to it is the prompt</caption>
+      <image>https://raw.githubusercontent.com/vestigecounty/thinkboard/main/docs/screenshots/ask-ai.jpg</image>
+    </screenshot>
+  </screenshots>
+  <provides>
+    <binary>thinkboard</binary>
+  </provides>
+  <supports>
+    <control>keyboard</control>
+    <control>pointing</control>
+  </supports>
+  <content_rating type="oars-1.1"/>
+  <branding>
+    <color type="primary" scheme_preference="light">#a8c8f0</color>
+    <color type="primary" scheme_preference="dark">#1f2a44</color>
+  </branding>
+  <releases>
+    <release version="0.8.0" date="2026-10-17"/>
+    <release version="0.7.0" date="2026-08-23"/>
+    <release version="0.6.0" date="2026-08-11"/>
+    <release version="0.5.0" date="2026-08-01"/>
+  </releases>
+</component>

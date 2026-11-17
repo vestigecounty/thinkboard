@@ -3,6 +3,45 @@ name = "thinkboard"
 version = "0.8.0"
 edition = "2024"
 license = "MIT"
+description = "Obsidian boards over your desktop, a hotkey away"
+homepage = "https://vestigecounty.github.io/thinkboard/"
+repository = "https://github.com/vestigecounty/thinkboard"
+
+# The Linux packages release.yml builds: a .deb (cargo-deb) and an .rpm
+# (cargo-generate-rpm), each the files the tarball carries, put where a
+# system install puts them. Built with `--target`, which both read the
+# `target/release` paths below against. Libraries the binary links are found
+# by each tool; the ones winit and wgpu open at run time — Wayland, X11's
+# keyboard, Vulkan or EGL — are recommended, as any desktop has them.
+[package.metadata.deb]
+maintainer = "Vestige County <support@vestigecounty.com>"
+copyright = "Vestige County"
+section = "utils"
+depends = "$auto"
+recommends = "libwayland-client0, libxkbcommon0, libxkbcommon-x11-0, libvulkan1 | libegl1, xdg-desktop-portal"
+extended-description = """\
+Summon a board directly above your desktop with a hotkey, and put it away \
+again. Open your Obsidian vault's boards, or run standalone: cards, links, \
+Markdown and pictures, saved straight back to the .canvas file."""
+assets = [
+    ["target/release/thinkboard", "usr/bin/", "755"],
+    ["packaging/linux/com.vestigecounty.ThinkBoard.desktop", "usr/share/applications/", "644"],
+    ["packaging/linux/com.vestigecounty.ThinkBoard.metainfo.xml", "usr/share/metainfo/", "644"],
+    ["assets/thinkboard.svg", "usr/share/icons/hicolor/scalable/apps/", "644"],
+    ["assets/thinkboard.png", "usr/share/icons/hicolor/256x256/apps/", "644"],
+    ["README.md", "usr/share/doc/thinkboard/", "644"],
+]
+
+[package.metadata.generate-rpm]
+summary = "Obsidian boards, a hotkey away"
+assets = [
+    { source = "target/release/thinkboard", dest = "/usr/bin/thinkboard", mode = "755" },
+    { source = "packaging/linux/com.vestigecounty.ThinkBoard.desktop", dest = "/usr/share/applications/com.vestigecounty.ThinkBoard.desktop", mode = "644" },
+    { source = "packaging/linux/com.vestigecounty.ThinkBoard.metainfo.xml", dest = "/usr/share/metainfo/com.vestigecounty.ThinkBoard.metainfo.xml", mode = "644" },
+    { source = "assets/thinkboard.svg", dest = "/usr/share/icons/hicolor/scalable/apps/thinkboard.svg", mode = "644" },
+    { source = "assets/thinkboard.png", dest = "/usr/share/icons/hicolor/256x256/apps/thinkboard.png", mode = "644" },
+    { source = "LICENSE", dest = "/usr/share/licenses/thinkboard/LICENSE", mode = "644", doc = true },
+]
 
 [features]
 # Windows only: force the GUI subsystem (no console window) regardless of build

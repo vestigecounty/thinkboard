@@ -42,7 +42,8 @@ pub fn registry_paths() -> Vec<PathBuf> {
     }
     #[cfg(not(any(target_os = "macos", target_os = "windows")))]
     {
-        let config = std::env::var_os("XDG_CONFIG_HOME").filter(|dir| !dir.is_empty()).map(PathBuf::from);
+        // The host's: inside a Flatpak, `$XDG_CONFIG_HOME` is ThinkBoard's own.
+        let config = crate::sandbox::host_config_home();
         linux_registry_paths(home.as_deref(), config.as_deref())
     }
 }

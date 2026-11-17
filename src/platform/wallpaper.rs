@@ -117,11 +117,10 @@ fn cosmic_source(entry: &str) -> Option<String> {
     Some(path[..path.find('"')?].to_owned())
 }
 
+/// The host's config directory, where a desktop keeps its wallpaper — not
+/// `$XDG_CONFIG_HOME` inside a Flatpak, where that's the app's own.
 fn config_home() -> Option<PathBuf> {
-    std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .filter(|dir| dir.is_absolute())
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))
+    thinkboard_core::sandbox::host_config_home()
 }
 
 /// A `file://` URI as a path, its escapes undone; anything else as it is.

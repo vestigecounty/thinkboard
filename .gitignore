@@ -7,3 +7,7 @@
 # test fixture under testdata/fixtures/ is kept — tests compile it in.
 /testdata/*
 !/testdata/fixtures/
+
+# The Flatpak build's crate list, generated from Cargo.lock as it runs
+# (release.yml): kept out, so it can't go stale beside the lock it's from.
+/packaging/flatpak/cargo-sources.json

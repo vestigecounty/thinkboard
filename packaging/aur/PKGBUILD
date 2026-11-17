@@ -1,0 +1,32 @@
+# The AUR's thinkboard-bin, over the release's tarballs. release.yml fills in
+# @VERSION@ and each tarball's @SHA256_*@, and pushes it with .SRCINFO to
+# aur.archlinux.org — this copy is the template, not what the AUR serves.
+# Maintainer: Vestige County <support@vestigecounty.com>
+pkgname=thinkboard-bin
+pkgver=@VERSION@
+pkgrel=1
+pkgdesc="Obsidian boards over your desktop, a hotkey away"
+arch=('x86_64' 'aarch64')
+url="https://vestigecounty.github.io/thinkboard/"
+license=('MIT')
+depends=('glibc' 'gcc-libs')
+optdepends=(
+    'vulkan-icd-loader: drawing through Vulkan, where the GPU has a driver for it'
+    'xdg-desktop-portal: file dialogs, and the summon key under Wayland'
+)
+provides=('thinkboard')
+conflicts=('thinkboard')
+source_x86_64=("https://github.com/vestigecounty/thinkboard/releases/download/v${pkgver}/thinkboard-${pkgver}-linux-x86_64.tar.gz")
+source_aarch64=("https://github.com/vestigecounty/thinkboard/releases/download/v${pkgver}/thinkboard-${pkgver}-linux-aarch64.tar.gz")
+sha256sums_x86_64=('@SHA256_X86_64@')
+sha256sums_aarch64=('@SHA256_AARCH64@')
+
+package() {
+    cd "thinkboard-${pkgver}-linux-${CARCH}"
+    install -Dm755 thinkboard "${pkgdir}/usr/bin/thinkboard"
+    install -Dm644 com.vestigecounty.ThinkBoard.desktop "${pkgdir}/usr/share/applications/com.vestigecounty.ThinkBoard.desktop"
+    install -Dm644 com.vestigecounty.ThinkBoard.metainfo.xml "${pkgdir}/usr/share/metainfo/com.vestigecounty.ThinkBoard.metainfo.xml"
+    install -Dm644 thinkboard.svg "${pkgdir}/usr/share/icons/hicolor/scalable/apps/thinkboard.svg"
+    install -Dm644 thinkboard.png "${pkgdir}/usr/share/icons/hicolor/256x256/apps/thinkboard.png"
+    install -Dm644 LICENSE "${pkgdir}/usr/share/licenses/${pkgname}/LICENSE"
+}

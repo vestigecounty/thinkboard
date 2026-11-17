@@ -17,9 +17,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Built on the oldest Ubuntu the runners have, so the binary asks
+          # for an old glibc (2.35) and runs on the distros since.
           - name: linux-x86_64
-            os: ubuntu-latest
+            os: ubuntu-22.04
             targets: x86_64-unknown-linux-gnu
+            arch: x86_64
+          - name: linux-aarch64
+            os: ubuntu-22.04-arm
+            targets: aarch64-unknown-linux-gnu
+            arch: aarch64
           - name: windows-x86_64
             os: windows-latest
             targets: x86_64-pc-windows-msvc
@@ -67,22 +74,52 @@ jobs:
         if: runner.os == 'Linux'
         shell: bash
         run: |
+          ARCH="${{ matrix.arch }}"
+          TARGET="${{ matrix.targets }}"
           mkdir -p dist
-          STAGE="thinkboard-${VERSION}-linux-x86_64"
+          STAGE="thinkboard-${VERSION}-linux-${ARCH}"
           mkdir "$STAGE"
-          install -m755 target/x86_64-unknown-linux-gnu/release/thinkboard "$STAGE/thinkboard"
+          install -m755 "target/${TARGET}/release/thinkboard" "$STAGE/thinkboard"
           strip "$STAGE/thinkboard" || true
           # Desktop integration: a launcher, icons (scalable SVG + 256px PNG),
-          # and a user-level installer that drops them into the right XDG dirs.
+          # what software centres show of it, and a user-level installer that
+          # drops them into the right XDG dirs. The AUR's package installs
+          # from this tarball too.
           install -m755 packaging/linux/install.sh "$STAGE/install.sh"
           cp packaging/linux/com.vestigecounty.ThinkBoard.desktop "$STAGE/"
+          cp packaging/linux/com.vestigecounty.ThinkBoard.metainfo.xml "$STAGE/"
           cp assets/thinkboard.svg assets/thinkboard.png "$STAGE/"
           cp README* LICENSE* "$STAGE/" 2>/dev/null || true
           tar -C "$PWD" -czf "dist/${STAGE}.tar.gz" "$STAGE"
           # And under a name that's the same every release, which
           # `releases/latest/download/<name>` always finds: the website's
           # download links, which then never need the version.
-          cp "dist/${STAGE}.tar.gz" dist/thinkboard-linux-x86_64.tar.gz
+          cp "dist/${STAGE}.tar.gz" "dist/thinkboard-linux-${ARCH}.tar.gz"
+
+      - name: Install the .deb and .rpm builders
+        if: runner.os == 'Linux'
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+
+      # The same files as the tarball, put where a system install puts them —
+      # see [package.metadata.deb] and [package.metadata.generate-rpm] in
+      # Cargo.toml. A manual run's `-dev` is `~dev` to both, which sorts it
+      # before the release it leads up to.
+      - name: Package (.deb, .rpm)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          ARCH="${{ matrix.arch }}"
+          TARGET="${{ matrix.targets }}"
+          PKG_VERSION="${VERSION//-/\~}"
+          case "$ARCH" in x86_64) DEB_ARCH=amd64 ;; aarch64) DEB_ARCH=arm64 ;; esac
+          DEB="dist/thinkboard_${PKG_VERSION}_${DEB_ARCH}.deb"
+          RPM="dist/thinkboard-${PKG_VERSION}-1.${ARCH}.rpm"
+          cargo deb --no-build --target "$TARGET" --deb-version "$PKG_VERSION" --output "$DEB"
+          cargo generate-rpm --target "$TARGET" --set-metadata "version = \"${PKG_VERSION}\"" --output "$RPM"
+          cp "$DEB" "dist/thinkboard-linux-${ARCH}.deb"
+          cp "$RPM" "dist/thinkboard-linux-${ARCH}.rpm"
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
@@ -151,11 +188,58 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # The Flatpak, built from source offline as Flathub would build it, as a
+  # bundle per arch: `flatpak install thinkboard-….flatpak`. Its crates are
+  # listed for the offline build from Cargo.lock as it runs, by
+  # flatpak-builder-tools' generator at a known commit.
+  flatpak:
+    name: Flatpak ${{ matrix.arch }}
+    runs-on: ${{ matrix.os }}
+    container:
+      image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
+      options: --privileged
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            os: ubuntu-24.04
+          - arch: aarch64
+            os: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF_TYPE" == "tag" ]]; then
+            echo "VERSION=${GITHUB_REF_NAME#v}" >> "$GITHUB_ENV"
+          else
+            V=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+            echo "VERSION=${V}-dev" >> "$GITHUB_ENV"
+          fi
+
+      - name: List the crates for an offline build
+        shell: bash
+        run: |
+          dnf install -y python3-aiohttp python3-tomlkit
+          curl -sSfL -o /tmp/flatpak-cargo-generator.py \
+            https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/41c20aa10819cdb2a4f3ca171758a96d1955c018/cargo/flatpak-cargo-generator.py
+          python3 /tmp/flatpak-cargo-generator.py Cargo.lock -o packaging/flatpak/cargo-sources.json
+
+      - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
+        with:
+          bundle: thinkboard-${{ env.VERSION }}-linux-${{ matrix.arch }}.flatpak
+          manifest-path: packaging/flatpak/com.vestigecounty.ThinkBoard.yml
+          cache-key: flatpak-${{ matrix.arch }}-${{ hashFiles('Cargo.lock') }}
+          arch: ${{ matrix.arch }}
+
   publish:
     name: Publish GitHub Release
-    needs: build
+    needs: [build, flatpak]
     # Only cut a Release for real tags; a manual dispatch just builds artifacts.
-    if: startsWith(github.ref, 'refs/tags/')
+    # A Flatpak that didn't build doesn't hold the rest back.
+    if: always() && startsWith(github.ref, 'refs/tags/') && needs.build.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write # required to create the release and upload assets
@@ -227,3 +311,66 @@ jobs:
               -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
               commit -q -m "thinkboard ${VERSION}"
           git push -q origin HEAD
+
+  # The AUR's thinkboard-bin, pointed at the release just published:
+  # packaging/aur's PKGBUILD and .SRCINFO, with the version and each arch's
+  # tarball checksum filled in, pushed to aur.archlinux.org with the key of
+  # the AUR account that maintains it (the AUR_SSH_KEY secret). Until that's
+  # set, it says so and leaves the AUR as it was.
+  aur:
+    name: Update the AUR package
+    needs: publish
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check for the AUR key
+        id: key
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          if [ -z "$AUR_SSH_KEY" ]; then
+            echo "::notice::The AUR_SSH_KEY secret isn't set: the AUR's thinkboard-bin still offers the last release, if any."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.key.outputs.skip != 'true'
+
+      # The very tarballs the release carries, so the checksums are of what
+      # makepkg will download.
+      - name: Download the Linux builds
+        if: steps.key.outputs.skip != 'true'
+        uses: actions/download-artifact@v4
+        with:
+          pattern: linux-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Write and push the package
+        if: steps.key.outputs.skip != 'true'
+        shell: bash
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          SHA_X86_64=$(sha256sum "artifacts/thinkboard-${VERSION}-linux-x86_64.tar.gz" | cut -d' ' -f1)
+          SHA_AARCH64=$(sha256sum "artifacts/thinkboard-${VERSION}-linux-aarch64.tar.gz" | cut -d' ' -f1)
+          mkdir -p ~/.ssh
+          printf '%s\n' "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts 2>/dev/null
+          export GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o IdentitiesOnly=yes"
+          git clone -q ssh://aur@aur.archlinux.org/thinkboard-bin.git aur
+          for file in PKGBUILD .SRCINFO; do
+            sed -e "s/@VERSION@/${VERSION}/g" -e "s/@SHA256_X86_64@/${SHA_X86_64}/" -e "s/@SHA256_AARCH64@/${SHA_AARCH64}/" \
+              "packaging/aur/${file}" > "aur/${file}"
+          done
+          cd aur
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "The AUR already offers ${VERSION}."
+            exit 0
+          fi
+          git -c user.name="github-actions[bot]" \
+              -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
+              commit -q -m "thinkboard-bin ${VERSION}"
+          git push -q origin HEAD:master

@@ -102,13 +102,10 @@ pub(super) fn add_summon(hotkey: &str) -> Result<String, String> {
     Ok(written(&binding))
 }
 
-/// The user's shortcuts file: under `$XDG_CONFIG_HOME`, or `~/.config`.
+/// The user's shortcuts file: under the host's config directory, which
+/// inside a Flatpak isn't `$XDG_CONFIG_HOME` (`sandbox::host_config_home`).
 fn custom_path() -> Option<PathBuf> {
-    let root = std::env::var_os("XDG_CONFIG_HOME")
-        .filter(|root| !root.is_empty())
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
-    Some(root.join(SHORTCUTS).join("custom"))
+    Some(thinkboard_core::sandbox::host_config_home()?.join(SHORTCUTS).join("custom"))
 }
 
 /// Where the desktop's own configs are: `$XDG_DATA_DIRS`, or its default.
@@ -164,9 +161,10 @@ fn bound(file: &str) -> Option<String> {
 }
 
 /// Whether a shell command runs `thinkboard`, by name or by a path to it,
-/// quoted or not.
+/// quoted or not — or the Flatpak of it, by its app id.
 fn runs_thinkboard(command: &str) -> bool {
     Path::new(&first_word(command)).file_name().is_some_and(|name| name == "thinkboard")
+        || (first_word(command) == "flatpak" && command.split_whitespace().any(|word| word == super::APP_ID))
 }
 
 /// The program a shell command runs: its first word, as the shell reads it —
@@ -290,6 +288,11 @@ fn written(binding: &Binding) -> String {
 /// `PATH`, so an upgrade in place still answers; this copy's path otherwise,
 /// quoted for the shell COSMIC runs it with.
 fn command() -> String {
+    // Inside a Flatpak, the program is the sandbox's, at a path the host
+    // hasn't got: the host runs it through Flatpak.
+    if let Some(id) = thinkboard_core::sandbox::flatpak_id() {
+        return format!("flatpak run {id}");
+    }
     let Ok(this) = std::env::current_exe().and_then(|exe| exe.canonicalize()) else {
         return "thinkboard".to_owned();
     };
@@ -414,6 +417,8 @@ mod tests {
         assert_eq!(quoted("/opt/a b/thinkboard"), "'/opt/a b/thinkboard'");
         assert_eq!(quoted("/opt/it's $HOME/thinkboard"), r"'/opt/it'\''s $HOME/thinkboard'");
         assert!(runs_thinkboard(&quoted("/opt/it's $HOME/thinkboard")));
+        assert!(runs_thinkboard("flatpak run com.vestigecounty.ThinkBoard"), "the Flatpak's");
+        assert!(!runs_thinkboard("flatpak run md.obsidian.Obsidian"));
         assert_eq!(first_word(r#"/opt/a\ b/"think"'board' --windowed"#), "/opt/a b/thinkboard");
     }
 }

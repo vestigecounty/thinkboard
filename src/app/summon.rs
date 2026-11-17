@@ -128,8 +128,8 @@ pub(crate) fn on_wayland() -> bool {
 
 /// The app's id on Linux: the name of its `.desktop` file, the Wayland
 /// window's `app_id`, and what the portal files the shortcut under. Two
-/// segments at least, which the portal insists on.
-#[cfg(target_os = "linux")]
+/// segments at least, which the portal insists on — and the Flatpak's id.
+#[cfg(any(target_os = "linux", test))]
 pub(crate) const APP_ID: &str = "com.vestigecounty.ThinkBoard";
 
 /// The one shortcut we ask the portal for.
@@ -408,14 +408,21 @@ fn make_way(path: &Path, pid: &str) {
 
 /// Where the running copy listens: the user's runtime directory, private to
 /// them, or failing that the temp directory under the user's name, since there
-/// it's shared. On Windows the temp directory is the user's own.
+/// it's shared. On Windows the temp directory is the user's own. Inside a
+/// Flatpak each launch has a runtime directory of its own, and only its
+/// `app/<id>` is shared by them all, so that's where.
 fn socket_path() -> PathBuf {
     let name = socket_name(super::startup::config_path_arg().as_deref().map(Path::new));
     if cfg!(windows) {
         return std::env::temp_dir().join(format!("{name}.sock"));
     }
-    match std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()) {
-        Some(dir) => PathBuf::from(dir).join(format!("{name}.sock")),
+    let runtime = std::env::var_os("XDG_RUNTIME_DIR").filter(|dir| !dir.is_empty()).map(PathBuf::from);
+    let shared = match thinkboard_core::sandbox::flatpak_id() {
+        Some(id) => runtime.map(|dir| dir.join("app").join(id)),
+        None => runtime,
+    };
+    match shared {
+        Some(dir) => dir.join(format!("{name}.sock")),
         None => {
             let user = std::env::var("USER").unwrap_or_default();
             std::env::temp_dir().join(format!("{name}-{user}.sock"))

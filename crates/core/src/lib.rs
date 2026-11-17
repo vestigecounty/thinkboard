@@ -22,6 +22,7 @@ pub mod mermaid;
 pub mod model;
 pub mod navigate;
 pub mod obsidian;
+pub mod sandbox;
 pub mod search;
 pub mod sign_in;
 pub mod snap;

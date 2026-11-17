@@ -63,3 +63,18 @@ jobs:
 
       - name: Test
         run: cargo test --locked --workspace
+
+  # What every Linux package installs besides the binary — the launcher and
+  # what software centres show — checked as Flathub and the distros check
+  # them, so a mistake shows here rather than at a release.
+  linux-packaging:
+    name: Linux desktop files
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install the validators
+        run: sudo apt-get update -q && sudo apt-get install -yq desktop-file-utils appstream
+      - name: Validate
+        run: |
+          desktop-file-validate packaging/linux/com.vestigecounty.ThinkBoard.desktop
+          appstreamcli validate --no-net --explain packaging/linux/com.vestigecounty.ThinkBoard.metainfo.xml

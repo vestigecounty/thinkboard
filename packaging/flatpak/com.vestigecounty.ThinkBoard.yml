@@ -1,0 +1,54 @@
+# ThinkBoard as a Flatpak, built from source offline. release.yml builds a
+# bundle of it for each arch from this checkout, with cargo-sources.json
+# generated from Cargo.lock as it runs (flatpak-builder-tools'
+# flatpak-cargo-generator); Flathub's copy of this manifest names a release
+# tag in place of the `dir` source, and keeps cargo-sources.json beside it.
+id: com.vestigecounty.ThinkBoard
+runtime: org.freedesktop.Platform
+runtime-version: '25.08'
+sdk: org.freedesktop.Sdk
+sdk-extensions:
+  - org.freedesktop.Sdk.Extension.rust-stable
+command: thinkboard
+finish-args:
+  # Drawn with the GPU, in a Wayland window or an X11 one.
+  - --device=dri
+  - --share=ipc
+  - --socket=wayland
+  - --socket=fallback-x11
+  # Ask AI: hosted providers, and a runtime on this machine (localhost).
+  # Signing in to OpenRouter listens on 127.0.0.1 for the code it sends back.
+  - --share=network
+  # Boards are .canvas files anywhere in the home, in vaults anywhere in it;
+  # Obsidian's list of its vaults is in the host's ~/.config, and so are
+  # COSMIC's custom shortcuts, where the summon key is added on COSMIC.
+  - --filesystem=home
+  # The tray icon: a StatusNotifierItem, registered with the watcher. It
+  # skips owning a name of its own in here (ksni's disable_dbus_name).
+  - --talk-name=org.kde.StatusNotifierWatcher
+build-options:
+  append-path: /usr/lib/sdk/rust-stable/bin
+  env:
+    CARGO_HOME: /run/build/thinkboard/cargo
+    CARGO_NET_OFFLINE: 'true'
+modules:
+  - name: thinkboard
+    buildsystem: simple
+    build-commands:
+      - cargo --offline fetch --manifest-path Cargo.toml --verbose
+      - cargo --offline build --release --locked
+      - install -Dm755 target/release/thinkboard ${FLATPAK_DEST}/bin/thinkboard
+      # Named for the app id, as Flathub has them, the launcher pointed at it.
+      - install -Dm644 assets/thinkboard.svg ${FLATPAK_DEST}/share/icons/hicolor/scalable/apps/${FLATPAK_ID}.svg
+      - install -Dm644 assets/thinkboard.png ${FLATPAK_DEST}/share/icons/hicolor/256x256/apps/${FLATPAK_ID}.png
+      - install -Dm644 packaging/linux/${FLATPAK_ID}.desktop ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop
+      - desktop-file-edit --set-icon=${FLATPAK_ID} ${FLATPAK_DEST}/share/applications/${FLATPAK_ID}.desktop
+      - install -Dm644 packaging/linux/${FLATPAK_ID}.metainfo.xml ${FLATPAK_DEST}/share/metainfo/${FLATPAK_ID}.metainfo.xml
+    sources:
+      - type: dir
+        path: ../..
+        skip:
+          - target
+          - demo
+          - homebrew-tap
+      - cargo-sources.json

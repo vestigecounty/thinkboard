@@ -249,7 +249,10 @@ mod linux {
                 use iced::futures::{SinkExt, StreamExt};
 
                 let (sender, mut receiver) = iced::futures::channel::mpsc::unbounded();
-                match (Tray { sender }).spawn().await {
+                // A sandbox may not own the well-known name the spec asks
+                // for; Flatpak's doesn't, so there the item goes without.
+                let sandboxed = thinkboard_core::sandbox::flatpak_id().is_some();
+                match (Tray { sender }).disable_dbus_name(sandboxed).spawn().await {
                     Ok(_handle) => {
                         while let Some(message) = receiver.next().await {
                             let _ = output.send(message).await;
