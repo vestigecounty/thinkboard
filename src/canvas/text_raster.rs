@@ -1665,6 +1665,26 @@ mod scale_tests {
 mod measure_tests {
     use super::*;
 
+    #[test]
+    fn a_line_right_to_left_in_an_unbounded_width_stays_where_its_drawn() {
+        // As iced lays out canvas text, unbounded: a line all right to left
+        // was placed from an edge at infinity (the vendored cosmic-text's
+        // patch), so live text in Hebrew or Arabic drew nowhere.
+        warm_up();
+        for line in ["שלום עולם", "مرحبا بالعالم", "plain left to right"] {
+            let xs: Vec<f32> = with_raster(|raster| {
+                let font_system = &mut raster.font_system;
+                let mut buffer = Buffer::new(font_system, Metrics::new(17.0, 22.0));
+                buffer.set_size(font_system, Some(f32::INFINITY), None);
+                buffer.set_text(font_system, line, &Attrs::new(), Shaping::Advanced, None);
+                buffer.shape_until_scroll(font_system, false);
+                buffer.layout_runs().flat_map(|run| run.glyphs.iter().map(|glyph| glyph.x).collect::<Vec<_>>()).collect()
+            });
+            assert!(!xs.is_empty(), "{line}: laid out");
+            assert!(xs.iter().all(|x| x.is_finite() && (-1.0..2000.0).contains(x)), "{line}: {xs:?}");
+        }
+    }
+
     const TABLE: &str = "Plan:\n\n| Day | Morning | Evening |\n|---|---|---|\n| Fri | Land, check in | Alfama, fado |\n| Sat | Belém | Bairro Alto |\n\nAfter.";
 
     #[test]

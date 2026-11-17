@@ -64,7 +64,11 @@ real one — use it for any run that might write settings.
     a style change *inside* a word vanished: `x**bold**y` had no bold, and
     inline code after a space (no line break is allowed before a `.`, so
     ` .canvas` joins the word before it) was laid out in the body face. The
-    patch keeps the fast path for words in one style only. Its tests and
+    patch keeps the fast path for words in one style only. And a line all
+    right to left was laid out from its box's right edge, which for iced's
+    canvas text, unbounded, is at infinity: Hebrew or Arabic drawn live
+    overflowed a debug build and drew nothing in a release one. An unbounded
+    width is aligned against the widest line instead. Its tests and
     benches aren't vendored, so their targets are cut from its manifest.
 
   They're checked in, so a clone needs no extra setup. Re-vendoring means

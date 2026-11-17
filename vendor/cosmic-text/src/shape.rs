@@ -1529,7 +1529,13 @@ impl ShapeLine {
         // Create the LayoutLines using the ranges inside visual lines
         let align = align.unwrap_or(if self.rtl { Align::Right } else { Align::Left });
 
-        let line_width = width_opt.map_or_else(
+        // ThinkBoard patch: an unbounded width is no width to align against.
+        // A right-to-left line is laid out from the right edge, and with the
+        // edge at infinity (iced's canvas text, unbounded by default) every
+        // glyph landed there: a debug build overflowed rasterizing it, and a
+        // release build drew nothing. Laid out as if unbounded, it's aligned
+        // against the widest line instead.
+        let line_width = width_opt.filter(|width| width.is_finite()).map_or_else(
             || {
                 let mut width: f32 = 0.0;
                 for visual_line in &visual_lines {
