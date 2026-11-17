@@ -2388,6 +2388,23 @@ static TEXT_ONLY: Script = Script {
     text_only: true,
 };
 
+/// What an OpenRouter-like list holds, for the recorded demos: free models
+/// and the router to them, then priced ones, some reading images (`serve`'s
+/// guess by name), each with OpenRouter's kind of display name.
+const CATALOG: &[(&str, Option<&str>, Option<u64>)] = &[
+    ("anthropic/claude-haiku-4.5", Some("Anthropic: Claude Haiku 4.5"), Some(200_000)),
+    ("anthropic/claude-opus-4.1", Some("Anthropic: Claude Opus 4.1"), Some(200_000)),
+    ("anthropic/claude-sonnet-4.5", Some("Anthropic: Claude Sonnet 4.5"), Some(1_000_000)),
+    ("google/gemma-3-27b-it", Some("Google: Gemma 3 27B"), Some(131_072)),
+    ("google/gemma-3-27b-it:free", Some("Google: Gemma 3 27B (free)"), Some(131_072)),
+    ("meta-llama/llama-3.3-70b-instruct", Some("Meta: Llama 3.3 70B Instruct"), Some(131_072)),
+    ("meta-llama/llama-3.3-70b-instruct:free", Some("Meta: Llama 3.3 70B Instruct (free)"), Some(131_072)),
+    ("mistralai/mistral-small-3.2-24b-instruct", Some("Mistral: Mistral Small 3.2 24B"), Some(131_072)),
+    ("openrouter/free", Some("Free Models Router"), Some(200_000)),
+    ("qwen/qwen3-30b-a3b", Some("Qwen: Qwen3 30B A3B"), Some(40_960)),
+    ("qwen/qwen3-30b-a3b:free", Some("Qwen: Qwen3 30B A3B (free)"), Some(40_960)),
+];
+
 /// A provider that refuses the key it's given.
 static REJECTING: Script = Script { models: MODELS, answers: &[], reject_key: true, text_only: false };
 
@@ -3502,7 +3519,9 @@ fn small_windows() {
 /// - `clear` — an empty board, the file's cards kept back to `plop`;
 ///   `plop ID` — the file's card lands, with its links to what's there.
 /// - `answer FILE` — AI set up to answer every question with FILE's text
-///   (`---` between cards), FILE beside the script.
+///   (`---` between cards), FILE beside the script; `models ID` — from a
+///   provider listing an OpenRouter-like catalog (`CATALOG`), with prices,
+///   starting on model ID, answering with the last `answer`'s text.
 /// - `record` — record every frame from here (see [`Recording`]);
 ///   `save NAME` — write them beside the shots as `NAME.json`.
 /// - `wait SECS`; `settle` — until whatever is under way has finished.
@@ -3551,6 +3570,8 @@ fn canvas() {
     app.canvas_path = path.clone();
     let mut tour = Tour::new("canvas", app);
     let mut rec = Recording::default();
+    // The last `answer`'s text, which `models` answers with too.
+    let mut answer_text: Option<&'static str> = None;
 
     for (number, line) in script.lines().enumerate() {
         let line = line.trim();
@@ -3614,16 +3635,31 @@ fn canvas() {
                 rec.frame(&mut tour);
             }
             "answer" => {
-                let answer = std::fs::read_to_string(beside.join(rest)).expect("the answer");
+                let answer: &'static str = Box::leak(std::fs::read_to_string(beside.join(rest)).expect("the answer").into_boxed_str());
+                answer_text = Some(answer);
                 // A provider serves a script that lives as long as the process;
                 // this one is read at run time, so it's leaked to.
                 let script: &'static Script = Box::leak(Box::new(Script {
                     models: &[("qwen/qwen3-30b-a3b", None, None)],
-                    answers: Box::leak(vec![("", &*Box::leak(answer.into_boxed_str()))].into_boxed_slice()),
+                    answers: Box::leak(vec![("", answer)].into_boxed_slice()),
                     reject_key: false,
                     text_only: false,
                 }));
                 configure(&mut tour, &Provider::start(script).url);
+            }
+            // OpenRouter's kind of list to choose from — free models, a router
+            // to them, priced ones, some reading images — answering with the
+            // last `answer`'s text; `models ID` starts on that model.
+            "models" => {
+                let answer = answer_text.unwrap_or("");
+                let script: &'static Script = Box::leak(Box::new(Script {
+                    models: CATALOG,
+                    answers: Box::leak(vec![("", answer)].into_boxed_slice()),
+                    reject_key: false,
+                    text_only: false,
+                }));
+                tour.app.config.ai_url = Provider::start(script).url;
+                tour.app.config.ai_model = rest.trim().to_owned();
             }
             "record" => rec.start(),
             "save" => rec.save(&tour, rest),
@@ -4092,11 +4128,15 @@ impl Recording {
         });
         // The open panel, as its view draws it — the palette's or the theme
         // picker's rows, from the very functions the views call.
+        let rgba = |c: iced::Color| [c.r, c.g, c.b, c.a];
         let row = |row: &picker::Row| {
             serde_json::json!({
                 "title": row.title,
                 "matched": row.matched.iter().map(|range| [range.start, range.end]).collect::<Vec<_>>(),
                 "detail": row.detail,
+                "detailTint": row.detail_tint.map(rgba),
+                "gauge": row.gauge.map(|(mark, lit, color)| serde_json::json!([mark, lit, rgba(color)])),
+                "flag": row.flag.map(|_| "picture"),
                 "keys": row.keys,
                 "enabled": row.enabled,
             })
@@ -4110,6 +4150,26 @@ impl Recording {
                 "offset": state.offset,
                 "rows": rows.iter().map(row).collect::<Vec<_>>(),
                 "headers": headers.iter().map(|header| serde_json::json!([header.heads, header.label])).collect::<Vec<_>>(),
+            }))
+        } else if let Some(picker) = &app.model_picker {
+            let (rows, headers) = app.model_rows(picker);
+            Some(serde_json::json!({
+                "kind": "model",
+                "query": picker.state.query,
+                "selected": picker.state.selected,
+                "offset": picker.state.offset,
+                "rows": rows.iter().map(row).collect::<Vec<_>>(),
+                "headers": headers
+                    .iter()
+                    .map(|header| {
+                        serde_json::json!([
+                            header.heads,
+                            header.label,
+                            header.tint.map(rgba),
+                            header.warning.as_ref().map(|(words, color)| serde_json::json!([words, rgba(*color)])),
+                        ])
+                    })
+                    .collect::<Vec<_>>(),
             }))
         } else {
             app.theme_picker.as_ref().map(|picker| {
@@ -4144,6 +4204,7 @@ impl Recording {
                 }),
                 _ => serde_json::json!({
                     "ai": app.config.ai_enabled(),
+                    "askAi": app.config.ai_enabled().then(|| app.ask_ai_menu_words()),
                     "group": app.groupable_selection(),
                     "background": app.selected_image_file().is_some(),
                     "layout": app.selected.len() > 1,
@@ -4175,9 +4236,21 @@ impl Recording {
                 .collect();
             serde_json::json!({ "boards": boards })
         });
+        // What answers just finished cost, under their last cards, as solid
+        // as the board draws them this frame.
+        let fade = app.config.anim_secs(board::SPENT_FADE);
+        let spent: Vec<serde_json::Value> = app
+            .ai
+            .spent
+            .iter()
+            .map(|spent| (spent, spent.alpha(fade)))
+            .filter(|(_, alpha)| *alpha > 0.0)
+            .map(|(spent, alpha)| serde_json::json!({ "node": spent.node, "words": spent.words, "alpha": alpha }))
+            .collect();
         serde_json::json!({
             "t": t,
             "viewport": [tour.viewport.width, tour.viewport.height],
+            "spent": spent,
             "overlay": app.overlay,
             "reveal": app.reveal,
             "pointer": [tour.cursor.x, tour.cursor.y],

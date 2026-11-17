@@ -472,7 +472,9 @@ impl App {
         Task::none()
     }
 
-    pub(super) fn model_picker_view<'a>(&'a self, picker: &'a ModelPicker) -> Element<'a, Message> {
+    /// The picker's rows and section headers, as its view draws them — and
+    /// as the tour records them.
+    pub(super) fn model_rows<'a>(&'a self, picker: &'a ModelPicker) -> (Vec<Row<'a>>, Vec<Header<'a>>) {
         let models = self.models();
         let rows: Vec<Row<'a>> = self
             .model_matches(&picker.state.query)
@@ -509,8 +511,25 @@ impl App {
                 press: Message::PickModel(model.id.clone()),
             })
             .collect();
+        // A free section says what its provider may do with what's sent,
+        // where the eye is when choosing from it — a line over the list stood
+        // there whatever was chosen.
+        let headers = self
+            .model_listing(&picker.state.query)
+            .1
+            .into_iter()
+            .map(|(heads, label, cost)| Header {
+                heads,
+                label: label.into(),
+                tint: Some(tint(cost, &self.theme)),
+                warning: (cost == Cost::Free).then(|| (FREE_WARNING.into(), warning_tint(&self.theme))),
+            })
+            .collect();
+        (rows, headers)
+    }
 
-        let headers = self.model_listing(&picker.state.query).1;
+    pub(super) fn model_picker_view<'a>(&'a self, picker: &'a ModelPicker) -> Element<'a, Message> {
+        let (rows, headers) = self.model_rows(picker);
         picker::view(
             self,
             &picker.state,
@@ -521,18 +540,7 @@ impl App {
                 glyph: super::chrome::Glyph::Magnifier,
                 on_submit: Message::CommitModel,
                 verb: "Choose",
-                // A free section says what its provider may do with what's
-                // sent, where the eye is when choosing from it — a line over
-                // the list stood there whatever was chosen.
-                headers: headers
-                    .into_iter()
-                    .map(|(heads, label, cost)| Header {
-                        heads,
-                        label: label.into(),
-                        tint: Some(tint(cost, &self.theme)),
-                        warning: (cost == Cost::Free).then(|| (FREE_WARNING.into(), warning_tint(&self.theme))),
-                    })
-                    .collect(),
+                headers,
                 // Asked, and nothing kept from before: rows still to come, at
                 // the list's full height, rather than a one-row panel that grows.
                 loading: self.model_picker_waiting(),

@@ -715,13 +715,7 @@ impl App {
         // on it, is worth knowing as it's asked.
         if self.config.ai_enabled() {
             items.push(sep().into());
-            let label = self.ask_ai_label();
-            // What the row leaves the words — its padding, "Ask AI" and the
-            // gaps either side of the space between taken off — so a long
-            // model name is cut, and not whether it's free.
-            let room = menu_width - 24.0 - chrome::ui_width("Ask AI", 14.0) - 2.0 * 8.0;
-            let words = chrome::fit_line(&label.what, label.after(), 12.0, room);
-            let target = text(words).size(12).color(self.theme.text_muted).wrapping(iced::widget::text::Wrapping::None);
+            let target = text(self.ask_ai_menu_words()).size(12).color(self.theme.text_muted).wrapping(iced::widget::text::Wrapping::None);
             items.push(
                 button(
                     row![text("Ask AI").size(14), Space::new().width(Fill), target]
@@ -980,6 +974,15 @@ impl App {
             .align_y(iced::alignment::Vertical::Bottom)
             .padding(Padding { top: 0.0, right: 16.0, bottom: 28.0, left: 16.0 })
             .into()
+    }
+
+    /// What the card menu says beside Ask AI: the label, fitted to the row —
+    /// its padding, "Ask AI" and the gaps either side of the space between
+    /// taken off — so a long model name is cut, and not whether it's free.
+    pub(super) fn ask_ai_menu_words(&self) -> String {
+        let label = self.ask_ai_label();
+        let room = self.node_menu_width() - 24.0 - chrome::ui_width("Ask AI", 14.0) - 2.0 * 8.0;
+        chrome::fit_line(&label.what, label.after(), 12.0, room)
     }
 
     /// Width of the node context menu: the swatch row (default + presets +
