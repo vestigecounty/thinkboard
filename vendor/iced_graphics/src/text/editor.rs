@@ -44,6 +44,20 @@ pub fn editor_scroll_fraction() -> f32 {
     f32::from_bits(EDITOR_SCROLL.load(Ordering::Relaxed))
 }
 
+/// ThinkBoard patch: the editor's last layout in visual lines — how many it
+/// holds, how many its box shows, and how many are scrolled past at the top.
+/// What the fraction is worked out from, published as it is for a check that
+/// a card holds what its editor shows: the fraction is 0 for content that
+/// fits however it's scrolled, and for content that doesn't but isn't.
+static EDITOR_LINES: std::sync::Mutex<(f32, f32, f32)> =
+    std::sync::Mutex::new((0.0, 0.0, 0.0));
+
+/// ThinkBoard patch: `(total, visible, scrolled past)`, in visual lines, as
+/// the editor was last laid out.
+pub fn editor_lines() -> (f32, f32, f32) {
+    *EDITOR_LINES.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
 /// Records the scroll progress of `buffer` for [`editor_scroll_fraction`].
 ///
 /// Measured in *visual* lines — what wrapping actually produces — rather than
@@ -72,6 +86,8 @@ fn publish_scroll(buffer: &cosmic_text::Buffer) {
     } else {
         0.0
     };
+    *EDITOR_LINES.lock().unwrap_or_else(std::sync::PoisonError::into_inner) =
+        (total, visible, before);
     let overflow = total - visible;
     let fraction = if overflow > 0.0 {
         (before / overflow).clamp(0.0, 1.0)

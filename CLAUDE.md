@@ -45,7 +45,11 @@ real one — use it for any run that might write settings.
     global for a different reason: OpenType features come from the theme, so
     every run on screen wants the same set. `iced::Font` has nowhere to carry
     them, and `to_attributes` is the one place iced builds a `cosmic_text::Attrs`
-    — see **Font features** below.
+    — see **Font features** below. And `editor_lines`, the editor's last
+    layout in visual lines (held, shown, scrolled past), which the scroll
+    fraction is worked out from: the fraction is 0 for content that fits
+    however it's scrolled, so the tour's check that a card keeps up with its
+    editor (`TOUR=growing_lines`) reads these instead.
   - `iced_wgpu` — honors wgpu backend env vars so
     `WGPU_DX12_PRESENTATION_SYSTEM=visual` can pick the DirectComposition
     swapchain (transparent overlay on Windows). And it asks the app how much
@@ -1286,6 +1290,15 @@ stylesheet, to see the app as a particular user has it.
 
 `resize` changes the window's size, as dragging its corner does — the
 `small_windows` scene walks the panels and menus down to 360 px wide.
+
+**`growing_lines` is a check, run only when named** (`TOUR=growing_lines`,
+two minutes): every keystroke of a set of texts — prose, lists, headings,
+tables, CJK, emoji, right to left — typed a character at a time, in a few
+zooms, snapped, and three keys to a frame, with each checked by the
+editor's own layout for a card that hasn't grown to what it shows. It fails
+on one, and writes what it caught to `report.txt`. A card running off the
+window's edge is left out: it's edited where it's on screen, and scrolls
+there.
 
 **The tour doubles as a check that a refactor changed nothing**: render every
 scene before and after, and compare the files. Two things to know first. Run

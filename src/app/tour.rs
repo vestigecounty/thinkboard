@@ -657,8 +657,14 @@ impl Tour {
 
     /// One key, pressed and released under whatever modifiers are held.
     fn key(&mut self, key: Key, text: Option<&str>) {
+        let events = self.key_events(key, text);
+        self.feed(events);
+    }
+
+    /// A key's press and release, as [`Tour::key`] feeds them.
+    fn key_events(&self, key: Key, text: Option<&str>) -> Vec<Event> {
         let physical = key::Physical::Unidentified(key::NativeCode::Unidentified);
-        self.feed(vec![
+        vec![
             Event::Keyboard(keyboard::Event::KeyPressed {
                 key: key.clone(),
                 modified_key: key.clone(),
@@ -675,7 +681,7 @@ impl Tour {
                 location: keyboard::Location::Standard,
                 modifiers: self.modifiers,
             }),
-        ]);
+        ]
     }
 
     fn named(&mut self, named: key::Named) {
@@ -1415,6 +1421,120 @@ fn double_click_to_add() {
 /// lines break, wrap, and outgrow the card — and what changes when editing
 /// ends and starts again. Read the sheets with their `.txt` legends: the
 /// numbers say which of card, editor box and content fell behind.
+/// Every keystroke of a set of texts — prose, Markdown, scripts — checked
+/// for a card that hasn't grown to what its editor shows: by the editor's
+/// own layout (`editor_lines`), a box short of its lines, or a scroll left
+/// over once they fit, both of which auto-size exists to prevent below the
+/// ceiling. Typed a character at a time, Return included,
+/// as a hand types, in each of a few setups; whatever's caught is written to
+/// `report.txt` with a frame of it, and again a frame later. A card off the
+/// window's edge is left out: it's edited, and scrolls, where it's on screen.
+fn growing_lines() {
+    // ← and ↑ are the arrow keys, to break a line that isn't the last.
+    let mut texts: Vec<(&str, String)> = [
+        ("return mid-line", "first line and more←←←←←←←←\n"),
+        ("return on a line above", "one\ntwo\nthree↑\n"),
+        ("plain", "Packing\nlist for the trip\n\nand then some more\nx"),
+        ("list carried", "Packing list\n\n- passport\ncharger\nsocks\n\nShoes?"),
+        ("numbered", "Steps\n1. book\nfly\nland\n\ndone"),
+        ("tasks", "- [ ] passport\n- [x] charger\n- [ ] adapter\n\nok"),
+        ("headings", "# Trip\n## Lisbon\nbody line\n### Day one\nmore\n"),
+        ("quote", "> A quote\n> that goes on\n\nafter"),
+        ("code", "```\nfenced code\nline two\n```\nafter"),
+        ("inline", "**bold** start\n*italic* line\n`code` here\n~~gone~~\n"),
+        ("table", "| a | b |\n|---|---|\n| 1 | 2 |\n| 3 | 4 |\n"),
+        ("wrap then break", "Remember to check whether the museum is closed on Mondays before planning\nthe route\n"),
+        ("blank lines", "\n\n\nx\n\n"),
+        ("trailing space", "word \nword  \nlast \n"),
+        ("cjk", "東京へ行く\n京都も見たい\n北海道\n한국어 문장\n中文句子\n"),
+        ("emoji", "🍕 pizza\n🚆 train\n👨‍👩‍👧 family\n🇵🇹\n"),
+        ("rtl", "مرحبا بالعالم\nשלום עולם\nmixed עברית text\n"),
+        ("accents", "Ünïcödé\nñandú\nØresund\nZażółć gęślą jaźń\n"),
+    ]
+    .into_iter()
+    .map(|(name, text)| (name, text.to_owned()))
+    .collect();
+    // Lines of every length around where one wraps, each ended by a Return.
+    let sentence = "Remember to check whether the museum is closed on Mondays before planning the route";
+    texts.push(("wrap sweep", (30..sentence.len()).step_by(3).map(|n| format!("{}\n", &sentence[..n])).collect()));
+    // The last: keys a few at a time between frames, as fast typing comes.
+    const SETUPS: &[(&str, f32, bool, usize)] = &[
+        ("zoom 1", 1.0, false, 1),
+        ("snapped", 1.0, true, 1),
+        ("zoom 0.55", 0.55, false, 1),
+        ("zoom 1.8", 1.8, false, 1),
+        ("fast typing", 1.0, false, 3),
+    ];
+
+    let mut tour = Tour::new("growing_lines", first_launch(empty_document));
+    let mut report = Vec::new();
+    let mut caught = 0;
+    for &(setup, zoom, snap, per_frame) in SETUPS {
+        tour.app.config.snap_to_grid = snap;
+        let factor = zoom / tour.app.camera.zoom;
+        tour.send(Message::ZoomBy { factor, cursor: Point::new(720.0, 450.0) });
+        tour.settle();
+        for (name, text) in &texts {
+            let at = Point::new(560.0, 200.0);
+            tour.right_click(at);
+            tour.click(Point::new(at.x + 60.0, at.y + 19.0));
+            let mut typed = String::new();
+            let chars: Vec<char> = text.chars().collect();
+            for keys in chars.chunks(per_frame) {
+                let mut events = Vec::new();
+                for &c in keys {
+                    typed.push(c);
+                    let (key, text) = match c {
+                        '\n' => (Key::Named(key::Named::Enter), Some("\n".to_owned())),
+                        '←' => (Key::Named(key::Named::ArrowLeft), None),
+                        '↑' => (Key::Named(key::Named::ArrowUp), None),
+                        c => (Key::Character(c.to_string().into()), Some(c.to_string())),
+                    };
+                    events.extend(tour.key_events(key, text.as_deref()));
+                }
+                tour.feed(events);
+                let Some(index) = tour.app.editing.as_ref().map(|editing| editing.index) else {
+                    report.push(format!("{setup} | {name}: not editing after {typed:?}"));
+                    break;
+                };
+                // The editor's own layout: lines it holds, lines its box
+                // shows, lines scrolled past. Short of its lines, or scrolled
+                // though they fit, below the ceiling, is a card behind.
+                let short = |(total, visible, scrolled): (f32, f32, f32)| total > visible + 0.05 || scrolled > 0.05;
+                let lines = iced_graphics::text::editor::editor_lines();
+                let height = tour.app.nodes[index].height;
+                // A card taller than the window is edited where it's on
+                // screen (`edit_rect`), and scrolls there, as it should.
+                let node = &tour.app.nodes[index];
+                let top = tour.app.camera.to_screen(Point::new(node.x, node.y)).y;
+                let bottom = tour.app.camera.to_screen(Point::new(node.x, node.y + node.height)).y;
+                let on_screen = top >= 0.0 && bottom <= tour.viewport.height;
+                if short(lines) && on_screen && height < crate::text_raster::MAX_AUTO_HEIGHT - 1.0 {
+                    let before = tour.editing_state();
+                    caught += 1;
+                    if caught <= 12 {
+                        tour.shot(&format!("caught-{caught}"));
+                    }
+                    tour.redraw();
+                    let later = iced_graphics::text::editor::editor_lines();
+                    report.push(format!(
+                        "{setup} | {name} | after {typed:?}: lines {lines:?}\n    {before}\n    a frame later: lines {later:?}{}  {}",
+                        if short(later) { "" } else { " (caught up)" },
+                        tour.editing_state()
+                    ));
+                }
+            }
+            tour.named(key::Named::Escape);
+            // Put away, so the next starts on an empty board.
+            tour.named(key::Named::Backspace);
+        }
+    }
+    let summary = format!("{caught} keystrokes left a card short of its editor\n\n{}\n", report.join("\n"));
+    std::fs::write(tour.out.join("report.txt"), &summary).expect("the report");
+    assert_eq!(caught, 0, "{summary}");
+}
+
+
 fn editing() {
     let mut tour = Tour::new("editing", first_launch(empty_document));
 
@@ -4156,12 +4276,22 @@ fn a_model_that_reads_text_only_is_asked_again_without_the_images() {
     assert_eq!(seen.last(), Some(&Event::Done));
 }
 
+/// Scenes run only when named in `TOUR`: checks too long to sit in every
+/// run — `growing_lines` types for two minutes.
+const ON_REQUEST: &[(&str, fn())] = &[("growing_lines", growing_lines)];
+
 #[test]
 #[ignore = "renders to PNGs for a person to look at; needs a GPU adapter"]
 fn tour() {
     let only = std::env::var("TOUR").ok();
+    let named = |name: &str| only.as_deref().is_some_and(|only| only.split(',').any(|o| o == name));
     for (name, scene) in SCENES {
-        if only.as_deref().is_none_or(|only| only.split(',').any(|o| o == *name)) {
+        if only.is_none() || named(name) {
+            scene();
+        }
+    }
+    for (name, scene) in ON_REQUEST {
+        if named(name) {
             scene();
         }
     }
