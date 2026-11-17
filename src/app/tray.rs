@@ -42,6 +42,8 @@ mod desktop {
             .and_then(|()| menu.append(&MenuItem::with_id("open_board", "Open Board…", true, None)))
             .and_then(|()| menu.append(&MenuItem::with_id("settings", "Settings…", true, None)))
             .and_then(|()| menu.append(&PredefinedMenuItem::separator()))
+            // The version, to read rather than choose: what a bug report wants.
+            .and_then(|()| menu.append(&MenuItem::with_id("version", format!("ThinkBoard {}", super::super::updates::VERSION), false, None)))
             .and_then(|()| menu.append(&MenuItem::with_id("quit", "Quit ThinkBoard", true, None)))
         {
             eprintln!("tray: menu build failed: {error}");
@@ -228,6 +230,13 @@ mod linux {
                 }
                 .into(),
                 MenuItem::Separator,
+                // The version, to read rather than choose.
+                StandardItem {
+                    label: format!("ThinkBoard {}", super::super::updates::VERSION),
+                    enabled: false,
+                    ..Default::default()
+                }
+                .into(),
                 StandardItem {
                     label: "Quit ThinkBoard".into(),
                     activate: Box::new(|tray: &mut Self| {

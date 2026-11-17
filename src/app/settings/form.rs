@@ -357,7 +357,35 @@ fn general(app: &App, look: Look) -> Vec<Element<'_, Message>> {
             .build(app, look),
     );
 
-    vec![section(look, "Summon", "", summon), section(look, "Boards", "", boards), section(look, "Overlay", "", behind)]
+    // The version, always: what a bug report wants first. A Flatpak isn't
+    // checked, Flathub keeping it up to date.
+    use crate::app::updates::{Installed, VERSION};
+    let flatpak = Installed::here() == Installed::Flatpak;
+    let version: Element<'_, Message> = match (&app.update, flatpak) {
+        (_, true) => quiet(look, format!("This is ThinkBoard {VERSION}. Flatpak keeps it up to date.")),
+        // Its page a word away, as the board's notice has it.
+        (Some(_), _) => row![
+            quiet(look, format!("This is ThinkBoard {VERSION}. Update available.")),
+            link(look, "What's new", Message::OpenRelease),
+        ]
+        .align_y(Alignment::Center)
+        .into(),
+        (None, _) => quiet(look, format!("This is ThinkBoard {VERSION}.")),
+    };
+    let updates = vec![
+        setting(Field::CheckForUpdates)
+            .control(switch(look, Field::CheckForUpdates, c.check_for_updates && !flatpak, !flatpak))
+            .note(version)
+            .desc("Asks GitHub at launch and once a day whether a newer release is out, and says so in a corner of the board. It sends nothing but the request.")
+            .build(app, look),
+    ];
+
+    vec![
+        section(look, "Summon", "", summon),
+        section(look, "Boards", "", boards),
+        section(look, "Overlay", "", behind),
+        section(look, "Updates", "", updates),
+    ]
 }
 
 fn appearance(app: &App, look: Look) -> Vec<Element<'_, Message>> {

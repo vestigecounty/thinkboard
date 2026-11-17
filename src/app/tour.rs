@@ -2484,6 +2484,25 @@ fn ask_ai_label() {
     tour.shot("palette");
 }
 
+/// A newer release, said in a corner of the board, and in Settings beside
+/// the version. GitHub's answer is the tour's to give: asking would show
+/// whatever's out.
+fn updates() {
+    let mut tour = Tour::new("updates", first_launch(trip_board));
+    let release = thinkboard_core::update::Release {
+        version: "1.0.0".to_owned(),
+        url: "https://github.com/vestigecounty/thinkboard/releases/tag/v1.0.0".to_owned(),
+    };
+    tour.send(Message::UpdateChecked(Ok(release)));
+    tour.shot("notice");
+    tour.palette("settings");
+    tour.wheel(Point::new(720.0, 700.0), -10.0);
+    tour.shot("settings-general");
+    tour.named(key::Named::Escape);
+    tour.click_label("×");
+    tour.shot("put-away");
+}
+
 fn sign_in() {
     let mut tour = Tour::new("sign_in", first_launch(trip_board));
     tour.palette("settings");
@@ -4217,6 +4236,7 @@ const SCENES: &[(&str, fn())] = &[
     ("settings", settings),
     ("wayland_summon", wayland_summon),
     ("sign_in", sign_in),
+    ("updates", updates),
     ("ask_ai_label", ask_ai_label),
     ("pickers", pickers),
     ("palette_settings", palette_settings),

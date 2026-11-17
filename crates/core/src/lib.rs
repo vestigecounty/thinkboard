@@ -28,4 +28,5 @@ pub mod sign_in;
 pub mod snap;
 pub mod syntax;
 pub mod theme;
+pub mod update;
 pub mod vault;

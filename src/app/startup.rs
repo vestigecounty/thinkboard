@@ -53,6 +53,7 @@ Arguments:
 Options:
   --windowed         Run as an ordinary window (no desktop overlay)
   --config <path>    Use a specific config file
+  --version, -V      Show the version
   --help, -h         Show this help
 
 With ThinkBoard already running (macOS, Linux), it shows or hides the board,
@@ -140,6 +141,10 @@ pub(crate) fn run() -> iced::Result {
 
     if std::env::args().any(|arg| arg == "--help" || arg == "-h") {
         println!("{USAGE}");
+        return Ok(());
+    }
+    if std::env::args().any(|arg| arg == "--version" || arg == "-V") {
+        println!("ThinkBoard {}", super::updates::VERSION);
         return Ok(());
     }
     // Loaded again in App::new; read here for the hotkey and window flags.

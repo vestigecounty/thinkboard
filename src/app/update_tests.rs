@@ -3130,6 +3130,39 @@ fn a_model_known_to_read_text_only_is_said_to_and_one_not_known_isnt() {
 }
 
 #[test]
+fn a_newer_release_is_told_until_its_put_away_and_an_older_one_never() {
+    use thinkboard_core::update::Release;
+    let release = |version: &str| Release { version: version.to_owned(), url: format!("https://github.com/vestigecounty/thinkboard/releases/tag/v{version}") };
+    let mut app = app_with(two_nodes(), Vec::new());
+    let told = |app: &App| app.update_to_tell().map(|release| release.version.clone());
+
+    // This one, or one before it: nothing to say.
+    send(&mut app, Message::UpdateChecked(Ok(release(updates::VERSION))));
+    assert_eq!(told(&app), None);
+    send(&mut app, Message::UpdateChecked(Ok(release("0.0.1"))));
+    assert_eq!(told(&app), None);
+    // A failed check says nothing either.
+    send(&mut app, Message::UpdateChecked(Err("offline".to_owned())));
+    assert_eq!(told(&app), None);
+
+    // A later one is told, with its page to open.
+    send(&mut app, Message::UpdateChecked(Ok(release("999.0.0"))));
+    assert_eq!(told(&app).as_deref(), Some("999.0.0"));
+    assert!(app.update_notice().is_some());
+    // Checking turned off, it's not said.
+    app.config.check_for_updates = false;
+    assert_eq!(told(&app), None);
+    app.config.check_for_updates = true;
+
+    // Put away, it stays away for that release, and a later one is told.
+    send(&mut app, Message::DismissUpdate);
+    assert_eq!(app.config.dismissed_update, "999.0.0");
+    assert_eq!(told(&app), None);
+    send(&mut app, Message::UpdateChecked(Ok(release("999.1.0"))));
+    assert_eq!(told(&app).as_deref(), Some("999.1.0"));
+}
+
+#[test]
 fn an_answer_asked_without_its_images_begins_by_saying_so() {
     use thinkboard_core::ai::Event;
     let mut app = app_with(two_nodes(), Vec::new());

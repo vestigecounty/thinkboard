@@ -276,6 +276,10 @@ impl App {
         }
         if self.disk.missing && !self.scratch {
             layers = layers.push(self.missing_file_notice());
+        } else if let Some(notice) = self.update_notice() {
+            // A newer release, in a corner: the missing file's notice, which
+            // can't wait, goes first.
+            layers = layers.push(notice);
         }
         if let Some(menu) = self.context_menu_overlay() {
             layers = layers.push(menu);

@@ -73,6 +73,14 @@ pub struct Config {
     /// The `--windowed` CLI flag forces this on regardless. Takes effect on the
     /// next launch.
     pub windowed: bool,
+    /// Whether to ask GitHub, at launch and once a day, if a newer release is
+    /// out, and say so on the board (`app::updates`). It sends nothing but the
+    /// request. Not asked inside a Flatpak, which Flathub keeps up to date.
+    pub check_for_updates: bool,
+    /// The release whose notice was put away, so it isn't said again at every
+    /// launch; a later one is. The app keeps it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub dismissed_update: String,
     /// macOS only: draw the menu-bar icon as a monochrome template image that
     /// tracks the menu bar's light/dark appearance, instead of the colored icon.
     /// No effect on other platforms (Windows/Linux tray icons stay colored).
@@ -284,6 +292,8 @@ impl Default for Config {
             overlay_blur: 1.0,
             windowed: false,
             tray_icon_monochrome: false,
+            check_for_updates: true,
+            dismissed_update: String::new(),
             summon_hotkey: "Pause".to_owned(),
             cosmic_shortcut_added: false,
             // See the field: on a Mac the default hotkey is a key most Macs

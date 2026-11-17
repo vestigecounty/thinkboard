@@ -47,6 +47,7 @@ pub(crate) enum Field {
     PersistAcrossSpaces,
     OverlayDim,
     Windowed,
+    CheckForUpdates,
     // Appearance
     Theme,
     Font,
@@ -247,7 +248,7 @@ pub(crate) fn index() -> Vec<Field> {
     if cfg!(target_os = "macos") {
         fields.push(PersistAcrossSpaces);
     }
-    fields.extend([OverlayDim, Windowed, Theme, Font, OverlayBackdrop]);
+    fields.extend([OverlayDim, Windowed, CheckForUpdates, Theme, Font, OverlayBackdrop]);
     if cfg!(target_os = "macos") {
         fields.push(TrayIconMonochrome);
     }
@@ -277,6 +278,7 @@ impl Field {
             Field::OverlayBackdrop => "Overlay background",
             Field::OverlayImage => "Overlay image",
             Field::TrayIconMonochrome => "Monochrome menu bar icon",
+            Field::CheckForUpdates => "Check for updates",
             Field::LinkStyle => "Link style",
             Field::ArrowTip => "Arrow tips",
             Field::CenterCardText => "Center plain text",
@@ -319,7 +321,7 @@ impl Field {
         use Field::*;
         match self {
             SummonHotkey | SummonGesture | Vault | DismissOnBackgroundClick | DoubleClickAddsCard
-            | PersistAcrossSpaces | OverlayDim | Windowed => Tab::General,
+            | PersistAcrossSpaces | OverlayDim | Windowed | CheckForUpdates => Tab::General,
             Theme | Font | OverlayBackdrop | OverlayImage | TrayIconMonochrome | LinkStyle | ArrowTip
             | CenterCardText | CardScrollbars | ColoredCardOpacity | MaxCardWidth => Tab::Appearance,
             SnapToGrid | SnapGridSize | AutoLayout | AutoLayoutDirection | ZoomSpeed | PanInertia => Tab::Canvas,
@@ -332,7 +334,7 @@ impl Field {
         use Field::*;
         match self {
             SummonGesture | DismissOnBackgroundClick | DoubleClickAddsCard | PersistAcrossSpaces | Windowed
-            | TrayIconMonochrome | CenterCardText | CardScrollbars | SnapToGrid | AutoLayout | AiThinking
+            | CheckForUpdates | TrayIconMonochrome | CenterCardText | CardScrollbars | SnapToGrid | AutoLayout | AiThinking
             | RasterizeText => Kind::Switch,
             OverlayBackdrop | LinkStyle | ArrowTip | AutoLayoutDirection | AiProvider | AiCardColor => Kind::Choice,
             Theme | Font | AiModel => Kind::Picker,
@@ -355,6 +357,7 @@ impl Field {
             Field::Windowed => "window mode overlay",
             Field::OverlayBackdrop => "transparent see-through wallpaper blur opaque background backdrop",
             Field::TrayIconMonochrome => "macos tray menu bar icon template",
+            Field::CheckForUpdates => "version release new latest upgrade github",
             Field::LinkStyle => "links edges curve routing",
             Field::ArrowTip => "arrowhead arrow head link edge",
             Field::CenterCardText => "align centre text",
@@ -480,6 +483,7 @@ impl Field {
             Field::Font => !c.font.trim().is_empty(),
             Field::OverlayBackdrop => OverlayBackdrop::of(c) != OverlayBackdrop::of(&d),
             Field::TrayIconMonochrome => c.tray_icon_monochrome != d.tray_icon_monochrome,
+            Field::CheckForUpdates => c.check_for_updates != d.check_for_updates,
             Field::LinkStyle => LinkStyle::of(c) != LinkStyle::of(&d),
             Field::ArrowTip => ArrowTip::of(c) != ArrowTip::of(&d),
             Field::CenterCardText => c.center_card_text != d.center_card_text,
@@ -582,6 +586,7 @@ pub(crate) fn apply(config: &mut Config, field: Field, value: Value) {
         }
         (Field::Windowed, Value::Bool(b)) => config.windowed = b,
         (Field::TrayIconMonochrome, Value::Bool(b)) => config.tray_icon_monochrome = b,
+        (Field::CheckForUpdates, Value::Bool(b)) => config.check_for_updates = b,
         (Field::CenterCardText, Value::Bool(b)) => config.center_card_text = b,
         (Field::RasterizeText, Value::Bool(b)) => config.rasterize_text = b,
         (Field::CardScrollbars, Value::Bool(b)) => config.card_scrollbars = b,
@@ -956,6 +961,8 @@ impl App {
                 super::tray::set_monochrome(self.config.tray_icon_monochrome);
                 Task::none()
             }
+            // Turned on, it asks now rather than tomorrow.
+            Field::CheckForUpdates => self.check_for_updates(),
             _ => Task::none(),
         };
         Task::batch([backdrop, previews, effect])
@@ -1018,6 +1025,7 @@ impl App {
             Field::SummonGesture => c.summon_gesture,
             Field::CenterCardText => c.center_card_text,
             Field::TrayIconMonochrome => c.tray_icon_monochrome,
+            Field::CheckForUpdates => c.check_for_updates,
             Field::RasterizeText => c.rasterize_text,
             Field::CardScrollbars => c.card_scrollbars,
             Field::AiThinking => c.ai_thinking,
@@ -1290,7 +1298,7 @@ mod tests {
         for field in [
             Field::SummonHotkey, Field::SummonGesture, Field::Vault, Field::DismissOnBackgroundClick,
             Field::DoubleClickAddsCard, Field::PersistAcrossSpaces, Field::OverlayDim, Field::Windowed,
-            Field::Theme, Field::Font, Field::OverlayBackdrop, Field::TrayIconMonochrome, Field::LinkStyle,
+            Field::CheckForUpdates, Field::Theme, Field::Font, Field::OverlayBackdrop, Field::TrayIconMonochrome, Field::LinkStyle,
             Field::ArrowTip,
             Field::CenterCardText, Field::CardScrollbars, Field::ColoredCardOpacity, Field::MaxCardWidth,
             Field::SnapToGrid, Field::SnapGridSize, Field::AutoLayout, Field::AutoLayoutDirection,

@@ -70,6 +70,7 @@ mod theme_picker;
 mod theme_store;
 #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
 mod tray;
+mod updates;
 #[cfg(test)]
 mod tour;
 #[cfg(test)]
@@ -370,6 +371,13 @@ pub(crate) enum Message {
     /// Write the board back to its file, which was moved or deleted outside
     /// the app — the board's "save it again".
     RestoreFile,
+    /// Asking GitHub whether a newer release is out (`updates`): at launch,
+    /// once a day, and when checking's turned on; its answer; the release's
+    /// page opened from the notice; the notice put away for that release.
+    CheckForUpdates,
+    UpdateChecked(Result<thinkboard_core::update::Release, String>),
+    OpenRelease,
+    DismissUpdate,
     /// Background work finished — for the board opened `epoch`th, and
     /// dropped if that's no longer the one on screen (see `raster`).
     SnapshotsReady(u64, Vec<(usize, text_raster::Snapshot)>),
@@ -684,6 +692,8 @@ struct App {
     /// The provider picker, when open: in place in the settings form, from
     /// its Provider row, or over the board, from the palette.
     provider_picker: Option<provider_picker::ProviderPicker>,
+    /// A later release than this one, as GitHub last said (`updates`).
+    update: Option<thinkboard_core::update::Release>,
     /// The model picker, when open. Shares the shell; unlike the others it has
     /// to fetch its rows, so it can be open with none.
     model_picker: Option<model_picker::ModelPicker>,
@@ -887,7 +897,8 @@ impl App {
             app.summon_portal = Some(summon::Portal::Asking);
             app.summon_suggested = app.config.summon_hotkey.clone();
         }
-        (app, Task::none())
+        let checked = app.check_for_updates();
+        (app, checked)
     }
 
     /// Assembles the initial state from an already-resolved [`Init`]: loads the
@@ -989,6 +1000,7 @@ impl App {
             theme_picker: None,
             font_picker: None,
             provider_picker: None,
+            update: None,
             model_picker: None,
             vault_canvases: Vec::new(),
             vault_scanning: false,
@@ -1345,6 +1357,10 @@ impl App {
             }
             Message::FileChanged => return self.check_reload(),
             Message::RestoreFile => self.restore_file(),
+            Message::CheckForUpdates => return self.check_for_updates(),
+            Message::UpdateChecked(answer) => self.update_checked(answer),
+            Message::OpenRelease => self.open_release(),
+            Message::DismissUpdate => self.dismiss_update(),
             Message::CanvasAction(action) => return self.canvas_action(&action),
             Message::OpenBoardDialog => {
                 if let Some(create) = self.pending_board_create.take() {
@@ -2791,6 +2807,10 @@ impl App {
             // Tray menu clicks (Show/Hide, Quit) where a tray exists.
             #[cfg(any(target_os = "macos", windows, target_os = "linux"))]
             subscriptions.push(Subscription::run(tray::events));
+        }
+        // Whether a newer release is out, asked again each day the app runs.
+        if self.config.check_for_updates && updates::Installed::here() != updates::Installed::Flatpak {
+            subscriptions.push(iced::time::every(updates::EVERY).map(|_| Message::CheckForUpdates));
         }
         // A later launch, in either mode (`summon::hand_over`).
         subscriptions.push(Subscription::run_with(!self.overlay, summon::launches));

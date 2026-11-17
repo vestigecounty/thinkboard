@@ -124,7 +124,7 @@ rasterizer) stays desktop-side.
 | `vault` | finding the vault's boards and switching between them |
 | `switcher` | back and forward through the boards visited (⌘[ ⌘]), and where each was left |
 | `summon` | the summon key under Wayland (the desktop's portal, or COSMIC's own shortcuts), and a second launch handing over to the copy running |
-| `search`, `clipboard`, `command`, `settings`, `startup`, `tray`, `sync` | as named |
+| `search`, `clipboard`, `command`, `settings`, `startup`, `tray`, `sync`, `updates` | as named |
 
 Related fields are grouped into sub-structs (`Ai`, `Ghosts`, `Rasters`,
 `Clusters`) rather than living loose on `App`. When adding a feature, add its
@@ -1501,6 +1501,20 @@ tag, not `--tags`: older tags exist only locally. Tag releases for shipped
 user-facing features — not for internal refactors. Add the release to
 `<releases>` in `packaging/linux/…metainfo.xml` as it's tagged: software
 centres show it.
+
+**A running app says when a newer release is out** (`app::updates`, the
+check in `core::update`): GitHub's latest release for the repo, asked at
+launch and once a day — the app runs resident for days — its tag compared
+with the build's version, a release marked `-dev` coming before its own. A
+newer one is said in the board's bottom-right corner, small and quiet, with
+its page to open and a × that holds for that release (`dismissed_update`);
+the missing file's notice goes first. Only said: nothing downloads or
+replaces itself. Settings' General tab has the switch, on by default, and
+the version, always; the tray menu has the version, and `thinkboard
+--version` says it. Installed by Homebrew (a Cellar in the executable's
+path), the notice names `brew upgrade` instead; inside a Flatpak nothing's
+asked, Flathub keeping it up to date. Under test nothing's asked — what's
+out would decide the shot — and the tour says what is (`updates` scene).
 
 **Linux packages.** The Linux builds run on Ubuntu 22.04 runners, Arm's on
 GitHub's own, so the binary asks for glibc 2.35 and runs on the distros since.
