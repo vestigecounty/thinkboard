@@ -2403,7 +2403,7 @@ fn naming_a_theme_in_settings_takes_effect_without_a_restart() {
 use thinkboard_core::ai::Model;
 
 fn model(id: &str) -> Model {
-    Model { id: id.to_owned(), name: None, free: false, price: None }
+    Model { id: id.to_owned(), name: None, free: false, price: None, images: None }
 }
 
 /// An app with a provider configured and a list already fetched for it.
@@ -3106,6 +3106,27 @@ fn a_failure_partway_keeps_what_was_written() {
     send(&mut app, Message::Ai(second.clone(), Event::Delta("Take the train from Rossio ".to_owned())));
     send(&mut app, Message::Ai(second.clone(), Event::Error("The connection dropped".to_owned())));
     assert_eq!(text(&app, &second).as_deref(), Some("Take the train from Rossio\n\n⚠ The connection dropped"));
+}
+
+#[test]
+fn a_model_known_to_read_text_only_is_said_to_and_one_not_known_isnt() {
+    let mut app = app_with(two_nodes(), Vec::new());
+    app.config.ai_url = "https://openrouter.ai/api/v1".to_owned();
+    app.config.ai_model = "meta-llama/llama-3.3-70b-instruct".to_owned();
+    assert!(!app.reads_text_only(), "nothing listed yet: no sign either way");
+    send(&mut app, Message::OpenModelPicker);
+    let url = app.config.ai_url.clone();
+    let models = vec![
+        Model { images: Some(false), ..model("meta-llama/llama-3.3-70b-instruct") },
+        Model { images: Some(true), ..model("google/gemma-3-27b-it") },
+        model("acme/silent"),
+    ];
+    send(&mut app, Message::ModelsFetched(url, Ok(models)));
+    assert!(app.reads_text_only());
+    app.config.ai_model = "google/gemma-3-27b-it".to_owned();
+    assert!(!app.reads_text_only());
+    app.config.ai_model = "acme/silent".to_owned();
+    assert!(!app.reads_text_only(), "listed, but not said");
 }
 
 #[test]

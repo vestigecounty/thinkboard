@@ -631,6 +631,7 @@ pub(super) fn rows<'a>(app: &'a App, state: &picker::State) -> (Vec<Row<'a>>, Ve
                 detail: unavailable.map_or(detail, Cow::Borrowed),
                 detail_tint: None,
                 gauge: None,
+                flag: None,
                 keys: if unavailable.is_some() { Vec::new() } else { entry.keys },
                 enabled: unavailable.is_none(),
                 font: None,

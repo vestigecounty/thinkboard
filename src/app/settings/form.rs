@@ -524,13 +524,20 @@ fn ai(app: &App, look: Look) -> Vec<Element<'_, Message>> {
             .control(model)
             .desc("Lists what the endpoint serves, so you needn't type a name exactly.");
         // Always shown while it holds: whoever comes back here later should
-        // read it too. Chosen from the board's form, the picker takes the
-        // form's place and says it over the list.
+        // read it too. The picker, opened over this row, says it as well.
+        // "Text only" is all a model that reads no images needs: the answer
+        // it gives without them says why they weren't sent.
+        let text_only = app.reads_text_only().then_some("text only");
         if app.asks_a_free_model() {
             let tint = crate::app::model_picker::warning_tint(&app.theme);
             model = model.note(warning(look, tint, crate::app::model_picker::FREE_CAVEAT));
+            if let Some(words) = text_only {
+                model = model.note(quiet(look, words));
+            }
         } else if let Some(price) = app.price_in_use() {
-            model = model.note(quiet(look, price));
+            model = model.note(quiet(look, [Some(price.as_str()), text_only].into_iter().flatten().collect::<Vec<_>>().join(" · ")));
+        } else if let Some(words) = text_only {
+            model = model.note(quiet(look, words));
         }
         ask.push(model.build(app, look));
         // A runtime on this machine asks for no key — greyed, not locked, as

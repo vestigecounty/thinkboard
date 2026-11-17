@@ -133,14 +133,16 @@ pub(super) fn fit_line(words: &str, after: &str, size: f32, width: f32) -> Strin
 
 /// The small line drawings that open a floating bar: the find bar's
 /// magnifier, and the prompt (`>_`) the command palette opens with — the
-/// board (two linked cards) that marks one among the palette's commands, and
-/// the warning that marks a line over a list as one.
+/// board (two linked cards) that marks one among the palette's commands, the
+/// warning that marks a line over a list as one, and the picture that marks
+/// a model that reads images.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum Glyph {
     Magnifier,
     Prompt,
     Board,
     Warning,
+    Picture,
 }
 
 /// A [`Glyph`], 14 px square, in one colour — a canvas, since the UI font has
@@ -204,6 +206,20 @@ impl<Message> iced::widget::canvas::Program<Message> for Icon {
                 frame.stroke(&triangle, stroke);
                 frame.stroke(&Path::line(Point::new(7.0, 5.5), Point::new(7.0, 8.25)), stroke);
                 frame.fill(&Path::circle(Point::new(7.0, 10.4), 0.8), self.color);
+            }
+            Glyph::Picture => {
+                // A frame, hills and a sun: the mark every app gives a photo.
+                let stroke = stroke.with_width(1.3).with_line_cap(LineCap::Round).with_line_join(LineJoin::Round);
+                frame.stroke(&Path::rounded_rectangle(Point::new(1.0, 2.5), iced::Size::new(12.0, 9.0), 1.5.into()), stroke);
+                let hills = Path::new(|p| {
+                    p.move_to(Point::new(1.5, 10.5));
+                    p.line_to(Point::new(5.0, 7.0));
+                    p.line_to(Point::new(7.5, 9.5));
+                    p.line_to(Point::new(9.5, 7.5));
+                    p.line_to(Point::new(12.5, 10.5));
+                });
+                frame.stroke(&hills, stroke);
+                frame.fill(&Path::circle(Point::new(9.5, 5.3), 1.0), self.color);
             }
         }
         vec![frame.into_geometry()]

@@ -12,6 +12,7 @@
 
 use iced::{Element, Task};
 
+use super::chrome::Glyph;
 use super::picker::{self, Header, Panel, Row, Shell};
 use super::{App, Message};
 use thinkboard_core::ai::Model;
@@ -349,6 +350,12 @@ impl App {
         models.iter().find(|listed| listed.id == model)
     }
 
+    /// Whether the model in use is known to read text only: the list kept
+    /// for its endpoint says so. Not where it says nothing.
+    pub(super) fn reads_text_only(&self) -> bool {
+        self.model_in_use().is_some_and(|model| model.images == Some(false))
+    }
+
     /// What the model in use costs, as the Model row says it, where the list
     /// kept for its endpoint gives a price.
     pub(super) fn price_in_use(&self) -> Option<String> {
@@ -492,6 +499,9 @@ impl App {
                 .into(),
                 detail_tint: (model.free && model.id != picker.before).then(|| tint(Cost::Free, &self.theme)),
                 gauge: model.price.filter(|_| !model.free).map(|price| ("$", rating(price), gold(&self.theme))),
+                // Where the endpoint says the model reads images, after its
+                // name; a row without the mark keeps no room for it.
+                flag: (model.images == Some(true)).then_some(Glyph::Picture),
                 keys: Vec::new(),
                 enabled: true,
                 font: None,

@@ -308,6 +308,7 @@ impl App {
                 },
                 detail_tint: None,
                 gauge: None,
+                flag: None,
                 keys: Vec::new(),
                 enabled: true,
                 font: None,

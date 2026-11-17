@@ -126,6 +126,10 @@ pub struct Model {
     /// What it charges, where the endpoint says (OpenRouter does; a plain
     /// OpenAI-compatible endpoint doesn't).
     pub price: Option<Price>,
+    /// Whether it reads images, where the endpoint says: OpenRouter, in
+    /// its input modalities, and Mistral, as a capability. None where it
+    /// doesn't — which is no sign either way.
+    pub images: Option<bool>,
 }
 
 /// A model's price, in dollars per token, as `/models` gives it.
@@ -226,6 +230,7 @@ fn parse_models(body: &serde_json::Value) -> Vec<Model> {
                 price: price(item, "prompt")
                     .zip(price(item, "completion"))
                     .map(|(prompt, completion)| Price { prompt, completion }),
+                images: reads_images(item),
             })
         })
         .collect();
@@ -247,6 +252,16 @@ fn free(item: &serde_json::Value) -> bool {
         .and_then(serde_json::Value::as_array)
         .is_none_or(|out| out.iter().all(|modality| modality == "text"));
     zero("prompt") && zero("completion") && text_out
+}
+
+/// Whether a `/models` entry says it reads images: OpenRouter lists what
+/// a model takes in (`architecture.input_modalities`), Mistral says whether
+/// it has vision (`capabilities.vision`). None where neither is there.
+fn reads_images(item: &serde_json::Value) -> Option<bool> {
+    let modalities = item.pointer("/architecture/input_modalities").and_then(serde_json::Value::as_array);
+    modalities
+        .map(|inputs| inputs.iter().any(|input| input == "image"))
+        .or_else(|| item.pointer("/capabilities/vision").and_then(serde_json::Value::as_bool))
 }
 
 /// A `/models` entry's price per token for `side` (`prompt` or
@@ -1676,6 +1691,18 @@ mod tests {
         // Gemini's resource names, as a question names them.
         let gemini = serde_json::json!({"data": [{"id": "models/gemini-2.5-flash", "object": "model"}]});
         assert_eq!(parse_models(&gemini)[0].id, "gemini-2.5-flash");
+    }
+
+    #[test]
+    fn whether_a_model_reads_images_is_read_where_its_listed() {
+        let body = serde_json::json!({"data": [
+            {"id": "a/sees", "architecture": {"input_modalities": ["text", "image"]}},
+            {"id": "b/reads", "architecture": {"input_modalities": ["text"]}},
+            {"id": "c/mistral", "capabilities": {"vision": true}},
+            {"id": "d/plain"},
+        ]});
+        let images: Vec<Option<bool>> = parse_models(&body).iter().map(|model| model.images).collect();
+        assert_eq!(images, [Some(true), Some(false), Some(true), None], "None where it isn't said");
     }
 
     #[test]

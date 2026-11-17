@@ -1009,10 +1009,16 @@ fn serve(mut stream: TcpStream, script: &Script) {
             // Priced as OpenRouter prices them (`price`), per token.
             .map(|(id, name, context)| {
                 let (prompt, completion) = price(id);
+                // Which read images, as OpenRouter lists what each takes in.
+                let inputs = if ["claude", "gemma", "mistral-small"].iter().any(|sees| id.contains(sees)) {
+                    vec!["text", "image"]
+                } else {
+                    vec!["text"]
+                };
                 serde_json::json!({
                     "id": id, "name": name, "context_length": context,
                     "pricing": { "prompt": prompt.to_string(), "completion": completion.to_string() },
-                    "architecture": { "output_modalities": ["text"] },
+                    "architecture": { "input_modalities": inputs, "output_modalities": ["text"] },
                 })
             })
             .collect();
@@ -2324,7 +2330,7 @@ fn ask_ai_label() {
     use thinkboard_core::ai::Model;
     let mut tour = Tour::new("ask_ai_label", first_launch(trip_board));
     let openrouter = thinkboard_core::sign_in::ENDPOINT;
-    let listed = |id: &str, name: &str| Model { id: id.to_owned(), name: Some(name.to_owned()), free: id.ends_with(":free"), price: None };
+    let listed = |id: &str, name: &str| Model { id: id.to_owned(), name: Some(name.to_owned()), free: id.ends_with(":free"), price: None, images: None };
     let cases: &[(&str, &str, &str, Option<Model>)] = &[
         ("OpenRouter, before its list", openrouter, "anthropic/claude-sonnet-4.5", None),
         ("OpenRouter, listed", openrouter, "anthropic/claude-sonnet-4.5", Some(listed("anthropic/claude-sonnet-4.5", "Anthropic: Claude Sonnet 4.5"))),

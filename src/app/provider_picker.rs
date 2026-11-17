@@ -202,6 +202,7 @@ impl App {
                     detail: detail.into(),
                     detail_tint: None,
                     gauge: None,
+                    flag: None,
                     keys: Vec::new(),
                     enabled: name != NONE_RUNNING,
                     font: None,

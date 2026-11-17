@@ -266,6 +266,9 @@ pub(super) struct Row<'a> {
     /// drawn, so it's the same extent on every row: a model's price, `$` to
     /// `$$$$`.
     pub gauge: Option<(&'static str, usize, Color)>,
+    /// A mark just after the title: a model that reads images. Only where
+    /// there is one — no room is kept for it in the rows without.
+    pub flag: Option<super::chrome::Glyph>,
     /// A shortcut, a cap per key, after the detail. Empty for none.
     pub keys: Vec<&'static str>,
     /// A disabled row is greyed and can't be pressed (but still takes a slot,
@@ -745,8 +748,16 @@ fn list_row<'a>(entry: Row<'a>, selected: bool, look: Look, padding: iced::Paddi
     let title = rich_text(title_spans(entry.title, &entry.matched, plain, bold, color, bright))
         .size(13.5)
         .line_height(LineHeight::Absolute(18.0.into()))
-        .wrapping(text::Wrapping::None)
-        .width(Length::Fill);
+        .wrapping(text::Wrapping::None);
+    // A mark follows the title's last letter, so the two are cut together
+    // where the detail begins, in the rare row whose title runs that far.
+    let title: Element<'a, Message> = match entry.flag {
+        Some(glyph) => {
+            let mark = canvas(super::chrome::Icon { glyph, color: ct.text_muted }).width(14).height(14);
+            container(row![title, mark].spacing(6).align_y(Alignment::Center)).width(Length::Fill).clip(true).into()
+        }
+        None => title.width(Length::Fill).into(),
+    };
     let mut line = row![]
         // A row is a fixed height, and `layout::padded` seats a button's
         // content against its padding rather than centring it — so the line

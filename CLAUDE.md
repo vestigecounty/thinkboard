@@ -738,8 +738,15 @@ million tokens, is named once, in the Paid header: the sections are there
 wherever prices are, through a search too. Beside it, `$$$$`, always all
 four, the rightmost lit in gold by the mean of the two prices — under $1,
 $5, $20, and above (`picker::Row::gauge`) — so the extent is the same on
-every row and the big jumps show at a glance. The settings' Model row says it again
-for whoever opens them later, from the list kept for the endpoint, which the
+every row and the big jumps show at a glance. After its name, a picture
+marks a model that reads images, where `/models` says (OpenRouter's input
+modalities, Mistral's vision capability) — only there: a row without it
+keeps no room for it, and where the list doesn't say, nothing's marked,
+which isn't "text only". Marking the text-only ones instead would draw a
+negative. The settings' Model row says the price again, and "text only"
+for a model known to read no images, for whoever opens them later — no more:
+the answer that went without its images says why — from the list kept for
+the endpoint, which the
 form fetches as it opens on OpenRouter — the one provider whose list has
 prices — where none is kept, and not again after a failure that launch
 (`fetch_models_for_form`). And what an answer actually cost is said under its
