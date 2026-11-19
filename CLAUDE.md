@@ -932,6 +932,19 @@ only) pastes the source regardless, or the text of copied cards. The copy's
 flowchart reads back as the same cards, less what Mermaid doesn't carry:
 Markdown formatting, and a note or image card, which comes back as its path.
 
+**A file copied in a file manager is pasted as itself** (`paste_files`), a
+card each: a picture as the picture, a Markdown note as a note card, anything
+else as its path. Finder puts each file's icon on the clipboard beside it as
+an image, and that icon was what pasted, so the file list is read before the
+image. A file already in the vault is used where it lies; one from elsewhere
+is copied beside the board under its own name (`photo 1.jpg` where that's
+taken) rather than re-encoded — as a PNG, a photo's JPEG came out several
+times its size (`bring_file`). The welcome board has no folder, so there a
+file is named by its full path, and brought in when its card is pasted onto a
+board that has one. A file with no extension is a note in a board, where
+Obsidian's links leave the `.md` off, but not when it's pasted: from a file
+manager it's a folder or a `Makefile`.
+
 The clipboard stand-in tests copy and paste through is shared by the whole
 binary, and tests run side by side, so one that copies or pastes holds
 `clipboard::system::exclusive()`.

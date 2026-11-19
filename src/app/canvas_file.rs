@@ -286,12 +286,16 @@ pub(super) fn vault_root(
     canvas_dir.to_path_buf()
 }
 
-/// The `file` value stored for an image written beside the canvas: its path
-/// relative to `base` (the vault root, how Obsidian records file nodes),
-/// falling back to the bare file name when the image lies outside the base.
+/// The `file` value stored for a file a card shows: its path relative to
+/// `base` (the vault root, how Obsidian records file nodes), falling back to
+/// the bare file name when the file lies outside the base.
+///
+/// Separated by `/` on every platform, as Obsidian writes it: a board is read
+/// on every platform, and one saved on Windows with `notes\Packing.md` named a
+/// file no Mac could find.
 pub(super) fn vault_relative(path: &FsPath, base: &FsPath) -> String {
     path.strip_prefix(base)
-        .map(|rel| rel.to_string_lossy().into_owned())
+        .map(|rel| rel.iter().map(|part| part.to_string_lossy()).collect::<Vec<_>>().join("/"))
         .unwrap_or_else(|_| {
             path.file_name()
                 .map(|name| name.to_string_lossy().into_owned())
@@ -959,6 +963,10 @@ mod tests {
             ),
             "pasted-2.png"
         );
+        // Joined by the platform, whose separator is `\` on Windows; the file
+        // says `/` wherever it was saved.
+        let base = std::env::temp_dir().join("vault");
+        assert_eq!(vault_relative(&base.join("Hobbies").join("pasted-3.png"), &base), "Hobbies/pasted-3.png");
     }
 
     #[test]

@@ -3748,6 +3748,100 @@ fn what_another_app_copied_is_pasted_whole_and_in_view() {
     let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
+#[test]
+fn files_copied_in_a_file_manager_are_pasted_as_themselves() {
+    let _clipboard = clipboard::system::exclusive();
+    let (mut app, path) = file_app("pasted-files", Vec::new());
+    let vault = path.parent().unwrap().to_path_buf();
+    app.base_path = vault.clone();
+    let elsewhere = std::env::temp_dir().join(format!("tb-elsewhere-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&elsewhere);
+    std::fs::create_dir_all(&elsewhere).unwrap();
+    std::fs::create_dir_all(vault.join("attachments")).unwrap();
+    std::fs::create_dir_all(vault.join("notes")).unwrap();
+    let photo = elsewhere.join("photo.jpg");
+    ::image::save_buffer(&photo, &[90; 8 * 4 * 3], 8, 4, ::image::ExtendedColorType::Rgb8).unwrap();
+    let inside = vault.join("attachments/inside.png");
+    ::image::save_buffer(&inside, &[90; 4 * 4 * 4], 4, 4, ::image::ExtendedColorType::Rgba8).unwrap();
+    let packing = vault.join("notes/Packing.md");
+    std::fs::write(&packing, "- passport\n- adapter").unwrap();
+    let ideas = elsewhere.join("Ideas.md");
+    std::fs::write(&ideas, "Take the 28 tram early").unwrap();
+    let pdf = elsewhere.join("itinerary.pdf");
+    std::fs::write(&pdf, "%PDF-1.7").unwrap();
+    // No extension, which in a board would mean a note.
+    let makefile = elsewhere.join("Makefile");
+    std::fs::write(&makefile, "all:").unwrap();
+    // A picture of the same name is already beside the board.
+    std::fs::write(vault.join("photo.jpg"), "taken").unwrap();
+
+    // Finder's icons ride along as an image; the files are what's pasted.
+    let files = vec![photo.clone(), inside, packing, ideas.clone(), pdf.clone(), makefile.clone()];
+    *clipboard::system::held() = Some(clipboard::Clip::Files(files));
+    send(&mut app, Message::Paste { world: Point::ORIGIN });
+    assert_eq!(app.nodes.len(), 6);
+    assert_eq!(app.selected, vec![0, 1, 2, 3, 4, 5], "left selected, as pasted cards are");
+
+    // From outside the vault: copied beside the board, under its own name,
+    // numbered where that's taken, and not re-encoded.
+    let copied = &app.nodes[0];
+    assert_eq!(copied.node_kind(), NodeKind::Image);
+    assert_eq!(copied.file.as_deref(), Some("photo 1.jpg"));
+    assert_eq!(std::fs::read(vault.join("photo 1.jpg")).unwrap(), std::fs::read(&photo).unwrap());
+    assert_eq!(copied.width / copied.height, 2.0, "the picture's shape: {}×{}", copied.width, copied.height);
+    assert!(app.images.contains_key(&copied.id));
+
+    // From inside it: used where it lies.
+    assert_eq!(app.nodes[1].file.as_deref(), Some("attachments/inside.png"));
+    assert!(app.images.contains_key(&app.nodes[1].id));
+
+    // A note shows its text, by the same rule: where it lies inside the
+    // vault, copied in from outside it.
+    assert_eq!(app.nodes[2].node_kind(), NodeKind::Note);
+    assert_eq!(app.nodes[2].file.as_deref(), Some("notes/Packing.md"));
+    assert_eq!(app.notes.get(&app.nodes[2].id).map(String::as_str), Some("- passport\n- adapter"));
+    assert_eq!(app.nodes[3].file.as_deref(), Some("Ideas.md"));
+    assert_eq!(app.notes.get(&app.nodes[3].id).map(String::as_str), Some("Take the 28 tram early"));
+
+    // Anything else: its path, as text.
+    for (node, file) in app.nodes[4..].iter().zip([&pdf, &makefile]) {
+        assert_eq!(node.node_kind(), NodeKind::Text);
+        assert_eq!(node.text.as_deref(), Some(file.display().to_string().as_str()));
+    }
+    // Laid out apart, not stacked on one another.
+    let rects: Vec<_> = app.nodes.iter().map(arrange::node_world_rect).collect();
+    for (i, a) in rects.iter().enumerate() {
+        assert!(rects[i + 1..].iter().all(|b| !a.intersects(b)), "card {i} overlaps another");
+    }
+
+    // On the welcome board, which has no folder, a file is used where it
+    // lies, by its full path…
+    let mut app = app_with(Vec::new(), Vec::new());
+    *clipboard::system::held() = Some(clipboard::Clip::Files(vec![photo.clone(), ideas.clone()]));
+    send(&mut app, Message::Paste { world: Point::ORIGIN });
+    assert_eq!(app.nodes[0].file.as_deref(), Some(photo.to_string_lossy().as_ref()));
+    assert!(app.images.contains_key(&app.nodes[0].id));
+    assert_eq!(app.nodes[1].file.as_deref(), Some(ideas.to_string_lossy().as_ref()));
+    assert_eq!(app.notes.get(&app.nodes[1].id).map(String::as_str), Some("Take the 28 tram early"));
+
+    // …and brought in when its card is copied onto a board with one.
+    app.selected = vec![0, 1];
+    send(&mut app, Message::Copy { chain: false, mermaid: false });
+    let (_, onward) = file_app("pasted-files-onward", Vec::new());
+    let _ = app.open_canvas(onward.clone());
+    send(&mut app, Message::Paste { world: Point::ORIGIN });
+    let folder = onward.parent().unwrap();
+    assert_eq!(app.nodes[0].file.as_deref(), Some("photo.jpg"));
+    assert!(folder.join("photo.jpg").exists());
+    assert_eq!(app.nodes[1].file.as_deref(), Some("Ideas.md"));
+    assert_eq!(app.notes.get(&app.nodes[1].id).map(String::as_str), Some("Take the 28 tram early"));
+
+    *clipboard::system::held() = None;
+    let _ = std::fs::remove_dir_all(&vault);
+    let _ = std::fs::remove_dir_all(&elsewhere);
+    let _ = std::fs::remove_dir_all(folder);
+}
+
 // --- Copying cards out ---
 
 /// A bug reasoned about, left to right: a symptom, a cause ruled out, the
