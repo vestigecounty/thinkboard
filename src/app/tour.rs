@@ -712,6 +712,23 @@ impl Tour {
         })]);
     }
 
+    /// One two-finger swipe passing each of `steps`, `(at, dx, dy)`, a step a
+    /// frame and settled only at its end: a trackpad sends a swipe's events
+    /// faster than anything settles between them, and the board takes a
+    /// pause in them for the swipe's end. A frame's batch is handled at one
+    /// cursor, so a step that moves the cursor can't share one.
+    fn swipe_through(&mut self, steps: &[(Point, f32, f32)]) {
+        for &(at, dx, dy) in steps {
+            self.cursor = at;
+            self.deliver(vec![
+                Event::Mouse(mouse::Event::CursorMoved { position: at }),
+                Event::Mouse(mouse::Event::WheelScrolled { delta: mouse::ScrollDelta::Pixels { x: dx, y: dy } }),
+            ]);
+        }
+        self.settle();
+        self.draw();
+    }
+
     /// Runs a command the way a person does: the palette, a few letters of its
     /// name, Return.
     fn palette(&mut self, query: &str) {
@@ -3198,6 +3215,61 @@ fn long_cards() {
     tour.note(&format!("two-finger scroll over the guide: camera {:?} → {:?}, the card's own scroll {:?} → {:?}", before.0, after.0, before.1, after.1));
     tour.shot("scrolled-over-it");
     tour.swipe(over, 0.0, 300.0);
+    // As it's drawn: what's kept can run past the end, and is clamped on use.
+    let scroll = |tour: &Tour| board::scroll_offset(&tour.app.config, &tour.app.theme, &tour.app.node_scroll, &tour.app.nodes[article]);
+    assert!(after.1.is_some_and(|scrolled| scrolled > 0.0) && after.0 == before.0, "the card scrolled, the board stayed");
+    assert_eq!(scroll(&tour), 0.0, "and back");
+
+    // A scroll stays with what it started on. Each swipe here comes after
+    // longer than the pause that ends one, so it's a scroll of its own.
+    let pause = Duration::from_millis(300);
+    let rect = tour.app.camera.rect_to_screen(arrange::node_world_rect(&tour.app.nodes[article]));
+    let beside = Point::new(rect.x + rect.width + 120.0, over.y);
+    let home = tour.app.camera.offset;
+    tour.wait(pause);
+    tour.swipe_through(&[(beside, 0.0, -40.0), (over, 0.0, -40.0), (over, 0.0, -40.0)]);
+    tour.note(&format!("a pan from beside the guide onto it: camera moved {:?}, the card's scroll {}", tour.app.camera.offset - home, scroll(&tour)));
+    assert_eq!((tour.app.camera.offset - home).y, -120.0, "a pan onto the card goes on panning");
+    assert_eq!(scroll(&tour), 0.0);
+
+    // Scrolled to its end, it stops there, however far the swipe goes on —
+    // each step of it counting, two in one frame's batch included.
+    tour.wait(pause);
+    let camera = tour.app.camera.offset;
+    let step = Event::Mouse(mouse::Event::WheelScrolled { delta: mouse::ScrollDelta::Pixels { x: 0.0, y: -100.0 } });
+    tour.feed(vec![step.clone(), step]);
+    assert_eq!(scroll(&tour), 200.0, "both steps of a frame scroll the card");
+    tour.swipe_through(&[(over, 0.0, -100_000.0), (over, 0.0, -400.0)]);
+    let end = scroll(&tour);
+    let guide = &tour.app.nodes[article];
+    let overflow = board::content_height(guide.text.as_deref().unwrap_or(""), guide.width, &tour.app.theme) - guide.height;
+    tour.note(&format!("swiped far past the guide's end: its scroll {end} of {overflow}; camera moved {:?}", tour.app.camera.offset - camera));
+    assert!((end - overflow).abs() < 0.5 && tour.app.camera.offset == camera, "stops at its end");
+    tour.shot("scrolled-to-its-end");
+
+    // The next scroll the same way moves the board; back the other way
+    // scrolls the card again.
+    tour.wait(pause);
+    tour.swipe(over, 0.0, -40.0);
+    tour.note(&format!("the next swipe on: camera moved {:?}, the card's scroll {}", tour.app.camera.offset - camera, scroll(&tour)));
+    assert_eq!((tour.app.camera.offset - camera).y, -40.0, "the board moves once the card's at its end");
+    assert_eq!(scroll(&tour), end);
+    tour.wait(pause);
+    tour.swipe(over, 0.0, 40.0);
+    assert!(scroll(&tour) < end, "the other way, the card scrolls");
+
+    // ⌘ zooms whatever's under it, as it always has.
+    tour.wait(pause);
+    let zoom = tour.app.camera.zoom;
+    tour.hold(Modifiers::COMMAND);
+    tour.swipe(over, 0.0, 40.0);
+    tour.hold(Modifiers::empty());
+    tour.settle();
+    assert!(tour.app.camera.zoom != zoom, "⌘-scroll over the card zooms the board");
+    tour.send(Message::ZoomBy { factor: zoom / tour.app.camera.zoom, cursor: over });
+    tour.settle();
+    tour.send(Message::Pan { delta: home - tour.app.camera.offset, track: false });
+    tour.send(Message::SetNodeScroll { id: card.id.clone(), offset: 0.0 });
 
     // By its scrollbar, which is the way the card has.
     let rect = tour.app.camera.rect_to_screen(arrange::node_world_rect(&tour.app.nodes[article]));

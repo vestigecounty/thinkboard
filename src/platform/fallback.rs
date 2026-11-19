@@ -18,6 +18,14 @@ pub const SUPPORTS_PINCH: bool = false;
 /// No pinch monitor to install (see [`SUPPORTS_PINCH`]).
 pub fn set_magnify_handler(_handler: impl Fn(f32, f32, f32) + Send + Sync + 'static) {}
 
+/// Nothing says where a scroll begins here; a pause ends one.
+pub fn watch_scrolls() {}
+
+/// Nothing counted (see [`watch_scrolls`]).
+pub fn scrolls_begun() -> Option<u64> {
+    None
+}
+
 /// No raw trackpad-gesture recognition on this platform.
 pub const SUPPORTS_GESTURES: bool = false;
 

@@ -12,7 +12,7 @@
 use std::cell::RefCell;
 use std::os::raw::{c_char, c_int, c_void};
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicI32, Ordering};
+use std::sync::atomic::{AtomicI32, AtomicU64, Ordering};
 use std::sync::{Mutex, Once, OnceLock};
 
 use block2::RcBlock;
@@ -21,7 +21,7 @@ use objc2::runtime::{AnyObject, NSObject};
 use objc2::{ClassType, MainThreadOnly, class, define_class, msg_send, sel};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationOptions, NSApplicationActivationPolicy,
-    NSRunningApplication, NSEvent, NSEventMask, NSPanel, NSScreen,
+    NSRunningApplication, NSEvent, NSEventMask, NSEventPhase, NSPanel, NSScreen,
     NSWindow, NSWindowCollectionBehavior, NSWindowStyleMask, NSWorkspace,
     NSWorkspaceActiveSpaceDidChangeNotification, NSWorkspaceApplicationKey,
     NSWorkspaceDidActivateApplicationNotification,
@@ -371,6 +371,36 @@ fn start_magnify_monitor() {
         std::mem::forget(monitor);
         std::mem::forget(block);
     });
+}
+
+/// Trackpad scrolls begun since [`watch_scrolls`] installed its monitor.
+static SCROLLS_BEGUN: AtomicU64 = AtomicU64::new(0);
+static SCROLL_MONITOR: Once = Once::new();
+
+/// Installs a local `NSEvent` monitor for scrolls once, which counts each one
+/// a trackpad begins: its `phase` is `Began` as the fingers start to move,
+/// and its momentum after they lift comes in `momentumPhase`, so it isn't
+/// counted again. A wheel's scroll has no phase and isn't counted at all. The
+/// event goes on unchanged; monitor and block are leaked to live for the app.
+pub fn watch_scrolls() {
+    SCROLL_MONITOR.call_once(|| {
+        let block = RcBlock::new(|event: NonNull<NSEvent>| -> *mut NSEvent {
+            if unsafe { event.as_ref() }.phase().contains(NSEventPhase::Began) {
+                SCROLLS_BEGUN.fetch_add(1, Ordering::Relaxed);
+            }
+            event.as_ptr()
+        });
+        let monitor = unsafe {
+            NSEvent::addLocalMonitorForEventsMatchingMask_handler(NSEventMask::ScrollWheel, &block)
+        };
+        std::mem::forget(monitor);
+        std::mem::forget(block);
+    });
+}
+
+/// The trackpad scrolls begun so far, once [`watch_scrolls`] is counting them.
+pub fn scrolls_begun() -> Option<u64> {
+    SCROLL_MONITOR.is_completed().then(|| SCROLLS_BEGUN.load(Ordering::Relaxed))
 }
 
 // ---------------------------------------------------------------------------

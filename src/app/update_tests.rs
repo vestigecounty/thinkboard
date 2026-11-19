@@ -1461,6 +1461,30 @@ fn height_still_settles_back_when_text_is_removed() {
     assert!(app.nodes[0].height < tall, "height should settle back");
 }
 
+// --- Scrolling a long card ---
+
+#[test]
+fn a_cards_scroll_steps_add_up_and_stop_at_its_ends() {
+    let long = "A line of the guide, long enough to need a scroll.\n\n".repeat(40);
+    let mut app = app_with(vec![CanvasNode { height: 300.0, ..text_node("guide", &long) }], Vec::new());
+    app.config.card_scrollbars = true;
+    let scroll = |app: &App| board::scroll_offset(&app.config, &app.theme, &app.node_scroll, &app.nodes[0]);
+    let by = |by: f32| Message::ScrollNodeBy { id: "guide".to_owned(), by };
+    // Two from one batch, each worked out before the other landed: both count.
+    send(&mut app, by(50.0));
+    send(&mut app, by(50.0));
+    assert_eq!(scroll(&app), 100.0);
+    // Far past the end, and straight back from it rather than from where the
+    // step would have taken it.
+    send(&mut app, by(1e6));
+    let end = scroll(&app);
+    assert!(end > 100.0 && end < 1e6, "at its end: {end}");
+    send(&mut app, by(-10.0));
+    assert_eq!(scroll(&app), end - 10.0);
+    send(&mut app, by(-1e6));
+    assert_eq!(scroll(&app), 0.0);
+}
+
 // --- Editing overlay bounds ---
 
 /// The card's on-screen rectangle, which the editing overlay has to stay within.

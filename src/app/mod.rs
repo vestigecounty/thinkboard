@@ -266,6 +266,11 @@ pub(crate) enum Message {
     /// Set a node's vertical scroll offset (world px from the top), from dragging
     /// its scrollbar. Clamped to the content overflow on use.
     SetNodeScroll { id: String, offset: f32 },
+    /// Scroll a node by `by` (world px, down its text), from a wheel or a
+    /// trackpad. A step rather than an offset: several can come in one batch,
+    /// each worked out from the board as it was before any of them landed, and
+    /// offsets would each have undone the last.
+    ScrollNodeBy { id: String, by: f32 },
     AddEdge { from: usize, side: &'static str, to: usize, to_side: &'static str },
     CreateConnectedNode { from: usize, side: &'static str, world: Point },
     OpenContextMenu { screen: Point, world: Point },
@@ -1123,6 +1128,15 @@ impl App {
                 self.node_scroll.insert(id, offset.max(0.0));
                 self.cache.clear();
             }
+            Message::ScrollNodeBy { id, by } => {
+                if let Some(node) = self.nodes.iter().find(|node| node.id == id) {
+                    // From where it's drawn, so a step past the end that was
+                    // kept raw doesn't have to be scrolled back through.
+                    let offset = board::scroll_offset(&self.config, &self.theme, &self.node_scroll, node);
+                    self.node_scroll.insert(id, (offset + by).max(0.0));
+                    self.cache.clear();
+                }
+            }
 
             // --- Structure ---
             Message::AddEdge { from, side, to, to_side } => {
@@ -1668,6 +1682,12 @@ impl App {
     fn viewport_resized(&mut self, size: Size) -> Task<Message> {
         self.camera.viewport = size;
         self.top_safe_inset = platform::top_safe_inset();
+        // The board's scrolls stay with what they started on, and on macOS the
+        // trackpad says where one starts; heard from the first frame, in either
+        // mode, on the main thread as AppKit wants — which a test isn't on.
+        if !cfg!(test) {
+            platform::watch_scrolls();
+        }
         let mut backdrop = Task::none();
         if self.overlay && !self.overlay_configured {
             self.overlay_configured = true;

@@ -195,6 +195,20 @@ pub fn set_magnify_handler(handler: impl Fn(f32, f32, f32) + Send + Sync + 'stat
     backend::set_magnify_handler(handler);
 }
 
+/// Starts counting trackpad scrolls as they begin (see [`scrolls_begun`]).
+/// Call on the main thread; again is a no-op.
+pub fn watch_scrolls() {
+    backend::watch_scrolls();
+}
+
+/// How many trackpad scrolls have begun — fingers down and moving — since
+/// [`watch_scrolls`], or `None` where the platform doesn't say (only macOS
+/// does) or isn't being watched. iced passes a scroll on as deltas alone, and
+/// a swipe made while the last one's momentum runs has no pause before it.
+pub fn scrolls_begun() -> Option<u64> {
+    backend::scrolls_begun()
+}
+
 /// Whether this platform can recognize a raw multi-finger trackpad swipe to
 /// summon the overlay (a private-framework tap). Only macOS, and experimental.
 pub const SUPPORTS_GESTURES: bool = backend::SUPPORTS_GESTURES;

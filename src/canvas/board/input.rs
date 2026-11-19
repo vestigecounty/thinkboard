@@ -42,6 +42,11 @@ const FRACTIONAL_LINES_ARE_TRACKPAD: bool = cfg!(not(target_os = "macos"));
 /// wheel's notch scrolls a page.
 const PIXELS_PER_LINE: f32 = 60.0;
 
+/// The pause that ends a scroll ([`ScrollLatch`]): a wheel's notches spun
+/// one after another come well inside it, and a second flick after the first
+/// has run out comes after it.
+const SCROLL_PAUSE: Duration = Duration::from_millis(250);
+
 /// `delta` as the board reads it: a trackpad's fractional lines as the pixels
 /// they'd be (see [`FRACTIONAL_LINES_ARE_TRACKPAD`]), anything else as it is.
 fn trackpad_lines(delta: ScrollDelta, fractional_lines_are_trackpad: bool) -> ScrollDelta {
@@ -200,6 +205,49 @@ pub struct Interaction {
     /// ([`uses_command`]): the board switcher's strip is due
     /// [`SHOW_SWITCHER_AFTER`] from then.
     pub(super) command_held: Option<Instant>,
+    /// The scroll under way, which stays with what it started on.
+    pub(super) scroll: Option<ScrollLatch>,
+}
+
+/// A scroll under way: a wheel's notches or a trackpad's swipe, with its
+/// momentum. It goes to what it started on — a pan that crosses a long card
+/// doesn't stop to scroll it, and a card scrolled to its end stops there
+/// rather than run on into the board. The next scroll the same way, with the
+/// card at its end, moves the board ([`Board::card_to_scroll`]).
+pub(super) struct ScrollLatch {
+    /// The card it scrolls, by id in case the board changes under it, or
+    /// `None` for the board.
+    card: Option<String>,
+    /// When its last event came.
+    last: Instant,
+    /// The trackpad scrolls begun, as the platform counted them then
+    /// (`platform::scrolls_begun`).
+    begun: Option<u64>,
+}
+
+impl ScrollLatch {
+    /// Whether a scroll event at `now`, with `begun` trackpad scrolls counted,
+    /// is more of this one. A pause ends a scroll; so, on macOS, does a
+    /// trackpad's scroll beginning — the fingers going down — which is how a
+    /// swipe made while the last one's momentum still runs, with no pause
+    /// between their events, is told from it.
+    fn continues(&self, now: Instant, begun: Option<u64>) -> bool {
+        now.duration_since(self.last) < SCROLL_PAUSE && self.begun == begun
+    }
+}
+
+/// Whether a card scrolled `offset` into its `overflow` (world px) can move
+/// by `dy`, in screen px as a pan moves the board: up, below zero, toward the
+/// card's end.
+fn has_room(offset: f32, overflow: f32, dy: f32) -> bool {
+    // Half a pixel's slack, for a scroll that stopped a rounding short of an end.
+    if dy > 0.0 {
+        offset > 0.5
+    } else if dy < 0.0 {
+        offset < overflow - 0.5
+    } else {
+        false
+    }
 }
 
 /// A rubber-band selection in progress.
@@ -969,7 +1017,8 @@ impl Board<'_> {
     }
 
     /// A wheel or a trackpad: a mouse wheel zooms toward the cursor; a trackpad
-    /// pans, or zooms with Cmd/Ctrl held.
+    /// pans, or zooms with Cmd/Ctrl held. Either scrolls a long card instead,
+    /// when the scroll starts on one ([`ScrollLatch`]).
     fn wheel(
         &self,
         state: &mut Interaction,
@@ -977,7 +1026,23 @@ impl Board<'_> {
         position: Option<Point>,
     ) -> Option<canvas::Action<Message>> {
         let position = position?;
-        match trackpad_lines(delta, FRACTIONAL_LINES_ARE_TRACKPAD && self.config.pan_on_fractional_scroll) {
+        let delta = trackpad_lines(delta, FRACTIONAL_LINES_ARE_TRACKPAD && self.config.pan_on_fractional_scroll);
+        // On screen, as a pan moves the board.
+        let (dx, dy) = match delta {
+            ScrollDelta::Lines { x, y } => (x * PIXELS_PER_LINE, y * PIXELS_PER_LINE),
+            ScrollDelta::Pixels { x, y } => (x, y),
+        };
+        let now = Instant::now();
+        let begun = crate::platform::scrolls_begun();
+        let card = match state.scroll.as_ref().filter(|scroll| scroll.continues(now, begun)) {
+            Some(scroll) => scroll.card.clone(),
+            None => self.card_to_scroll(state.modifiers, position, dx, dy).map(|index| self.nodes[index].id.clone()),
+        };
+        state.scroll = Some(ScrollLatch { card: card.clone(), last: now, begun });
+        if let Some(index) = card.and_then(|id| self.nodes.iter().position(|node| node.id == id)) {
+            return Some(self.scroll_card(index, dy));
+        }
+        match delta {
             // Mouse wheel (line-based): zoom toward the cursor.
             ScrollDelta::Lines { y, .. } => {
                 Some(canvas::Action::publish(Message::ZoomBy {
@@ -1003,6 +1068,41 @@ impl Board<'_> {
                 Some(canvas::Action::publish(message).and_capture())
             }
         }
+    }
+
+    /// The card a scroll starting at `position` and moving by `(dx, dy)`
+    /// scrolls, by index: one under the cursor with a scrollbar, and room to
+    /// move the way it's pushed. Otherwise the board has it — with ⌘ or Ctrl
+    /// held, a scroll more across than down, at semantic zoom where cards
+    /// aren't drawn — and a card already at the end it's pushed toward lets
+    /// the board have it too, or one zoomed to fill the window would hold the
+    /// board still. A card being edited scrolls in the editor, which is over it.
+    fn card_to_scroll(&self, modifiers: keyboard::Modifiers, position: Point, dx: f32, dy: f32) -> Option<usize> {
+        if modifiers.command() || modifiers.control() || dy.abs() <= dx.abs() || self.show_clusters() {
+            return None;
+        }
+        let index = self.hit_test(self.camera.to_world(position))?;
+        let node = &self.nodes[index];
+        let scrolls = self.editing != Some(index) && self.scrollable(node);
+        (scrolls && has_room(self.node_scroll_offset(node), self.card_overflow(node), dy)).then_some(index)
+    }
+
+    /// Scrolls card `index` by `dy` (screen px, as a pan moves the board),
+    /// stopping at either end.
+    fn scroll_card(&self, index: usize, dy: f32) -> canvas::Action<Message> {
+        let node = &self.nodes[index];
+        let offset = self.node_scroll_offset(node);
+        let by = -dy / self.camera.zoom;
+        // Already at the end it's scrolled toward: nothing to ask for.
+        if (offset + by).clamp(0.0, self.card_overflow(node)) == offset {
+            return canvas::Action::capture();
+        }
+        canvas::Action::publish(Message::ScrollNodeBy { id: node.id.clone(), by }).and_capture()
+    }
+
+    /// How far a card's text runs past its bottom (world px), 0 when it fits.
+    fn card_overflow(&self, node: &CanvasNode) -> f32 {
+        (self.node_content_height(node.text.as_deref().unwrap_or(""), node.width) - node.height).max(0.0)
     }
 
     /// Topmost node containing the given world point.
@@ -1330,7 +1430,9 @@ mod snap_tests {
 
 #[cfg(test)]
 mod scroll_tests {
-    use super::{PIXELS_PER_LINE, trackpad_lines};
+    use std::time::{Duration, Instant};
+
+    use super::{PIXELS_PER_LINE, SCROLL_PAUSE, ScrollLatch, has_room, trackpad_lines};
     use iced::mouse::ScrollDelta;
 
     #[test]
@@ -1349,6 +1451,31 @@ mod scroll_tests {
         // Pixels are a trackpad's already, everywhere.
         let pixels = ScrollDelta::Pixels { x: 3.0, y: 4.5 };
         assert_eq!(trackpad_lines(pixels, true), pixels);
+    }
+
+    #[test]
+    fn a_scroll_lasts_until_a_pause_or_a_new_swipe() {
+        let start = Instant::now();
+        let scroll = |begun| ScrollLatch { card: Some("guide".to_owned()), last: start, begun };
+        // A wheel's notches, or a trackpad where nothing says when one begins.
+        assert!(scroll(None).continues(start + Duration::from_millis(30), None));
+        assert!(!scroll(None).continues(start + SCROLL_PAUSE, None), "a pause ends it");
+        // A trackpad on macOS: its momentum is the swipe it came from, and a
+        // swipe made while it runs is a new scroll, pause or no pause.
+        assert!(scroll(Some(4)).continues(start + Duration::from_millis(30), Some(4)));
+        assert!(!scroll(Some(4)).continues(start + Duration::from_millis(30), Some(5)));
+        assert!(!scroll(Some(4)).continues(start + SCROLL_PAUSE, Some(4)));
+    }
+
+    #[test]
+    fn a_card_takes_a_scroll_only_with_room_to_move_that_way() {
+        // Pushed up, toward its end; pushed down, toward its top.
+        let (up, down) = (-40.0, 40.0);
+        assert!(has_room(0.0, 300.0, up) && !has_room(0.0, 300.0, down), "at its top");
+        assert!(has_room(150.0, 300.0, up) && has_room(150.0, 300.0, down), "partway");
+        assert!(!has_room(300.0, 300.0, up) && has_room(300.0, 300.0, down), "at its end");
+        assert!(!has_room(299.8, 300.0, up), "a rounding short of it");
+        assert!(!has_room(0.0, 0.0, up) && !has_room(0.0, 0.0, down), "nothing to scroll");
     }
 }
 

@@ -41,6 +41,15 @@ pub const SUPPORTS_PINCH: bool = false;
 /// No pinch monitor to install (see [`SUPPORTS_PINCH`]).
 pub fn set_magnify_handler(_handler: impl Fn(f32, f32, f32) + Send + Sync + 'static) {}
 
+/// Windows sends a touchpad's scroll as lines, with nothing to say where one
+/// begins; a pause ends one.
+pub fn watch_scrolls() {}
+
+/// Nothing counted (see [`watch_scrolls`]).
+pub fn scrolls_begun() -> Option<u64> {
+    None
+}
+
 /// Raw trackpad-gesture recognition isn't wired natively on Windows.
 pub const SUPPORTS_GESTURES: bool = false;
 

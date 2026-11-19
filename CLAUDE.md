@@ -160,6 +160,20 @@ offset, so the vendored `iced_graphics` editor publishes it as a fraction
 count honestly), and `editing_thumb` maps that onto the same overflow the read
 path uses — so the thumb doesn't jump when an edit starts.
 
+**A scroll goes to what it started on** (`board::ScrollLatch`). A wheel or a
+trackpad that starts on a card with a scrollbar scrolls the card; one that
+starts anywhere else pans or zooms the board, and goes on doing that when it
+crosses a long card. A card's scroll stops at its end rather than run on into
+the board, and the next scroll pushed the same way, with the card already
+there, moves the board — so a card zoomed to fill the window, which a long
+one invites, can't hold the board still. ⌘ (Ctrl) always goes to the board.
+A scroll ends at a pause (`SCROLL_PAUSE`), and on macOS also when a trackpad
+says one has begun (`platform::scrolls_begun`, a local `NSEvent` monitor
+reading its `phase`): a swipe made while the last one's momentum runs has
+no pause before it. A wheel's step is `ScrollNodeBy`, relative, never an
+offset: iced handles a frame's events against the board as it was before
+any of their messages landed, and two offsets in one frame undid each other.
+
 That thumb is drawn in the **uncached** overlay, and reads the fraction there
 rather than taking it from `view`. Both matter: a cursor move doesn't invalidate
 the scene cache, and the editor only publishes its scroll while laying out —
