@@ -293,10 +293,39 @@ jobs:
       - name: Leave out the Flatpak's crate list
         run: rm -f artifacts/cargo-sources.json
 
+      # The release's notes are its <release> in the metainfo, written once
+      # for software centres and for this page alike. Without one the page
+      # has GitHub's changelog link alone, and says so in a warning.
+      - uses: actions/checkout@v4
+        with:
+          sparse-checkout: packaging/linux
+          path: source
+
+      - name: Write the notes from the metainfo
+        shell: python
+        run: |
+          import os, xml.etree.ElementTree as ET
+          version = os.environ["GITHUB_REF_NAME"].removeprefix("v")
+          root = ET.parse("source/packaging/linux/com.vestigecounty.ThinkBoard.metainfo.xml").getroot()
+          description = root.find(f"releases/release[@version='{version}']/description")
+          def text(element):
+              return " ".join("".join(element.itertext()).split())
+          blocks = []
+          for block in [] if description is None else description:
+              if block.tag == "p":
+                  blocks.append(text(block))
+              else:
+                  blocks.append("\n".join(f"- {text(item)}" for item in block))
+          if not blocks:
+              print(f"::warning::The metainfo has no notes for {version}: the release page has only GitHub's changelog link.")
+          with open("notes.md", "w") as notes:
+              notes.write("\n\n".join(blocks) + "\n")
+
       - name: Create release
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/**
+          body_path: notes.md
           generate_release_notes: true
           fail_on_unmatched_files: true
 

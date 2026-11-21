@@ -1526,8 +1526,10 @@ which builds a universal macOS `.app`, a Windows zip, and for Linux, x86_64 and
 aarch64 each, a tarball, a `.deb`, an `.rpm` and a Flatpak bundle. Push the one
 tag, not `--tags`: older tags exist only locally. Tag releases for shipped
 user-facing features — not for internal refactors. Add the release to
-`<releases>` in `packaging/linux/…metainfo.xml` as it's tagged: software
-centres show it.
+`<releases>` in `packaging/linux/…metainfo.xml` as it's tagged, its notes as
+its `<description>`: software centres show them, and the GitHub release's
+text is made from them (a `<p>` a paragraph, a list's items a Markdown
+list), ahead of GitHub's changelog link.
 
 **A running app says when a newer release is out** (`app::updates`, the
 check in `core::update`): GitHub's latest release for the repo, asked at
