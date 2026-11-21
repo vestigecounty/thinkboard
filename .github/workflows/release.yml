@@ -249,6 +249,22 @@ jobs:
           name: flatpak-cargo-sources
           path: packaging/flatpak
 
+      # The image installs the SDK in a layer of its own, and isn't rebuilt
+      # as the SDK moves on, so flatpak-builder updates it first. An update
+      # moves the old one aside, which the container's overlay filesystem
+      # refuses for a directory in a lower layer ("Invalid cross-device
+      # link"), and flatpak-builder then crashed (exit 139; on x86_64, not
+      # aarch64; flatpak/flatpak-github-actions#267, closed unfixed). Copied
+      # once, the installation is all in the container's own layer.
+      - name: Let the image's SDK be updated
+        shell: bash
+        run: |
+          dir=$(flatpak --installations | head -n1)
+          echo "Copying ${dir} into the container's own layer"
+          cp -a "$dir" "$dir.copy"
+          rm -rf "$dir"
+          mv "$dir.copy" "$dir"
+
       - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
           bundle: thinkboard-${{ env.VERSION }}-linux-${{ matrix.arch }}.flatpak
