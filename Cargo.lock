@@ -5314,7 +5314,7 @@ dependencies = [
 
 [[package]]
 name = "thinkboard"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "arboard",
  "ashpd",
@@ -5351,7 +5351,7 @@ dependencies = [
 
 [[package]]
 name = "thinkboard-core"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "base64",
  "criterion",
@@ -5365,7 +5365,7 @@ dependencies = [
 
 [[package]]
 name = "thinkboard-ffi"
-version = "0.8.0"
+version = "0.9.0"
 dependencies = [
  "thinkboard-core",
  "uniffi",
