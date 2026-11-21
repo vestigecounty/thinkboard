@@ -77,11 +77,19 @@ brew install vestigecounty/tap/thinkboard
 brew services start thinkboard   # now, and at every login
 ```
 
-**Prebuilt binaries** — the latest release: [macOS](https://github.com/vestigecounty/thinkboard/releases/latest/download/thinkboard-macos-universal.zip) (Universal .app), [Windows](https://github.com/vestigecounty/thinkboard/releases/latest/download/thinkboard-windows-x86_64.zip) (x86-64 .zip), [Linux](https://github.com/vestigecounty/thinkboard/releases/latest/download/thinkboard-linux-x86_64.tar.gz) (x86-64 .tar.gz). Every release is on the [Releases](https://github.com/vestigecounty/thinkboard/releases) page.
+**Prebuilt binaries** — the latest release: [macOS](https://github.com/vestigecounty/thinkboard/releases/latest/download/thinkboard-macos-universal.zip) (Universal .app), [Windows](https://github.com/vestigecounty/thinkboard/releases/latest/download/thinkboard-windows-x86_64.zip) (x86-64 .zip). Every release is on the [Releases](https://github.com/vestigecounty/thinkboard/releases) page.
 
 > The Mac app isn't notarized by Apple yet, so macOS blocks the first launch of a download: open it once, then choose
 > **Open Anyway** in System Settings → Privacy & Security (or run `xattr -dr com.apple.quarantine ThinkBoard.app`).
 > Homebrew doesn't flag what it installs as downloaded, so installed that way it opens straight away.
+
+**Linux** — the latest release, for x86-64 and Arm64. The Flatpak takes its runtime from
+[Flathub](https://flathub.org/setup).
+
+- **.deb** (Ubuntu, Debian): [x86-64](https://github.com/vestigecounty/thinkboard/releases/latest/download/thinkboard-linux-x86_64.deb) · [Arm64](https://github.com/vestigecounty/thinkboard/releases/latest/download/thinkboard-linux-aarch64.deb) — `sudo apt install ./thinkboard-linux-*.deb`
+- **.rpm** (Fedora, openSUSE): [x86-64](https://github.com/vestigecounty/thinkboard/releases/latest/download/thinkboard-linux-x86_64.rpm) · [Arm64](https://github.com/vestigecounty/thinkboard/releases/latest/download/thinkboard-linux-aarch64.rpm) — `sudo dnf install ./thinkboard-linux-*.rpm`
+- **Flatpak** (any distribution): [x86-64](https://github.com/vestigecounty/thinkboard/releases/latest/download/thinkboard-linux-x86_64.flatpak) · [Arm64](https://github.com/vestigecounty/thinkboard/releases/latest/download/thinkboard-linux-aarch64.flatpak) — `flatpak install ./thinkboard-linux-*.flatpak`
+- **.tar.gz** (any distribution, into ~/.local without root): [x86-64](https://github.com/vestigecounty/thinkboard/releases/latest/download/thinkboard-linux-x86_64.tar.gz) · [Arm64](https://github.com/vestigecounty/thinkboard/releases/latest/download/thinkboard-linux-aarch64.tar.gz) — `tar xzf thinkboard-linux-*.tar.gz && thinkboard-*/install.sh`
 
 **From source** — with a recent Rust toolchain (2024 edition):
 

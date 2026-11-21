@@ -293,6 +293,15 @@ jobs:
       - name: Leave out the Flatpak's crate list
         run: rm -f artifacts/cargo-sources.json
 
+      # The Flatpaks under a name that's the same every release, as each of
+      # the other packages has one (see the Linux step): the website's links.
+      - name: Name the Flatpaks for every release alike
+        shell: bash
+        run: |
+          for bundle in artifacts/thinkboard-*-linux-*.flatpak; do
+            if [ -e "$bundle" ]; then cp "$bundle" "artifacts/thinkboard-linux-${bundle##*-linux-}"; fi
+          done
+
       # The release's notes are its <release> in the metainfo, written once
       # for software centres and for this page alike. Without one the page
       # has GitHub's changelog link alone, and says so in a warning.
