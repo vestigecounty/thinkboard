@@ -188,12 +188,35 @@ jobs:
           path: dist/*
           if-no-files-found: error
 
+  # The Flatpak's crates, listed for its offline build from Cargo.lock by
+  # flatpak-builder-tools' generator at a known commit. Listed here, on the
+  # runner, rather than in the Flatpak's own job: that runs in Flathub's
+  # image, which is the freedesktop SDK — no dnf, nor any package manager to
+  # install the generator's aiohttp and tomlkit with. The script names its
+  # own dependencies in its header, and pipx installs those.
+  cargo-sources:
+    name: Flatpak crate list
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: List the crates for an offline build
+        run: |
+          curl -sSfL -o /tmp/flatpak-cargo-generator.py \
+            https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/41c20aa10819cdb2a4f3ca171758a96d1955c018/cargo/flatpak-cargo-generator.py
+          pipx run /tmp/flatpak-cargo-generator.py Cargo.lock -o cargo-sources.json
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: flatpak-cargo-sources
+          path: cargo-sources.json
+          if-no-files-found: error
+
   # The Flatpak, built from source offline as Flathub would build it, as a
-  # bundle per arch: `flatpak install thinkboard-….flatpak`. Its crates are
-  # listed for the offline build from Cargo.lock as it runs, by
-  # flatpak-builder-tools' generator at a known commit.
+  # bundle per arch: `flatpak install thinkboard-….flatpak`.
   flatpak:
     name: Flatpak ${{ matrix.arch }}
+    needs: cargo-sources
     runs-on: ${{ matrix.os }}
     container:
       image: ghcr.io/flathub-infra/flatpak-github-actions:freedesktop-25.08
@@ -219,13 +242,12 @@ jobs:
             echo "VERSION=${V}-dev" >> "$GITHUB_ENV"
           fi
 
-      - name: List the crates for an offline build
-        shell: bash
-        run: |
-          dnf install -y python3-aiohttp python3-tomlkit
-          curl -sSfL -o /tmp/flatpak-cargo-generator.py \
-            https://raw.githubusercontent.com/flatpak/flatpak-builder-tools/41c20aa10819cdb2a4f3ca171758a96d1955c018/cargo/flatpak-cargo-generator.py
-          python3 /tmp/flatpak-cargo-generator.py Cargo.lock -o packaging/flatpak/cargo-sources.json
+      # Beside the manifest, which names it as a source.
+      - name: Take the crate list
+        uses: actions/download-artifact@v4
+        with:
+          name: flatpak-cargo-sources
+          path: packaging/flatpak
 
       - uses: flatpak/flatpak-github-actions/flatpak-builder@v6
         with:
@@ -249,6 +271,11 @@ jobs:
         with:
           path: artifacts
           merge-multiple: true
+
+      # An artifact only to reach the Flatpak's build, not something to
+      # download. Absent when its job failed, which holds nothing back.
+      - name: Leave out the Flatpak's crate list
+        run: rm -f artifacts/cargo-sources.json
 
       - name: Create release
         uses: softprops/action-gh-release@v2
